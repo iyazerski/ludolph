@@ -12,10 +12,12 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
+libc = "0.2"
 ludolph-json-file = { path = "crates/json-file" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
