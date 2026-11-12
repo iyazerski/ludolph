@@ -142,6 +142,14 @@ impl Index {
 }
 
 /// Every `.jsonl` file one folder down from `sessions_dir`, sorted.
+/// Whether `path` is where pi keeps a session under `sessions_dir`: a
+/// `.jsonl` file in one of its folders, as `refresh` finds them.
+pub fn is_session_file(sessions_dir: &Path, path: &Path) -> bool {
+    let folder = path.parent();
+    folder.and_then(Path::parent) == Some(sessions_dir)
+        && path.extension().is_some_and(|ext| ext == "jsonl")
+}
+
 fn session_files(sessions_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let reading = || format!("reading {}", sessions_dir.display());

@@ -145,14 +145,9 @@ For a chat with no process, the status comes from the index: the outcome of its 
 
 ### Questions from the agent
 
-Questions use the shape of Claude Code's `AskUserQuestion` tool, which the phone app and the Companion already render: a list of questions, each with an optional `header`, the `question`, `options` (each with a `label`), and `multiSelect`. An answer is the picked labels, or typed text.
+Ludolph adds no question tool of its own. The questions it shows are extensions' dialogs: every `extension_ui_request` dialog (`select`, `confirm`, `input`, `editor`) waits for an answer, so a run would hang without one. Each shows as a one-question form in the shape of Claude Code's `AskUserQuestion` tool, which the phone app and the Companion already render: an optional `header`, the `question`, and `options` (each with a `label`). An answer is the picked label, or typed text. It goes back as an `extension_ui_response` (`docs/rpc-extension-ui.md`).
 
-They come from two places:
-
-- **`ask_user`:** Ludolph loads one small extension of its own with `--extension`. It adds an `ask_user` tool with the shape above. pi's RPC dialogs ask one thing at a time and can't pick several options, so the tool doesn't use them. It calls the engine and waits for the answer, the way Zeron's MCP bridge (`zeron-mcp.mjs`) calls Zeron. It uses its own socket, `ask.sock`, which has one call, `ask`. The engine starts each pi with a random token in an environment variable, and the token names the chat. So the extension can ask only in its own chat, and it can't reach the rest of the engine API.
-- **Other extensions' dialogs:** every `extension_ui_request` dialog (`select`, `confirm`, `input`, `editor`) shows as a one-question form. The answer goes back as an `extension_ui_response` (`docs/rpc-extension-ui.md`).
-
-The engine keeps one list of open questions. Each entry has its id, its chat, where it came from (`ask_user` or a dialog), and the pi process that asked. `respond_to_input` looks the id up and sends the answer the right way. An id is answered once. Later answers, and answers to a question from a process that's gone, are refused. A question leaves the list when it's answered, when its dialog's `timeout` runs out, when the run is aborted, when the `ask` call's connection drops, or when its pi exits.
+The engine keeps one list of open questions. Each entry has its id, its chat, and the pi process that asked. `respond_to_input` looks the id up and answers it. An id is answered once. Later answers, and answers to a question from a process that's gone, are refused. A question leaves the list when it's answered, when its dialog's `timeout` runs out, when the run is aborted, or when its pi exits.
 
 ### Sessions open elsewhere
 
@@ -233,7 +228,7 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | `send_message` | `prompt`, or a steering `prompt` |
 | `create_chat` | Start pi in the project's folder or a scratch folder, then `prompt` |
 | `interrupt_chat` | `clear_queue` and `abort` |
-| `respond_to_input` | The [open question](#questions-from-the-agent) with that id: the `ask` call's answer, or `extension_ui_response` |
+| `respond_to_input` | Answers the [open question](#questions-from-the-agent) with that id, as an `extension_ui_response` |
 | `archive_chat` | Index |
 | `turn_changes` | Saved turn changes |
 | `composer_info` | Branch (`git`), context use (`get_session_stats`), model and thinking level |

@@ -216,6 +216,7 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
+- bitflags 2.13.2
 - cfg-if 1.0.5
 - core-foundation-sys 0.8.7
 - errno 0.3.15
@@ -643,8 +644,11 @@ limitations under the License.
 
 Used by:
 - anyhow 1.0.104
+- dispatch2 0.3.1
 - itoa 1.0.19
 - libc 0.2.191
+- objc2-core-foundation 0.3.2
+- objc2-core-services 0.3.2
 - pin-project-lite 0.2.17
 - proc-macro2 1.0.107
 - quote 1.0.47

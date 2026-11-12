@@ -144,6 +144,48 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn another_pis_writes_reach_the_list_and_the_chat() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let path = dir.path().join("sessions/--work-app--/s1.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let user = |id: &str, parent: Option<&str>, text: &str| {
+        let message = json!({"role": "user", "content": text, "timestamp": 1});
+        json!({"type": "message", "id": id, "parentId": parent, "timestamp": "2026-05-01T10:00:00.000Z", "message": message})
+    };
+    let header = json!({"type": "session", "version": 3, "id": "s1", "timestamp": "2026-05-01T10:00:00.000Z", "cwd": "/work/app"});
+    std::fs::write(&path, format!("{header}\n{}\n", user("a", None, "first"))).unwrap();
+    let chats = until(&engine, |c| {
+        c.len() == 1 && last_prompt(&c[0]) == Some("first")
+    })
+    .await;
+    assert_eq!(chats[0].id, "s1");
+
+    let mut changes = engine.subscribe_chat("s1").unwrap();
+    // Closed at once, like pi's appends: macOS reports a write on close.
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    std::io::Write::write_all(
+        &mut file,
+        format!("{}\n", user("b", Some("a"), "second")).as_bytes(),
+    )
+    .unwrap();
+    drop(file);
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .expect("the chat never changed")
+        .unwrap();
+    let view = engine.view("s1", 40).await.unwrap();
+    assert_eq!(view.page.total, 2);
+
+    std::fs::remove_file(&path).unwrap();
+    until(&engine, <[ChatInfo]>::is_empty).await;
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pi_that_dies_mid_run_leaves_the_chat_interrupted() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;

@@ -7,21 +7,27 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedMutexGuard, mpsc, watch};
+use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
-use crate::index::Index;
+use crate::index::{self, Index};
 use crate::live::Live;
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
 use crate::transcript::{Page, Tail, Transcripts};
+use crate::watch::{Changes, Watcher};
+
+/// How long FSEvents waits for more changes to merge with one. pi writes a
+/// line per message, so this only merges bursts, like a compaction's.
+const WATCH_LATENCY: Duration = Duration::from_millis(100);
 
 /// Where the engine keeps its files and finds pi's, and how it runs pi.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +56,14 @@ struct Inner {
     list: watch::Sender<u64>,
     /// Its own lock, since reading a transcript can take a while.
     transcripts: Arc<Mutex<Transcripts>>,
+    /// The task that follows the sessions folder.
+    watching: AbortHandle,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.watching.abort();
+    }
 }
 
 #[derive(Debug)]
@@ -150,7 +164,10 @@ pub enum Delivery {
 
 impl Engine {
     /// Start the engine: stop the pi processes a previous engine left
-    /// running, and bring the index up to date.
+    /// running, bring the index up to date, and keep it so as pi writes.
+    ///
+    /// The sessions folder is created if it doesn't exist, so it can be
+    /// watched.
     ///
     /// # Errors
     ///
@@ -161,6 +178,10 @@ impl Engine {
             .with_context(|| format!("creating {}", config.state_dir.display()))?;
         let runtime_path = config.state_dir.join("runtime.json");
         let (runtime, interrupted) = Runtime::reap(&runtime_path, config.grace).await?;
+        std::fs::create_dir_all(&config.sessions_dir)
+            .with_context(|| format!("creating {}", config.sessions_dir.display()))?;
+        // Watching starts first, so writes during the refresh aren't missed.
+        let watcher = Watcher::start(&config.sessions_dir, WATCH_LATENCY)?;
         let index_path = config.state_dir.join("index.json");
         let sessions_dir = config.sessions_dir.clone();
         let index = tokio::task::spawn_blocking(move || -> Result<Index> {
@@ -190,11 +211,12 @@ impl Engine {
             runtime,
             chats,
         };
-        Ok(Self(Arc::new(Inner {
+        Ok(Self(Arc::new_cyclic(|inner| Inner {
             config,
             state: Mutex::new(state),
             list: watch::channel(0).0,
             transcripts: Arc::default(),
+            watching: tokio::spawn(follow(inner.clone(), watcher)).abort_handle(),
         })))
     }
 
@@ -390,6 +412,7 @@ impl Engine {
     ///
     /// Fails if the index can't be saved.
     pub async fn shutdown(&self) -> Result<()> {
+        self.0.watching.abort();
         let processes: Vec<Arc<Pi>> = {
             let state = self.state();
             let running = state
@@ -611,6 +634,40 @@ impl Engine {
         Ok(())
     }
 
+    /// Bring the index up to date with what the sessions folder reported,
+    /// and tell the list and the open chats what changed.
+    fn sync(&self, changes: Changes) {
+        let sessions_dir = &self.0.config.sessions_dir;
+        let mut state = self.state();
+        let changed = if changes.rescan {
+            state.index.refresh(sessions_dir).unwrap_or_else(|e| {
+                eprintln!("rescanning {}: {e:#}", sessions_dir.display());
+                Vec::new()
+            })
+        } else {
+            let paths = changes.paths.into_iter();
+            let sessions = paths.filter(|path| index::is_session_file(sessions_dir, path));
+            let refreshed = sessions.filter(|path| {
+                state.index.refresh_file(path).unwrap_or_else(|e| {
+                    eprintln!("reading {}: {e:#}", path.display());
+                    false
+                })
+            });
+            refreshed.collect()
+        };
+        if changed.is_empty() {
+            return;
+        }
+        for path in &changed {
+            let id = state.index.get(path).map(|summary| &summary.id);
+            if let Some(chat) = id.and_then(|id| state.chats.get(id)) {
+                chat.changed();
+            }
+        }
+        drop(state);
+        self.changed();
+    }
+
     fn save_index(&self) -> Result<()> {
         let path = self.0.config.state_dir.join("index.json");
         self.state().index.save(&path)
@@ -618,6 +675,21 @@ impl Engine {
 
     fn changed(&self) {
         self.0.list.send_modify(|revision| *revision += 1);
+    }
+}
+
+/// Apply the sessions folder's changes to the engine until it's gone. The
+/// task holds the engine weakly, so dropping the engine ends it.
+async fn follow(engine: Weak<Inner>, watcher: Watcher) {
+    loop {
+        let changes = watcher.changes().await;
+        let Some(inner) = engine.upgrade() else {
+            return;
+        };
+        let engine = Engine(inner);
+        if let Err(e) = tokio::task::spawn_blocking(move || engine.sync(changes)).await {
+            eprintln!("following the sessions folder: {e:#}");
+        }
     }
 }
 
