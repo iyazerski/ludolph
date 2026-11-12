@@ -21,6 +21,7 @@ use crate::live::Live;
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
+use crate::transcript::{Page, Tail, Transcripts};
 
 /// Where the engine keeps its files and finds pi's, and how it runs pi.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +48,8 @@ struct Inner {
     state: Mutex<State>,
     /// Bumped whenever the chat list changes.
     list: watch::Sender<u64>,
+    /// Its own lock, since reading a transcript can take a while.
+    transcripts: Arc<Mutex<Transcripts>>,
 }
 
 #[derive(Debug)]
@@ -57,7 +60,7 @@ struct State {
 }
 
 /// What the engine knows about a chat beyond its session file.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Chat {
     /// Held by commands that start or stop the chat's pi, so they don't overlap.
     ops: Arc<tokio::sync::Mutex<()>>,
@@ -66,6 +69,26 @@ struct Chat {
     process: Option<Running>,
     /// pi or the engine stopped during the last run.
     interrupted: bool,
+    /// Bumped whenever the chat's view changes.
+    changes: watch::Sender<u64>,
+}
+
+impl Default for Chat {
+    fn default() -> Self {
+        Self {
+            ops: Arc::default(),
+            draft: None,
+            process: None,
+            interrupted: false,
+            changes: watch::channel(0).0,
+        }
+    }
+}
+
+impl Chat {
+    fn changed(&self) {
+        self.changes.send_modify(|revision| *revision += 1);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -80,9 +103,6 @@ struct Draft {
 struct Running {
     pi: Arc<Pi>,
     live: Live,
-    /// The file's leaf when the current run started: the live tail stands in
-    /// for everything after it.
-    base: Option<String>,
 }
 
 /// A chat as the list shows it.
@@ -95,6 +115,15 @@ pub struct ChatInfo {
     /// The session's summary; `None` for a draft.
     pub summary: Option<Summary>,
     pub status: Status,
+}
+
+/// A chat and the latest messages of its transcript.
+#[derive(Debug, Clone, PartialEq)]
+pub struct View {
+    pub chat: ChatInfo,
+    pub page: Page,
+    /// Changes whenever the page would, while the chat is working.
+    pub revision: u64,
 }
 
 /// What a chat is doing.
@@ -165,6 +194,7 @@ impl Engine {
             config,
             state: Mutex::new(state),
             list: watch::channel(0).0,
+            transcripts: Arc::default(),
         })))
     }
 
@@ -174,28 +204,12 @@ impl Engine {
         let mut chats: Vec<ChatInfo> = state
             .index
             .iter()
-            .map(|(_, summary)| {
-                let chat = state.chats.get(&summary.id);
-                ChatInfo {
-                    id: summary.id.clone(),
-                    cwd: summary.cwd.clone(),
-                    created: summary.created,
-                    status: status(chat, Some(summary)),
-                    summary: Some(summary.clone()),
-                }
-            })
+            .map(|(_, summary)| info(&state, summary))
             .collect();
-        let drafts = state.chats.iter().filter_map(|(id, chat)| {
-            let draft = chat.draft.as_ref()?;
-            let written = draft.path.as_deref().and_then(|path| state.index.get(path));
-            written.is_none().then(|| ChatInfo {
-                id: id.clone(),
-                cwd: draft.cwd.clone(),
-                created: draft.created,
-                summary: None,
-                status: status(Some(chat), None),
-            })
-        });
+        let drafts = state
+            .chats
+            .iter()
+            .filter_map(|(id, chat)| draft_info(&state, id, chat));
         chats.extend(drafts.collect::<Vec<_>>());
         chats.sort_by_key(|chat| {
             let active = chat.summary.as_ref().and_then(|s| s.last_activity);
@@ -207,6 +221,67 @@ impl Engine {
     /// A counter that changes whenever [`Engine::chats`] would.
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.0.list.subscribe()
+    }
+
+    /// A chat with the last `limit` messages of its transcript.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat, or its session file can't be read.
+    pub async fn view(&self, id: &str, limit: usize) -> Result<View> {
+        let (chat, path, messages, streaming, revision) = {
+            let state = self.state();
+            let chat = state.chats.get(id);
+            let info = match state.index.iter().find(|(_, s)| s.id == id) {
+                Some((_, summary)) => info(&state, summary),
+                None => chat
+                    .and_then(|chat| draft_info(&state, id, chat))
+                    .with_context(|| format!("no chat {id}"))?,
+            };
+            let path = chat.map_or_else(
+                || file_of(&state.index, id, None),
+                |chat| file_of(&state.index, id, chat.draft.as_ref()),
+            );
+            let live = chat.and_then(|chat| chat.process.as_ref()).map(|r| &r.live);
+            // Copied, so the transcript is read without holding the state.
+            let messages = live
+                .map(|live| live.messages().to_vec())
+                .unwrap_or_default();
+            let streaming = live.and_then(|live| live.streaming().cloned());
+            let revision = chat.map_or(0, |chat| *chat.changes.borrow());
+            (info, path, messages, streaming, revision)
+        };
+        let transcripts = self.0.transcripts.clone();
+        let page = tokio::task::spawn_blocking(move || {
+            let tail = Tail {
+                messages: &messages,
+                streaming: streaming.as_ref(),
+            };
+            let mut transcripts = transcripts.lock().expect("lock poisoned");
+            transcripts.page(path.as_deref().filter(|p| p.exists()), tail, limit)
+        })
+        .await??;
+        Ok(View {
+            chat,
+            page,
+            revision,
+        })
+    }
+
+    /// A counter that changes whenever [`Engine::view`] would for chat `id`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat.
+    pub fn subscribe_chat(&self, id: &str) -> Result<watch::Receiver<u64>> {
+        let mut state = self.state();
+        known(&state, id)?;
+        Ok(state
+            .chats
+            .entry(id.to_owned())
+            .or_default()
+            .changes
+            .subscribe())
     }
 
     /// The engine's settings.
@@ -268,20 +343,11 @@ impl Engine {
         let pi = self.process(id)?;
         {
             let mut state = self.state();
-            let State { index, chats, .. } = &mut *state;
-            let chat = chats.get_mut(id).expect("a chat with a process is known");
-            let path = file_of(index, id, chat);
-            let running = chat
-                .process
-                .as_mut()
-                .expect("the process was just looked up");
-            if !running.live.working() {
-                if let Some(path) = &path {
-                    index.refresh_file(path)?;
-                }
-                running.base = path.and_then(|path| index.get(&path)?.leaf.clone());
-                chat.interrupted = false;
-            }
+            let chat = state
+                .chats
+                .get_mut(id)
+                .expect("a chat with a process is known");
+            chat.interrupted = false;
         }
         // pi ignores `steer` when no run is going, so the answer says which
         // happened, even if a run started or ended meanwhile.
@@ -352,9 +418,7 @@ impl Engine {
     /// The lock that serializes a chat's commands.
     fn ops(&self, id: &str) -> Result<Arc<tokio::sync::Mutex<()>>> {
         let mut state = self.state();
-        if !state.chats.contains_key(id) && !state.index.iter().any(|(_, s)| s.id == id) {
-            bail!("no chat {id}");
-        }
+        known(&state, id)?;
         Ok(state.chats.entry(id.to_owned()).or_default().ops.clone())
     }
 
@@ -394,7 +458,6 @@ impl Engine {
         chat.process = Some(Running {
             pi: pi.clone(),
             live: Live::new(),
-            base: None,
         });
         tokio::spawn(self.clone().watch(id.to_owned(), pi.clone(), events));
         Ok(pi)
@@ -450,14 +513,13 @@ impl Engine {
             return Ok(());
         };
         let working = running.live.working();
-        running.live.apply(event);
+        let mut view_changed = running.live.apply(event);
         let mut list_changed = running.live.working() != working;
         match event {
             Event::AgentStart => runtime.set_running(id, true)?,
             Event::AgentSettled { .. } => {
                 runtime.set_running(id, false)?;
-                running.base = None;
-                if let Some(path) = file_of(index, id, chat) {
+                if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
                     index.refresh_file(&path)?;
                 }
                 // The file has the run's messages now.
@@ -465,14 +527,19 @@ impl Engine {
                     running.live.clear_messages();
                 }
                 list_changed = true;
+                view_changed = true;
             }
             Event::SessionInfoChanged { .. } => {
-                if let Some(path) = file_of(index, id, chat) {
+                if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
                     index.refresh_file(&path)?;
                 }
                 list_changed = true;
+                view_changed = true;
             }
             _ => {}
+        }
+        if view_changed {
+            chat.changed();
         }
         let settled = matches!(event, Event::AgentSettled { .. });
         drop(state);
@@ -532,11 +599,14 @@ impl Engine {
         let Some(running) = chat.process.take_if(|r| Arc::ptr_eq(&r.pi, pi)) else {
             return Ok(());
         };
+        if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
+            index.refresh_file(&path)?;
+        }
+        // An idle pi leaves nothing a viewer sees; a working one leaves the
+        // chat interrupted.
         if running.live.working() {
             chat.interrupted = true;
-        }
-        if let Some(path) = file_of(index, id, chat) {
-            index.refresh_file(&path)?;
+            chat.changed();
         }
         Ok(())
     }
@@ -551,13 +621,46 @@ impl Engine {
     }
 }
 
+/// Fail unless `id` is a chat in the index or a draft.
+fn known(state: &State, id: &str) -> Result<()> {
+    if !state.chats.contains_key(id) && !state.index.iter().any(|(_, s)| s.id == id) {
+        bail!("no chat {id}");
+    }
+    Ok(())
+}
+
 /// The chat's session file: the index's, or the one pi named for a draft.
-fn file_of(index: &Index, id: &str, chat: &Chat) -> Option<PathBuf> {
+fn file_of(index: &Index, id: &str, draft: Option<&Draft>) -> Option<PathBuf> {
     index
         .iter()
         .find(|(_, summary)| summary.id == id)
         .map(|(path, _)| path.to_owned())
-        .or_else(|| chat.draft.as_ref()?.path.clone())
+        .or_else(|| draft?.path.clone())
+}
+
+/// A chat in the index, as the list shows it.
+fn info(state: &State, summary: &Summary) -> ChatInfo {
+    let chat = state.chats.get(&summary.id);
+    ChatInfo {
+        id: summary.id.clone(),
+        cwd: summary.cwd.clone(),
+        created: summary.created,
+        status: status(chat, Some(summary)),
+        summary: Some(summary.clone()),
+    }
+}
+
+/// A draft pi hasn't written yet, as the list shows it.
+fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
+    let draft = chat.draft.as_ref()?;
+    let written = draft.path.as_deref().and_then(|path| state.index.get(path));
+    written.is_none().then(|| ChatInfo {
+        id: id.to_owned(),
+        cwd: draft.cwd.clone(),
+        created: draft.created,
+        summary: None,
+        status: status(Some(chat), None),
+    })
 }
 
 /// What a chat is doing, from its process if it has one, else from how its

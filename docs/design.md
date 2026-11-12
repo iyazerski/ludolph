@@ -121,13 +121,15 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 
 ### Live view and the file
 
-Two sources describe a working chat: pi's events, and the file. pi sends `message_end` before it appends the entry to the file (`agent-session.js`, pi 1.5.2), and its events carry no entry ids. So the engine never adds the two together:
+Two sources describe a working chat: pi's events, and the file. pi sends `message_end` before it appends the entry to the file (`agent-session.js`, pi 1.5.2), and its events carry no entry ids. So:
 
-1. When a run starts, the engine notes the file's current leaf. That's the run's base.
-2. During the run, the transcript is the file up to the base, plus a live tail built from the events: messages from `message_end`, and the streaming one from its `message_update` deltas, replaced by its final block content as each block ends.
-3. When the run settles, the engine reads the file again. It replaces the live tail with the entries now after the base, which carry their ids.
+1. During a run, the engine keeps a live tail built from the events: messages from `message_end`, and the streaming one from its `message_update` deltas, replaced by its final block content as each block ends.
+2. The transcript is the file's path to its leaf, followed by the tail's messages that the file doesn't have yet. A message and its entry share their role, their `timestamp` and, for a tool result, its `toolCallId`, which is how they're matched. A turn that's partly written shows as one message.
+3. When the run settles, the file has every message, and the tail is dropped.
 
-Every change bumps the chat's revision. A subscriber gets a snapshot with its revision, then changes in order. A subscriber that reconnects, or falls behind, gets a fresh snapshot.
+A message's id is its first entry's id. A turn that's only in the tail has a `live-<n>` id until pi writes its first entry.
+
+Every change bumps the chat's revision, and subscribers get a notice with it. The notices coalesce: a client that falls behind sees only the latest, and then reads the view again, so a reconnect needs nothing special. The view is cheap to read again, since each open file is scanned once, then only for what pi appended, and only the lines of the page asked for are parsed.
 
 ### Status
 
@@ -216,7 +218,7 @@ Folders that aren't git repos get no run changes. Two chats working in the same 
 
 The app and the relay link use the same tool layer, as `connect` and the Companion do now.
 
-- **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push changes. These are list changes, a chat's live transcript, and the engine's state. Pushing instead of polling means no 1-second timer while a window is hidden. Each subscriber has a small, bounded queue. Changes waiting in it merge, and a subscriber that still falls behind gets a fresh snapshot instead of a backlog.
+- **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push a notice when something changes: the chat list, one chat's view, and later the engine's state. The client then reads what changed with a call, like `chat_view`, which can answer "unchanged" for the version the client already shows. Pushing instead of polling means no 1-second timer while a window is hidden. Notices that wait merge into one, so a slow client gets no backlog.
 - **Relay ↔ engine:** the relay protocol as it is now (`relay-proto`). Only the phone's tools are allowed, and they're checked in the engine, not on the relay.
 
 ### Tools
@@ -227,7 +229,7 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 |---|---|
 | `list_chats` | From the index |
 | `list_projects` | The distinct cwds in the index |
-| `chat_view` | The [transcript](#live-view-and-the-file), latest messages first, in pages. Long tool output and images load on request. |
+| `chat_view` | The [transcript](#live-view-and-the-file)'s latest messages, a page at a time. Long tool output and images load on request. |
 | `send_message` | `prompt`, or a steering `prompt` |
 | `create_chat` | Start pi in the project's folder or a scratch folder, then `prompt` |
 | `interrupt_chat` | `clear_queue` and `abort` |

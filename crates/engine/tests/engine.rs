@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use ludolph_engine::engine::{ChatInfo, Config, Delivery, Engine, Status};
 use ludolph_engine::server;
+use ludolph_engine::transcript::{Part, Role};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -61,6 +62,19 @@ async fn log_until(dir: &Path, lines: usize) -> Vec<String> {
     panic!("pi's log never got {lines} lines");
 }
 
+/// Wait until every pi that started has exited.
+async fn all_exited(dir: &Path) {
+    for _ in 0..250 {
+        let log = std::fs::read_to_string(dir.join("pi.log")).unwrap_or_default();
+        let starts = log.lines().filter(|l| l.starts_with("start")).count();
+        if starts > 0 && starts == log.lines().filter(|l| *l == "exit").count() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("pi never exited");
+}
+
 fn last_prompt(chat: &ChatInfo) -> Option<&str> {
     chat.summary.as_ref()?.last_prompt.as_deref()
 }
@@ -89,6 +103,30 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
     })
     .await;
     assert_eq!(chats.len(), 1, "the draft became the session file's row");
+    let view = engine.view(&id, 40).await.unwrap();
+    let shown: Vec<(Role, Vec<Part>)> = view
+        .page
+        .messages
+        .into_iter()
+        .map(|m| (m.role, m.parts))
+        .collect();
+    let text = |text: &str| Part::Text { text: text.into() };
+    assert_eq!(
+        shown,
+        [
+            (Role::User, vec![text("hi")]),
+            (
+                Role::Assistant,
+                vec![
+                    text("Hello!"),
+                    Part::Tools {
+                        tools: vec!["exec: ls".into()]
+                    },
+                    text("Done.")
+                ]
+            ),
+        ]
+    );
 
     // The idle pi stops, and the next message resumes the session in a new one.
     let log = log_until(dir.path(), 2).await;
@@ -143,7 +181,7 @@ async fn read_until(
 #[tokio::test(flavor = "multi_thread")]
 async fn the_socket_answers_calls_and_pushes_list_changes() {
     let dir = tempfile::tempdir().unwrap();
-    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let engine = engine(dir.path(), Duration::from_millis(200)).await;
     let socket = dir.path().join("state/engine.sock");
     let listener = server::bind(&socket).unwrap();
     assert!(
@@ -193,6 +231,52 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     let listed = &seen.iter().find(|r| r["id"] == 4).unwrap()["ok"];
     assert_eq!(listed["total"], 1);
     assert_eq!(listed["chats"][0]["id"], created["ok"]["chatId"]);
+
+    // A chat's subscriber hears of its run, and reads it with chat_view.
+    let chat = &created["ok"]["chatId"];
+    let requests = [
+        json!({"id": 6, "subscribe": "chat", "args": {"chat": chat}}),
+        json!({"id": 7, "call": "send_message", "args": {"chat": chat, "text": "more"}}),
+    ];
+    for request in requests {
+        write
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    let seen = read_until(&mut reader, |seen| {
+        seen.iter().any(|r| r["id"] == 7) && seen.iter().any(|r| r["event"] == "chat")
+    })
+    .await;
+    assert!(seen.contains(&json!({"id": 6, "ok": null})));
+    // Once pi is gone after the run, nothing changes the view.
+    until(&engine, |c| last_prompt(&c[0]) == Some("more")).await;
+    all_exited(dir.path()).await;
+    let request = json!({"id": 8, "call": "chat_view", "args": {"chat": chat, "limit": 3}});
+    write
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let seen = read_until(&mut reader, |seen| seen.iter().any(|r| r["id"] == 8)).await;
+    let view = &seen.iter().find(|r| r["id"] == 8).unwrap()["ok"];
+    assert_eq!(view["read"]["total"], 4, "{view}");
+    assert_eq!(view["read"]["olderRemaining"], 1, "{view}");
+    let more = &view["read"]["messages"][1];
+    assert_eq!(
+        (&more["role"], &more["parts"]),
+        (&json!("user"), &json!([{"kind": "text", "text": "more"}])),
+        "{view}"
+    );
+    let request = json!({
+        "id": 9, "call": "chat_view", "args": {"chat": chat, "limit": 3, "known": view["version"]},
+    });
+    write
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let seen = read_until(&mut reader, |seen| seen.iter().any(|r| r["id"] == 9)).await;
+    let unchanged = seen.iter().find(|r| r["id"] == 9).unwrap();
+    assert_eq!(unchanged["ok"]["read"], Value::Null, "{unchanged}");
 
     // A client that closes its side after sending still gets the answer.
     let (read, mut write) = UnixStream::connect(&socket).await.unwrap().into_split();

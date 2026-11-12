@@ -53,7 +53,8 @@ async fn engine() -> Result<()> {
     };
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;
-    let listener = server::bind(&config.state_dir.join("engine.sock"))?;
+    let socket = config.state_dir.join("engine.sock");
+    let listener = server::bind(&socket)?;
     let engine = Engine::start(config).await?;
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
@@ -62,6 +63,8 @@ async fn engine() -> Result<()> {
         _ = term.recv() => {}
         _ = int.recv() => {}
     }
+    // New clients get refused at once, rather than wait on a stopping engine.
+    drop(std::fs::remove_file(&socket));
     engine.shutdown().await
 }
 
