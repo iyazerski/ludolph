@@ -155,12 +155,42 @@ fn refresh_reads_appends_rewrites_and_removals() {
 }
 
 #[test]
-fn a_missing_or_older_index_starts_empty() {
+fn a_sessions_copies_are_one_chat_the_last_written() {
+    let (dir, path) = sessions(&[header(3), user("u1", json!("first"), 1)]);
+    let copy = dir.path().join("--work-other--/copy.jsonl");
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    std::fs::copy(&path, &copy).unwrap();
+    let mut index = Index::default();
+    index.refresh(dir.path()).unwrap();
+    assert_eq!(index.len(), 2);
+    assert_eq!(index.chats().count(), 1);
+    let latest = |index: &Index| index.find("s1").unwrap().0.to_owned();
+    assert_eq!(latest(&index), copy);
+
+    append(&path, &lines(&[assistant("a1", "stop", 2)]));
+    index.refresh(dir.path()).unwrap();
+    assert_eq!(latest(&index), path);
+    let state = dir.path().join("index.json");
+    index.save(&state).unwrap();
+    assert_eq!(latest(&Index::load(&state).unwrap()), path);
+
+    std::fs::remove_file(&path).unwrap();
+    index.refresh(dir.path()).unwrap();
+    assert_eq!(latest(&index), copy);
+}
+
+#[test]
+fn a_missing_or_older_index_starts_empty_but_keeps_its_marks() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("index.json");
     assert!(Index::load(&state).unwrap().is_empty());
     std::fs::write(&state, r#"{"format": 0, "rows": []}"#).unwrap();
     assert!(Index::load(&state).unwrap().is_empty());
+    let marked = r#"{"format": 0, "rows": [], "marks": {"s1": {"archived": true, "at": "2026-05-01T10:00:00Z"}}}"#;
+    std::fs::write(&state, marked).unwrap();
+    let index = Index::load(&state).unwrap();
+    assert!(index.is_empty());
+    assert_eq!(index.mark("s1").map(|mark| mark.archived), Some(true));
     let mut index = Index::default();
     assert!(
         index

@@ -5,7 +5,7 @@
 //! chat first needs one and stops after a few idle minutes (`docs/design.md`,
 //! "pi processes").
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -17,7 +17,8 @@ use tokio::sync::{OwnedMutexGuard, mpsc, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
-use crate::index::{self, Index};
+use crate::archive;
+use crate::index::{self, Index, Mark};
 use crate::live::Live;
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
@@ -51,6 +52,24 @@ pub struct Config {
     pub idle: Duration,
     /// How long pi gets to exit before it's killed.
     pub grace: Duration,
+    /// The user's home folder. Chats there have no project.
+    pub home: PathBuf,
+    /// How many recent chats each project lists before older ones are
+    /// archived.
+    pub keep: usize,
+}
+
+impl Config {
+    /// Where chats started without a project get their folders.
+    pub fn scratch_dir(&self) -> PathBuf {
+        self.state_dir.join("scratch")
+    }
+
+    /// Whether chats in `cwd` belong to a project, rather than to "No
+    /// project" with the home and scratch folders.
+    pub fn is_project(&self, cwd: &Path) -> bool {
+        cwd != self.home && !cwd.starts_with(self.scratch_dir())
+    }
 }
 
 /// The engine. Clones share it.
@@ -202,6 +221,7 @@ pub struct ChatInfo {
     pub status: Status,
     /// Another pi wrote to the session, so sending is off until a take-over.
     pub elsewhere: bool,
+    pub archived: bool,
 }
 
 /// A chat and the latest messages of its transcript.
@@ -288,13 +308,16 @@ impl Engine {
             runtime,
             chats,
         };
-        Ok(Self(Arc::new_cyclic(|inner| Inner {
+        let engine = Self(Arc::new_cyclic(|inner| Inner {
             config,
             state: Mutex::new(state),
             list: watch::channel(0).0,
             transcripts: Arc::default(),
             watching: tokio::spawn(follow(inner.clone(), watcher)).abort_handle(),
-        })))
+        }));
+        // The rule also runs at start, for a changed `keep` or new sessions.
+        engine.changed();
+        Ok(engine)
     }
 
     /// Every chat, most recently active first.
@@ -302,7 +325,7 @@ impl Engine {
         let state = self.state();
         let mut chats: Vec<ChatInfo> = state
             .index
-            .iter()
+            .chats()
             .map(|(_, summary)| info(&state, summary))
             .collect();
         let drafts = state
@@ -331,7 +354,7 @@ impl Engine {
         let (chat, path, messages, streaming, revision, question) = {
             let state = self.state();
             let chat = state.chats.get(id);
-            let info = match state.index.iter().find(|(_, s)| s.id == id) {
+            let info = match state.index.find(id) {
                 Some((_, summary)) => info(&state, summary),
                 None => chat
                     .and_then(|chat| draft_info(&state, id, chat))
@@ -472,6 +495,34 @@ impl Engine {
             Some("handled") => Ok(Delivery::Handled),
             other => bail!("pi answered the prompt with {other:?}"),
         }
+    }
+
+    /// Archive or unarchive chat `id`. Either holds until the chat has new
+    /// activity, so the rule doesn't undo it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat, pi hasn't written it yet, or the
+    /// index can't be saved.
+    pub fn archive(&self, id: &str, archived: bool) -> Result<()> {
+        {
+            let mut state = self.state();
+            let summary = state.index.find(id).map(|(_, s)| s);
+            let Some(summary) = summary else {
+                known(&state, id)?;
+                bail!("chat {id} has no messages yet");
+            };
+            let mark = Mark {
+                archived,
+                at: archive::activity(summary),
+            };
+            if !state.index.set_mark(id, Some(mark)) {
+                return Ok(());
+            }
+        }
+        self.save_index()?;
+        self.changed();
+        Ok(())
     }
 
     /// Turn sending back on for a chat another pi wrote to. The next message
@@ -617,7 +668,7 @@ impl Engine {
         if let Some(running) = &chat.process {
             return Ok(running.pi.clone());
         }
-        let (cwd, session) = match (index.iter().find(|(_, s)| s.id == id), &chat.draft) {
+        let (cwd, session) = match (index.find(id), &chat.draft) {
             (Some((path, summary)), _) => (summary.cwd.clone(), Session::Resume(path.to_owned())),
             (None, Some(draft)) => match &draft.path {
                 Some(path) if path.exists() => (draft.cwd.clone(), Session::Resume(path.clone())),
@@ -976,7 +1027,26 @@ impl Engine {
         self.state().index.save(&path)
     }
 
+    /// Tell the list's viewers it changed, after applying the archive rule
+    /// to it.
     fn changed(&self) {
+        let marked = {
+            let mut state = self.state();
+            let State { index, chats, .. } = &mut *state;
+            let busy: HashSet<&str> = chats
+                .iter()
+                .filter(|(_, chat)| {
+                    let running = chat.process.as_ref();
+                    running.is_some_and(|r| r.live.working() || !r.questions.is_empty())
+                })
+                .map(|(id, _)| id.as_str())
+                .collect();
+            let config = &self.0.config;
+            archive::apply(index, config.keep, &busy, |cwd| config.is_project(cwd))
+        };
+        if marked && let Err(e) = self.save_index() {
+            eprintln!("saving the index: {e:#}");
+        }
         self.0.list.send_modify(|revision| *revision += 1);
     }
 }
@@ -998,7 +1068,7 @@ async fn follow(engine: Weak<Inner>, watcher: Watcher) {
 
 /// Fail unless `id` is a chat in the index or a draft.
 fn known(state: &State, id: &str) -> Result<()> {
-    if !state.chats.contains_key(id) && !state.index.iter().any(|(_, s)| s.id == id) {
+    if !state.chats.contains_key(id) && state.index.find(id).is_none() {
         bail!("no chat {id}");
     }
     Ok(())
@@ -1007,8 +1077,7 @@ fn known(state: &State, id: &str) -> Result<()> {
 /// The chat's session file: the index's, or the one pi named for a draft.
 fn file_of(index: &Index, id: &str, draft: Option<&Draft>) -> Option<PathBuf> {
     index
-        .iter()
-        .find(|(_, summary)| summary.id == id)
+        .find(id)
         .map(|(path, _)| path.to_owned())
         .or_else(|| draft?.path.clone())
 }
@@ -1023,6 +1092,7 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
         status: status(chat, Some(summary)),
         summary: Some(summary.clone()),
         elsewhere: chat.is_some_and(|chat| chat.elsewhere),
+        archived: archive::mark(&state.index, summary).is_some_and(|mark| mark.archived),
     }
 }
 
@@ -1037,6 +1107,7 @@ fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
         summary: None,
         status: status(Some(chat), None),
         elsewhere: chat.elsewhere,
+        archived: false,
     })
 }
 

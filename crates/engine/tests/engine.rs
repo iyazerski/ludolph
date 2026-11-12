@@ -28,6 +28,8 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         state_dir: dir.join("state"),
         idle,
         grace: Duration::from_secs(2),
+        home: dir.to_owned(),
+        keep: 2,
     };
     Engine::start(config).await.unwrap()
 }
@@ -259,6 +261,64 @@ async fn an_extensions_dialog_waits_for_an_answer() {
     until(&engine, |c| c[0].status == Status::AwaitingInput).await;
     assert_eq!(last_reply(&engine, &id).await, "You picked nothing.");
     assert_eq!(engine.question(&id), None);
+    engine.shutdown().await.unwrap();
+}
+
+/// The ids `list_chats` returns, newest first.
+async fn listed(engine: &Engine) -> Vec<String> {
+    let chats = tool(engine, "list_chats", json!({})).await.unwrap();
+    let chats = chats["chats"].as_array().unwrap().iter();
+    chats
+        .map(|c| c["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_project_lists_its_recent_chats_and_archives_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("sessions/--app--");
+    std::fs::create_dir_all(&folder).unwrap();
+    let user = |at: i64| {
+        let message = json!({"role": "user", "content": "hi", "timestamp": at});
+        json!({"type": "message", "id": format!("m{at}"), "parentId": null, "timestamp": "2026-05-01T10:00:00.000Z", "message": message})
+    };
+    for (id, at) in [("a", 1_000), ("b", 2_000), ("c", 3_000), ("d", 4_000)] {
+        let header = json!({"type": "session", "version": 3, "id": id, "timestamp": "2026-05-01T10:00:00.000Z", "cwd": "/work/app"});
+        std::fs::write(
+            folder.join(format!("{id}.jsonl")),
+            format!("{header}\n{}\n", user(at)),
+        )
+        .unwrap();
+    }
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    assert_eq!(listed(&engine).await, ["d", "c"]);
+
+    // Your choices hold against the rule.
+    tool(
+        &engine,
+        "archive_chat",
+        json!({"chat": "a", "archived": false}),
+    )
+    .await
+    .unwrap();
+    tool(&engine, "archive_chat", json!({"chat": "c"}))
+        .await
+        .unwrap();
+    assert_eq!(listed(&engine).await, ["d", "a"]);
+
+    // New activity brings a chat back, and the rule makes room for it.
+    append(&folder.join("b.jsonl"), &user(5_000));
+    until(&engine, |c| c.iter().any(|c| c.id == "b" && !c.archived)).await;
+    assert_eq!(listed(&engine).await, ["b", "d", "a"]);
+
+    engine.shutdown().await.unwrap();
+    drop(engine);
+    let engine = self::engine(dir.path(), Duration::from_secs(60)).await;
+    assert_eq!(
+        listed(&engine).await,
+        ["b", "d", "a"],
+        "the marks were saved"
+    );
     engine.shutdown().await.unwrap();
 }
 

@@ -1,11 +1,13 @@
 //! The chat list: a [`Summary`] of every pi session file, kept current by
 //! reading only what changed, and saved so a restart doesn't read every file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::session::{Freshness, Summary};
@@ -14,10 +16,30 @@ use crate::session::{Freshness, Summary};
 /// index is built again from the session files.
 const FORMAT: u32 = 2;
 
-/// Every session file pi has written, by path.
+/// Every session file pi has written, by path, and Ludolph's own marks on
+/// its chats.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Index {
     sessions: BTreeMap<PathBuf, Summary>,
+    /// By session id. Unlike the summaries, these can't be rebuilt from the
+    /// files, so they're kept when the summaries' format changes.
+    #[serde(default)]
+    marks: BTreeMap<String, Mark>,
+    /// Each session id's file. A session can have copies under other
+    /// folders, as Zeron left when it moved a chat; the most recently
+    /// written one is the chat.
+    #[serde(skip)]
+    ids: HashMap<String, PathBuf>,
+}
+
+/// A chat's archive state, set by the archive rule or by hand. It holds
+/// until the chat has newer activity than `at`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mark {
+    /// Archived, or kept out of the archive.
+    pub archived: bool,
+    /// The chat's last activity when it was marked.
+    pub at: DateTime<Utc>,
 }
 
 impl Index {
@@ -31,10 +53,23 @@ impl Index {
         let Some(saved) = ludolph_json_file::load::<serde_json::Value>(path)? else {
             return Ok(Self::default());
         };
+        let parsing = || format!("parsing {}", path.display());
         if saved["format"] != FORMAT {
-            return Ok(Self::default());
+            let marks = saved.get("marks").cloned().unwrap_or_default();
+            let marks: Option<_> = serde_json::from_value(marks).with_context(parsing)?;
+            return Ok(Self {
+                marks: marks.unwrap_or_default(),
+                ..Self::default()
+            });
         }
-        Self::deserialize(saved).with_context(|| format!("parsing {}", path.display()))
+        let mut index = Self::deserialize(saved).with_context(parsing)?;
+        for (path, summary) in &index.sessions {
+            let best = index.ids.get(&summary.id);
+            if best.is_none_or(|best| rank(path, summary) > rank(best, &index.sessions[best])) {
+                index.ids.insert(summary.id.clone(), path.clone());
+            }
+        }
+        Ok(index)
     }
 
     /// Save the index to `path`, replacing it atomically.
@@ -77,7 +112,7 @@ impl Index {
             .cloned()
             .collect();
         for path in &changed {
-            self.sessions.remove(path);
+            self.remove(path);
         }
         for path in files {
             if self.refresh_file(&path)? {
@@ -100,7 +135,11 @@ impl Index {
         };
         let summary = match freshness {
             Ok(Freshness::Unchanged) => return Ok(false),
-            Ok(Freshness::Updated) => return Ok(true),
+            Ok(Freshness::Updated) => {
+                let id = self.sessions[path].id.clone();
+                self.elect(&id);
+                return Ok(true);
+            }
             Ok(Freshness::Rewritten) => Summary::read(path),
             Err(e) => Err(e),
         };
@@ -111,11 +150,49 @@ impl Index {
         };
         Ok(match summary {
             Some(summary) => {
-                self.sessions.insert(path.to_owned(), summary);
+                let id = summary.id.clone();
+                if let Some(old) = self.sessions.insert(path.to_owned(), summary)
+                    && old.id != id
+                {
+                    self.elect(&old.id);
+                }
+                self.elect(&id);
                 true
             }
-            None => self.sessions.remove(path).is_some(),
+            None => self.remove(path),
         })
+    }
+
+    /// Drop the row of the file at `path`, and return whether it had one.
+    fn remove(&mut self, path: &Path) -> bool {
+        let Some(old) = self.sessions.remove(path) else {
+            return false;
+        };
+        self.elect(&old.id);
+        true
+    }
+
+    /// Pick session `id`'s file again, after one of its files changed.
+    fn elect(&mut self, id: &str) {
+        let files = self.sessions.iter().filter(|(_, s)| s.id == id);
+        let best = files.max_by_key(|(path, summary)| rank(path, summary));
+        match best {
+            Some((path, _)) => self.ids.insert(id.to_owned(), path.clone()),
+            None => self.ids.remove(id),
+        };
+    }
+
+    /// Chat `id`: its session file and summary.
+    pub fn find(&self, id: &str) -> Option<(&Path, &Summary)> {
+        let path = self.ids.get(id)?;
+        Some((path.as_path(), &self.sessions[path]))
+    }
+
+    /// Every chat, by its session file and summary, once each.
+    pub fn chats(&self) -> impl Iterator<Item = (&Path, &Summary)> {
+        self.ids
+            .values()
+            .map(|path| (path.as_path(), &self.sessions[path]))
     }
 
     /// The summary of the session file at `path`.
@@ -130,6 +207,25 @@ impl Index {
             .map(|(path, summary)| (path.as_path(), summary))
     }
 
+    /// Chat `id`'s mark.
+    pub fn mark(&self, id: &str) -> Option<Mark> {
+        self.marks.get(id).copied()
+    }
+
+    /// Set or clear chat `id`'s mark, and return whether it changed.
+    pub fn set_mark(&mut self, id: &str, mark: Option<Mark>) -> bool {
+        let old = match mark {
+            Some(mark) => self.marks.insert(id.to_owned(), mark),
+            None => self.marks.remove(id),
+        };
+        old != mark
+    }
+
+    /// The ids of the chats that have marks.
+    pub fn marked(&self) -> impl Iterator<Item = &str> {
+        self.marks.keys().map(String::as_str)
+    }
+
     /// The number of session files.
     pub fn len(&self) -> usize {
         self.sessions.len()
@@ -141,7 +237,12 @@ impl Index {
     }
 }
 
-/// Every `.jsonl` file one folder down from `sessions_dir`, sorted.
+/// How a session's copies rank: the one written last wins, then the later
+/// path.
+fn rank<'a>(path: &'a PathBuf, summary: &Summary) -> (SystemTime, &'a PathBuf) {
+    (summary.modified(), path)
+}
+
 /// Whether `path` is where pi keeps a session under `sessions_dir`: a
 /// `.jsonl` file in one of its folders, as `refresh` finds them.
 pub fn is_session_file(sessions_dir: &Path, path: &Path) -> bool {
@@ -150,6 +251,7 @@ pub fn is_session_file(sessions_dir: &Path, path: &Path) -> bool {
         && path.extension().is_some_and(|ext| ext == "jsonl")
 }
 
+/// Every `.jsonl` file one folder down from `sessions_dir`, sorted.
 fn session_files(sessions_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let reading = || format!("reading {}", sessions_dir.display());

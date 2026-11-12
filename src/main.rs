@@ -13,6 +13,8 @@ use tokio::signal::unix::{SignalKind, signal};
 const IDLE: Duration = Duration::from_secs(5 * 60);
 /// How long pi gets to exit before it's killed.
 const GRACE: Duration = Duration::from_secs(10);
+/// How many recent chats each project lists (`docs/design.md`, "Archiving").
+const KEEP: usize = 10;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,6 +52,8 @@ async fn engine() -> Result<()> {
         state_dir,
         idle: IDLE,
         grace: GRACE,
+        home,
+        keep: KEEP,
     };
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;

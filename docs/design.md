@@ -321,6 +321,8 @@ src/main.rs     the `ludolph` binary: `engine`, the app, and `install`/`uninstal
 ## Migration from Zeron
 
 - **Chats:** nothing to do. Zeron runs pi with session files under `~/.pi/agent/sessions`, so Ludolph's index finds them.
+- **Zeron's scratch folders:** chats Zeron started without a project ran in `~/.zeron/scratch/<date>-<id>`, and their sessions keep that cwd. Without help, each shows as a project of its own. The import decides how they're grouped.
+- **Moved chats:** when Zeron moved a chat to a project, it left a copy of the session file under the old folder, with the same session id. The index lists a session once, by the copy written last.
 - **Titles and archive state:** these live in Zeron's database. A one-time import runs while Zeron still runs, through zeron-tools' IPC client. It lists chats with their titles and archive state. It then maps each to its session file through `~/.pi/agent/zeron-sessions/<hash>.json`, which holds `{sessionId, sessionFile}`. That the hash is derived from the Zeron chat id is still to be checked. The import writes titles and archive state to Ludolph's part of the index only. It starts no pi, so it's safe while Zeron still runs. Each imported title moves into pi's file with `set_session_name` the next time its chat runs in Ludolph. If the import is skipped, titles fall back to first words, and archiving starts from scratch.
 - **Turn changes:** zeron-tools' saved turns (`~/.zeron/turn-snapshots` and its own store) aren't carried over.
 

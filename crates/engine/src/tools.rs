@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::engine::{ChatInfo, Delivery, Dialog, Engine, Question, Reply, Status};
+use crate::engine::{ChatInfo, Config, Delivery, Dialog, Engine, Question, Reply, Status};
 
 /// Chats `list_chats` returns without a `limit`, and at most.
 const DEFAULT_CHATS: usize = 50;
@@ -30,6 +30,7 @@ pub enum Tool {
     InterruptChat,
     TakeOverChat,
     RespondToInput,
+    ArchiveChat,
 }
 
 impl FromStr for Tool {
@@ -45,6 +46,7 @@ impl FromStr for Tool {
             "interrupt_chat" => Self::InterruptChat,
             "take_over_chat" => Self::TakeOverChat,
             "respond_to_input" => Self::RespondToInput,
+            "archive_chat" => Self::ArchiveChat,
             _ => bail!("no tool {name}"),
         })
     }
@@ -65,6 +67,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::InterruptChat => interrupt_chat(engine, parse(args)?).await,
         Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
         Tool::RespondToInput => respond_to_input(engine, parse(args)?).await,
+        Tool::ArchiveChat => archive_chat(engine, parse(args)?),
     }
 }
 
@@ -80,29 +83,26 @@ struct ListChatsArgs {
     limit: Option<usize>,
 }
 
-/// The chats, most recently active first.
+/// The chats that aren't archived, most recently active first.
 fn list_chats(engine: &Engine, args: ListChatsArgs) -> Result<Value> {
-    let chats = engine.chats();
+    let mut chats = engine.chats();
+    chats.retain(|chat| !chat.archived);
     let limit = args.limit.unwrap_or(DEFAULT_CHATS).clamp(1, MAX_CHATS);
-    let home = home();
-    let scratch = scratch_root(engine);
     let summaries: Vec<Value> = chats
         .iter()
         .take(limit)
-        .map(|chat| summary(chat, &home, &scratch))
+        .map(|chat| summary(chat, engine.config()))
         .collect();
     Ok(json!({"total": chats.len(), "chats": summaries}))
 }
 
 /// The projects: every chat's folder, except the home and scratch folders.
 fn list_projects(engine: &Engine) -> Value {
-    let home = home();
-    let scratch = scratch_root(engine);
     let mut folders: Vec<PathBuf> = engine
         .chats()
         .into_iter()
         .map(|chat| chat.cwd)
-        .filter(|cwd| is_project(cwd, &home, &scratch))
+        .filter(|cwd| engine.config().is_project(cwd))
         .collect();
     folders.sort();
     folders.dedup();
@@ -150,7 +150,7 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
         })
     });
     Ok(json!({
-        "chat": summary(&view.chat, &home(), &scratch_root(engine)),
+        "chat": summary(&view.chat, engine.config()),
         "version": version,
         "read": read,
     }))
@@ -195,7 +195,7 @@ async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
         None => {
             let day = chrono::Local::now().format("%Y-%m-%d");
             let tag = &uuid::Uuid::new_v4().simple().to_string()[..8];
-            let cwd = scratch_root(engine).join(format!("{day}-{tag}"));
+            let cwd = engine.config().scratch_dir().join(format!("{day}-{tag}"));
             std::fs::create_dir_all(&cwd).with_context(|| format!("creating {}", cwd.display()))?;
             cwd
         }
@@ -310,6 +310,21 @@ async fn respond_to_input(engine: &Engine, args: RespondArgs) -> Result<Value> {
     Ok(json!({"chatId": args.chat, "requestId": question.id}))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArchiveArgs {
+    chat: String,
+    /// `false` unarchives.
+    archived: Option<bool>,
+}
+
+fn archive_chat(engine: &Engine, args: ArchiveArgs) -> Result<Value> {
+    let archived = args.archived.unwrap_or(true);
+    engine.archive(&args.chat, archived)?;
+    let title = find(engine, &args.chat)?.summary.and_then(|s| s.title);
+    Ok(json!({"chatId": args.chat, "title": title, "archived": archived}))
+}
+
 async fn take_over_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
     engine.take_over(&args.chat).await?;
     Ok(json!({"chatId": args.chat}))
@@ -324,15 +339,15 @@ fn find(engine: &Engine, id: &str) -> Result<ChatInfo> {
 }
 
 /// A chat as `list_chats` describes it.
-fn summary(chat: &ChatInfo, home: &Path, scratch: &Path) -> Value {
+fn summary(chat: &ChatInfo, config: &Config) -> Value {
     let summary = chat.summary.as_ref();
     json!({
         "id": chat.id,
         "title": summary.and_then(|s| s.title.as_deref()),
-        "project": is_project(&chat.cwd, home, scratch).then(|| project(&chat.cwd)),
+        "project": config.is_project(&chat.cwd).then(|| project(&chat.cwd)),
         "cwd": chat.cwd,
         "harness": "pi",
-        "archived": false,
+        "archived": chat.archived,
         "status": label(chat.status),
         "openElsewhere": chat.elsewhere,
         "lastMessageAt": summary.and_then(|s| s.last_activity),
@@ -349,11 +364,6 @@ fn project(path: &Path) -> Value {
         |name| name.to_string_lossy().into_owned(),
     );
     json!({"id": path, "name": name, "path": path})
-}
-
-/// Whether chats in `cwd` belong to a project, rather than to "No project".
-fn is_project(cwd: &Path, home: &Path, scratch: &Path) -> bool {
-    cwd != home && !cwd.starts_with(scratch)
 }
 
 fn sent(delivery: Delivery, status: Status) -> Value {
@@ -374,14 +384,4 @@ fn label(status: Status) -> &'static str {
         Status::Failed => "errored",
         Status::Interrupted => "interrupted",
     }
-}
-
-fn scratch_root(engine: &Engine) -> PathBuf {
-    engine.config().state_dir.join("scratch")
-}
-
-fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
 }
