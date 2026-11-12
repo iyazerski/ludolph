@@ -149,6 +149,45 @@ struct Draft {
 struct Running {
     pi: Arc<Pi>,
     live: Live,
+    /// Its extensions' open dialogs, oldest first. They end with the process.
+    questions: Vec<Question>,
+}
+
+/// An extension's dialog, waiting for an answer (`docs/rpc-extension-ui.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    /// pi's request id, which the answer names.
+    pub id: String,
+    pub dialog: Dialog,
+    pub title: String,
+    /// What a `confirm` asks about.
+    pub message: Option<String>,
+    /// A `select`'s choices.
+    pub options: Vec<String>,
+    /// An `editor`'s starting text.
+    pub prefill: Option<String>,
+}
+
+/// What kind of answer a [`Question`] takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialog {
+    /// One of its options.
+    Select,
+    /// Yes or no.
+    Confirm,
+    /// One line of text.
+    Input,
+    /// Text of any length.
+    Editor,
+}
+
+/// An answer to a [`Question`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reply {
+    /// The picked option or typed text, for every dialog but `confirm`.
+    Value(String),
+    /// A `confirm`'s answer.
+    Confirmed(bool),
 }
 
 /// A chat as the list shows it.
@@ -172,6 +211,8 @@ pub struct View {
     pub page: Page,
     /// Changes whenever the page would, while the chat is working.
     pub revision: u64,
+    /// The oldest dialog the chat's pi waits on.
+    pub question: Option<Question>,
 }
 
 /// What a chat is doing.
@@ -179,6 +220,8 @@ pub struct View {
 pub enum Status {
     Idle,
     Working,
+    /// An extension's dialog waits for an answer.
+    AwaitingInput,
     /// The last run ended on an error.
     Failed,
     /// pi or the engine stopped during the last run.
@@ -285,7 +328,7 @@ impl Engine {
     ///
     /// Fails if there's no such chat, or its session file can't be read.
     pub async fn view(&self, id: &str, limit: usize) -> Result<View> {
-        let (chat, path, messages, streaming, revision) = {
+        let (chat, path, messages, streaming, revision, question) = {
             let state = self.state();
             let chat = state.chats.get(id);
             let info = match state.index.iter().find(|(_, s)| s.id == id) {
@@ -298,14 +341,16 @@ impl Engine {
                 || file_of(&state.index, id, None),
                 |chat| file_of(&state.index, id, chat.draft.as_ref()),
             );
-            let live = chat.and_then(|chat| chat.process.as_ref()).map(|r| &r.live);
+            let running = chat.and_then(|chat| chat.process.as_ref());
+            let question = running.and_then(|r| r.questions.first().cloned());
+            let live = running.map(|r| &r.live);
             // Copied, so the transcript is read without holding the state.
             let messages = live
                 .map(|live| live.messages().to_vec())
                 .unwrap_or_default();
             let streaming = live.and_then(|live| live.streaming().cloned());
             let revision = chat.map_or(0, |chat| *chat.changes.borrow());
-            (info, path, messages, streaming, revision)
+            (info, path, messages, streaming, revision, question)
         };
         let transcripts = self.0.transcripts.clone();
         let page = tokio::task::spawn_blocking(move || {
@@ -321,6 +366,7 @@ impl Engine {
             chat,
             page,
             revision,
+            question,
         })
     }
 
@@ -445,20 +491,75 @@ impl Engine {
         Ok(())
     }
 
-    /// Stop a chat's run: drop its queued messages, then abort.
+    /// The oldest dialog chat `id`'s pi waits on.
+    pub fn question(&self, id: &str) -> Option<Question> {
+        let state = self.state();
+        let running = state.chats.get(id)?.process.as_ref()?;
+        running.questions.first().cloned()
+    }
+
+    /// Answer the open dialog `question` in chat `id`. A question is answered
+    /// once.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the chat's pi has no such open question, the reply doesn't
+    /// fit its dialog, or pi can't be written to.
+    pub async fn respond(&self, id: &str, question: &str, reply: Reply) -> Result<()> {
+        let pi = {
+            let mut state = self.state();
+            let running = state
+                .chats
+                .get_mut(id)
+                .and_then(|chat| chat.process.as_mut());
+            let Some(running) = running else {
+                bail!("chat {id} has no open question {question}");
+            };
+            let Some(at) = running.questions.iter().position(|q| q.id == question) else {
+                bail!("chat {id} has no open question {question}");
+            };
+            let dialog = running.questions[at].dialog;
+            if matches!(reply, Reply::Confirmed(_)) != (dialog == Dialog::Confirm) {
+                bail!("a {dialog:?} question can't take {reply:?}");
+            }
+            running.questions.remove(at);
+            running.pi.clone()
+        };
+        self.asked(id);
+        let mut answer = json!({"type": "extension_ui_response", "id": question});
+        match reply {
+            Reply::Value(value) => answer["value"] = value.into(),
+            Reply::Confirmed(confirmed) => answer["confirmed"] = confirmed.into(),
+        }
+        pi.send(&answer).await
+    }
+
+    /// Stop a chat's run: dismiss its open dialogs, drop its queued
+    /// messages, then abort.
     ///
     /// # Errors
     ///
     /// Fails if pi refuses.
     pub async fn interrupt(&self, id: &str) -> Result<()> {
-        let pi = {
-            let state = self.state();
-            let running = state.chats.get(id).and_then(|chat| chat.process.as_ref());
+        let (pi, questions) = {
+            let mut state = self.state();
+            let running = state
+                .chats
+                .get_mut(id)
+                .and_then(|chat| chat.process.as_mut());
             match running {
-                Some(running) => running.pi.clone(),
+                Some(running) => (running.pi.clone(), std::mem::take(&mut running.questions)),
                 None => return Ok(()),
             }
         };
+        if !questions.is_empty() {
+            self.asked(id);
+        }
+        for question in questions {
+            let cancel =
+                json!({"type": "extension_ui_response", "id": question.id, "cancelled": true});
+            pi.send(&cancel).await?;
+        }
         pi.call(json!({"type": "clear_queue"})).await?;
         pi.call(json!({"type": "abort"})).await?;
         Ok(())
@@ -540,6 +641,7 @@ impl Engine {
         chat.process = Some(Running {
             pi: pi.clone(),
             live: Live::new(),
+            questions: Vec::new(),
         });
         tokio::spawn(self.clone().watch(id.to_owned(), pi.clone(), events));
         Ok(pi)
@@ -619,6 +721,42 @@ impl Engine {
                 list_changed = true;
                 view_changed = true;
             }
+            Event::ExtensionUiRequest {
+                id: question,
+                method,
+                title,
+                message,
+                options,
+                prefill,
+                timeout,
+                ..
+            } => {
+                let dialog = match method.as_str() {
+                    "select" => Dialog::Select,
+                    "confirm" => Dialog::Confirm,
+                    "input" => Dialog::Input,
+                    "editor" => Dialog::Editor,
+                    // `notify` and the like expect no answer.
+                    _ => return Ok(()),
+                };
+                running.questions.push(Question {
+                    id: question.clone(),
+                    dialog,
+                    title: title.clone().unwrap_or_default(),
+                    message: message.clone(),
+                    options: options.clone().unwrap_or_default(),
+                    prefill: prefill.clone(),
+                });
+                if let Some(timeout) = timeout {
+                    let wait = Duration::from_millis(*timeout);
+                    let expire =
+                        self.clone()
+                            .expire(id.to_owned(), pi.clone(), question.clone(), wait);
+                    tokio::spawn(expire);
+                }
+                list_changed = true;
+                view_changed = true;
+            }
             Event::SessionInfoChanged { .. } => {
                 if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
                     index.refresh_file(&path)?;
@@ -654,7 +792,8 @@ impl Engine {
         let working = {
             let state = self.state();
             let running = state.chats.get(id).and_then(|chat| chat.process.as_ref());
-            running.is_some_and(|r| r.live.working())
+            // An open dialog keeps pi too: an extension command waits on it.
+            running.is_some_and(|r| r.live.working() || !r.questions.is_empty())
         };
         if working {
             return Ok(false);
@@ -692,10 +831,12 @@ impl Engine {
         if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
             index.refresh_file(&path)?;
         }
-        // An idle pi leaves nothing a viewer sees; a working one leaves the
-        // chat interrupted.
+        // An idle pi leaves nothing a viewer sees but its questions; a
+        // working one leaves the chat interrupted.
         if running.live.working() {
             chat.interrupted = true;
+        }
+        if running.live.working() || !running.questions.is_empty() {
             chat.changed();
         }
         Ok(())
@@ -800,6 +941,36 @@ impl Engine {
         }
     }
 
+    /// Drop `pi`'s question when its dialog's own timeout ends it, since pi
+    /// doesn't say so.
+    async fn expire(self, id: String, pi: Arc<Pi>, question: String, wait: Duration) {
+        tokio::time::sleep(wait).await;
+        let removed = {
+            let mut state = self.state();
+            let running = state
+                .chats
+                .get_mut(&id)
+                .and_then(|chat| chat.process.as_mut());
+            let running = running.filter(|r| Arc::ptr_eq(&r.pi, &pi));
+            running.is_some_and(|r| {
+                let before = r.questions.len();
+                r.questions.retain(|q| q.id != question);
+                r.questions.len() != before
+            })
+        };
+        if removed {
+            self.asked(&id);
+        }
+    }
+
+    /// Tell the chat's and the list's viewers that its questions changed.
+    fn asked(&self, id: &str) {
+        if let Some(chat) = self.state().chats.get(id) {
+            chat.changed();
+        }
+        self.changed();
+    }
+
     fn save_index(&self) -> Result<()> {
         let path = self.0.config.state_dir.join("index.json");
         self.state().index.save(&path)
@@ -872,7 +1043,11 @@ fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
 /// What a chat is doing, from its process if it has one, else from how its
 /// last run ended in the file.
 fn status(chat: Option<&Chat>, summary: Option<&Summary>) -> Status {
-    if let Some(live) = chat.and_then(|chat| chat.process.as_ref()).map(|r| &r.live) {
+    if let Some(running) = chat.and_then(|chat| chat.process.as_ref()) {
+        let live = &running.live;
+        if !running.questions.is_empty() {
+            return Status::AwaitingInput;
+        }
         if live.working() {
             return Status::Working;
         }

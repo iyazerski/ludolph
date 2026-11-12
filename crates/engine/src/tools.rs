@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::engine::{ChatInfo, Delivery, Engine, Status};
+use crate::engine::{ChatInfo, Delivery, Dialog, Engine, Question, Reply, Status};
 
 /// Chats `list_chats` returns without a `limit`, and at most.
 const DEFAULT_CHATS: usize = 50;
@@ -29,6 +29,7 @@ pub enum Tool {
     CreateChat,
     InterruptChat,
     TakeOverChat,
+    RespondToInput,
 }
 
 impl FromStr for Tool {
@@ -43,6 +44,7 @@ impl FromStr for Tool {
             "create_chat" => Self::CreateChat,
             "interrupt_chat" => Self::InterruptChat,
             "take_over_chat" => Self::TakeOverChat,
+            "respond_to_input" => Self::RespondToInput,
             _ => bail!("no tool {name}"),
         })
     }
@@ -62,6 +64,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::CreateChat => create_chat(engine, parse(args)?).await,
         Tool::InterruptChat => interrupt_chat(engine, parse(args)?).await,
         Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
+        Tool::RespondToInput => respond_to_input(engine, parse(args)?).await,
     }
 }
 
@@ -141,7 +144,7 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
         json!({
             "total": view.page.total,
             "olderRemaining": view.page.older(),
-            "pendingInput": null,
+            "pendingInput": view.question.as_ref().map(pending_input),
             "messages": view.page.messages,
             "turnChanges": [],
         })
@@ -230,6 +233,83 @@ async fn interrupt_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
     Ok(json!({"chatId": args.chat}))
 }
 
+/// The question the phone and the Companion show for a dialog: one question,
+/// in the shape of Claude Code's `AskUserQuestion`.
+fn pending_input(question: &Question) -> Value {
+    let (header, text) = match &question.message {
+        Some(message) => (Some(question.title.as_str()), message.as_str()),
+        None => (None, question.title.as_str()),
+    };
+    let options: Vec<&str> = match question.dialog {
+        Dialog::Select => question.options.iter().map(String::as_str).collect(),
+        Dialog::Confirm => CONFIRM.to_vec(),
+        Dialog::Input | Dialog::Editor => Vec::new(),
+    };
+    json!({
+        "requestId": question.id,
+        "questions": [{
+            "id": ANSWER,
+            "header": header,
+            "question": text,
+            "options": options,
+            "multiSelect": false,
+            "multiline": question.dialog == Dialog::Editor,
+            "prefill": question.prefill,
+        }],
+    })
+}
+
+/// The one question's id in `pending_input`.
+const ANSWER: &str = "answer";
+
+/// A `confirm`'s options, yes first.
+const CONFIRM: [&str; 2] = ["Yes", "No"];
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RespondArgs {
+    chat: String,
+    /// The question's `requestId`; the open one when it's left out.
+    request_id: Option<String>,
+    answers: Vec<Answer>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Answer {
+    #[serde(rename = "question_id")]
+    _question_id: String,
+    /// The picked options, then any typed text.
+    labels: Vec<String>,
+}
+
+/// Answer the dialog a chat waits on.
+async fn respond_to_input(engine: &Engine, args: RespondArgs) -> Result<Value> {
+    let question = engine
+        .question(&args.chat)
+        .filter(|q| args.request_id.as_ref().is_none_or(|id| *id == q.id))
+        .context("this chat has no such open question")?;
+    let labels = args
+        .answers
+        .into_iter()
+        .next()
+        .map(|a| a.labels)
+        .unwrap_or_default();
+    let Some(first) = labels.first() else {
+        bail!("answers is empty");
+    };
+    let reply = match question.dialog {
+        Dialog::Confirm => match CONFIRM.iter().position(|label| label == first) {
+            Some(at) => Reply::Confirmed(at == 0),
+            None => bail!("answer Yes or No"),
+        },
+        Dialog::Select => Reply::Value(first.clone()),
+        Dialog::Input | Dialog::Editor => Reply::Value(labels.join("\n")),
+    };
+    engine.respond(&args.chat, &question.id, reply).await?;
+    Ok(json!({"chatId": args.chat, "requestId": question.id}))
+}
+
 async fn take_over_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
     engine.take_over(&args.chat).await?;
     Ok(json!({"chatId": args.chat}))
@@ -290,6 +370,7 @@ fn label(status: Status) -> &'static str {
     match status {
         Status::Idle => "idle",
         Status::Working => "working",
+        Status::AwaitingInput => "awaitingInput",
         Status::Failed => "errored",
         Status::Interrupted => "interrupted",
     }

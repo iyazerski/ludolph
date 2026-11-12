@@ -84,6 +84,9 @@ def prompt(command):
     if command["message"] == "crash":
         log("crash")
         os._exit(1)
+    if command["message"] in ("ask", "ask-briefly"):
+        ask(command["message"] == "ask-briefly")
+        return
     started = now()
     emit({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending", "timestamp": started}})
     update({"type": "text_start", "contentIndex": 0})
@@ -110,6 +113,32 @@ def prompt(command):
     emit({"type": "message_end", "message": done})
     write(done)
     emit({"type": "compaction_start", "reason": "threshold"})
+    emit({"type": "agent_settled", "aborted": False})
+
+
+def ask(briefly):
+    """Ask through an extension dialog, like a permission gate, and answer
+    with what came back. A brief dialog times out, as pi resolves it."""
+    request = {"type": "extension_ui_request", "id": "d1", "method": "select",
+               "title": "Pick one", "options": ["red", "blue"]}
+    if briefly:
+        request["timeout"] = 300
+    emit({"type": "extension_ui_request", "id": "n1", "method": "notify", "message": "hi"})
+    emit(request)
+    picked = "nothing"
+    if briefly:
+        time.sleep(0.6)
+    else:
+        for line in sys.stdin:
+            command = json.loads(line)
+            if command["type"] == "extension_ui_response":
+                picked = "cancelled" if command.get("cancelled") else command["value"]
+                break
+            respond(command)
+    done = {"role": "assistant", "content": [{"type": "text", "text": f"You picked {picked}."}],
+            "stopReason": "stop", "timestamp": now()}
+    emit({"type": "message_end", "message": done})
+    write(done)
     emit({"type": "agent_settled", "aborted": False})
 
 
