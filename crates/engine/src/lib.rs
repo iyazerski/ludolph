@@ -10,6 +10,7 @@ pub mod runtime;
 pub mod server;
 pub mod session;
 mod text;
+pub mod title;
 pub mod tools;
 pub mod transcript;
 pub mod watch;

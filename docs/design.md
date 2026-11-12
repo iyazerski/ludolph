@@ -170,9 +170,12 @@ A terminal pi that's open but idle writes nothing, so this can't see it. The rea
 Titles are part of the main flow:
 
 1. Until a chat has a title, the app shows the first words of its first prompt.
-2. After a chat's first run settles, the engine asks the title model for a title. It runs `pi -p` the way zeron-tools' `pi.rs` does: in a temporary folder, with no session, tools, extensions, skills, prompt templates, context files, or MCP, with a time limit, and with at most two running at once.
-3. When the title comes back, the engine checks the chat still has no title. If it got one in the meantime, from you or from pi, the new title is dropped. Then it stores the title with `set_session_name` on the chat's live process. That adds a `session_info` entry to pi's file, so pi's own `/resume` shows the same title.
-4. If any step fails, it tries again after the next run.
+2. As soon as Ludolph sends a message to a chat without a title, the engine asks the title model for one, while the run goes on. The model sees the chat's first prompt, or the message itself for a new chat, clipped to 2,000 characters. A new chat has its title about 3 seconds after you send. Messages an extension command handles (like `/name`) don't ask.
+3. It runs `pi -p` the way zeron-tools' `pi.rs` does: in a temporary folder, with no session, tools, extensions, skills, prompt templates, context files, or MCP, with a 60-second limit, and with at most two running at once.
+4. When the title comes back, the engine asks the chat's pi for its state. If the session got a name in the meantime, from you or from pi, the new title is dropped. Otherwise it stores the title with `set_session_name`. pi keeps the name until it writes the session file, then adds it as a `session_info` entry, so pi's own `/resume` shows the same title. The list shows the title at once, even before the file exists.
+5. If any step fails, or the chat's pi stopped before the title came back, the next message tries again.
+
+The title model is `LUDOLPH_TITLE_MODEL` at `LUDOLPH_TITLE_THINKING` (default `low`) until there are settings, or pi's default model if that's unset. A small, fast model keeps the delay short.
 
 Renaming a chat by hand goes through the same `set_session_name`. The engine never replaces a title that a person or pi set. Calls that change one chat (title, rename, model) go through one queue per chat, so they can't overtake each other.
 

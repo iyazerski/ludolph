@@ -22,6 +22,7 @@ use crate::live::Live;
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
+use crate::title::Titler;
 use crate::transcript::{Page, Tail, Transcripts};
 use crate::watch::{Changes, Watcher};
 
@@ -53,6 +54,10 @@ pub struct Config {
     pub grace: Duration,
     /// The user's home folder. Chats there have no project.
     pub home: PathBuf,
+    /// The model that titles chats, or pi's default model.
+    pub title_model: Option<String>,
+    /// Its thinking level.
+    pub title_thinking: String,
 }
 
 impl Config {
@@ -82,6 +87,8 @@ struct Inner {
     transcripts: Arc<Mutex<Transcripts>>,
     /// The task that follows the sessions folder.
     watching: AbortHandle,
+    /// Shared with titling tasks, which don't keep the engine alive.
+    titler: Arc<Titler>,
 }
 
 impl Drop for Inner {
@@ -112,6 +119,11 @@ struct Chat {
     /// Another pi wrote a prompt to the session, so sending waits for a
     /// take-over.
     elsewhere: bool,
+    /// The title the engine gave the chat, shown until pi writes it to the
+    /// file.
+    named: Option<String>,
+    /// A title is being asked for.
+    titling: bool,
     /// Bumped whenever the chat's view changes.
     changes: watch::Sender<u64>,
 }
@@ -125,6 +137,8 @@ impl Default for Chat {
             interrupted: false,
             sent: VecDeque::new(),
             elsewhere: false,
+            named: None,
+            titling: false,
             changes: watch::channel(0).0,
         }
     }
@@ -214,6 +228,8 @@ pub struct ChatInfo {
     pub created: DateTime<Utc>,
     /// The session's summary; `None` for a draft.
     pub summary: Option<Summary>,
+    /// The session's name, or the title the engine just gave it.
+    pub title: Option<String>,
     pub status: Status,
     /// Another pi wrote to the session, so sending is off until a take-over.
     pub elsewhere: bool,
@@ -305,11 +321,16 @@ impl Engine {
             chats,
         };
         Ok(Self(Arc::new_cyclic(|inner| Inner {
-            config,
             state: Mutex::new(state),
             list: watch::channel(0).0,
             transcripts: Arc::default(),
             watching: tokio::spawn(follow(inner.clone(), watcher)).abort_handle(),
+            titler: Arc::new(Titler::new(
+                config.pi.clone(),
+                config.title_model.clone(),
+                config.title_thinking.clone(),
+            )),
+            config,
         })))
     }
 
@@ -482,12 +503,87 @@ impl Engine {
             command["images"] = Value::Array(images);
         }
         let answer = pi.call(command).await?;
-        match answer["disposition"].as_str() {
-            Some("started") => Ok(Delivery::Started),
-            Some("queued") => Ok(Delivery::Queued),
-            Some("handled") => Ok(Delivery::Handled),
+        let delivery = match answer["disposition"].as_str() {
+            Some("started") => Delivery::Started,
+            Some("queued") => Delivery::Queued,
+            Some("handled") => return Ok(Delivery::Handled),
             other => bail!("pi answered the prompt with {other:?}"),
+        };
+        self.title_soon(id, text);
+        Ok(delivery)
+    }
+
+    /// Ask for a title in the background if the chat has none, from its
+    /// first prompt or else from `text`, the message just sent.
+    fn title_soon(&self, id: &str, text: &str) {
+        let prompt = {
+            let mut state = self.state();
+            let summary = state.index.find(id).map(|(_, s)| s);
+            if summary.is_some_and(|s| s.title.is_some()) {
+                return;
+            }
+            let prompt = summary.and_then(|s| s.first_prompt.clone());
+            let prompt = prompt.unwrap_or_else(|| text.to_owned());
+            let Some(chat) = state.chats.get_mut(id) else {
+                return;
+            };
+            if chat.named.is_some() || chat.titling {
+                return;
+            }
+            chat.titling = true;
+            prompt
+        };
+        let engine = Arc::downgrade(&self.0);
+        let titler = self.0.titler.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let title = titler.title(&prompt).await;
+            let Some(engine) = engine.upgrade().map(Engine) else {
+                return;
+            };
+            let named = match title {
+                Ok(title) => engine.name(&id, &title).await,
+                Err(e) => Err(e),
+            };
+            if let Some(chat) = engine.state().chats.get_mut(&id) {
+                chat.titling = false;
+            }
+            if let Err(e) = named {
+                eprintln!("titling chat {id}: {e:#}");
+            }
+        });
+    }
+
+    /// Give chat `id` the title `title` through its pi, unless it got one
+    /// meanwhile. A chat whose pi has stopped is left for its next message.
+    async fn name(&self, id: &str, title: &str) -> Result<()> {
+        let ops = self.ops(id)?;
+        let _ops = ops.lock().await;
+        let pi = {
+            let state = self.state();
+            let running = state.chats.get(id).and_then(|chat| chat.process.as_ref());
+            running.map(|running| running.pi.clone())
+        };
+        let Some(pi) = pi else {
+            return Ok(());
+        };
+        let session = pi.call(json!({"type": "get_state"})).await?;
+        if session["sessionName"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty())
+        {
+            return Ok(());
         }
+        pi.call(json!({"type": "set_session_name", "name": title}))
+            .await?;
+        let mut state = self.state();
+        if let Some(chat) = state.chats.get_mut(id) {
+            chat.named = Some(title.to_owned());
+            chat.changed();
+        }
+        drop(state);
+        self.changed();
+        Ok(())
     }
 
     /// Archive or unarchive chat `id`. Either holds until the chat has new
@@ -1059,6 +1155,10 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
         cwd: summary.cwd.clone(),
         created: summary.created,
         status: status(chat, Some(summary)),
+        title: summary
+            .title
+            .clone()
+            .or_else(|| chat.and_then(|chat| chat.named.clone())),
         summary: Some(summary.clone()),
         elsewhere: chat.is_some_and(|chat| chat.elsewhere),
         archived: state.index.is_archived(&summary.id),
@@ -1074,6 +1174,7 @@ fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
         cwd: draft.cwd.clone(),
         created: draft.created,
         summary: None,
+        title: chat.named.clone(),
         status: status(Some(chat), None),
         elsewhere: chat.elsewhere,
         archived: false,
