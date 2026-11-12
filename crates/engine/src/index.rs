@@ -16,30 +16,21 @@ use crate::session::{Freshness, Summary};
 /// index is built again from the session files.
 const FORMAT: u32 = 2;
 
-/// Every session file pi has written, by path, and Ludolph's own marks on
-/// its chats.
+/// Every session file pi has written, by path, and the chats you archived.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Index {
     sessions: BTreeMap<PathBuf, Summary>,
-    /// By session id. Unlike the summaries, these can't be rebuilt from the
-    /// files, so they're kept when the summaries' format changes.
+    /// Archived chats by session id, with their last activity then. A chat
+    /// with newer activity is no longer archived. Unlike the summaries, this
+    /// can't be rebuilt from the files, so it's kept when their format
+    /// changes.
     #[serde(default)]
-    marks: BTreeMap<String, Mark>,
+    archived: BTreeMap<String, DateTime<Utc>>,
     /// Each session id's file. A session can have copies under other
     /// folders, as Zeron left when it moved a chat; the most recently
     /// written one is the chat.
     #[serde(skip)]
     ids: HashMap<String, PathBuf>,
-}
-
-/// A chat's archive state, set by the archive rule or by hand. It holds
-/// until the chat has newer activity than `at`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Mark {
-    /// Archived, or kept out of the archive.
-    pub archived: bool,
-    /// The chat's last activity when it was marked.
-    pub at: DateTime<Utc>,
 }
 
 impl Index {
@@ -55,10 +46,10 @@ impl Index {
         };
         let parsing = || format!("parsing {}", path.display());
         if saved["format"] != FORMAT {
-            let marks = saved.get("marks").cloned().unwrap_or_default();
-            let marks: Option<_> = serde_json::from_value(marks).with_context(parsing)?;
+            let archived = saved.get("archived").cloned().unwrap_or_default();
+            let archived: Option<_> = serde_json::from_value(archived).with_context(parsing)?;
             return Ok(Self {
-                marks: marks.unwrap_or_default(),
+                archived: archived.unwrap_or_default(),
                 ..Self::default()
             });
         }
@@ -172,14 +163,24 @@ impl Index {
         true
     }
 
-    /// Pick session `id`'s file again, after one of its files changed.
+    /// Pick session `id`'s file again after one of its files changed, and
+    /// unarchive the chat if it has new activity or is gone.
     fn elect(&mut self, id: &str) {
         let files = self.sessions.iter().filter(|(_, s)| s.id == id);
         let best = files.max_by_key(|(path, summary)| rank(path, summary));
-        match best {
-            Some((path, _)) => self.ids.insert(id.to_owned(), path.clone()),
-            None => self.ids.remove(id),
+        let Some((path, summary)) = best else {
+            self.ids.remove(id);
+            self.archived.remove(id);
+            return;
         };
+        if self
+            .archived
+            .get(id)
+            .is_some_and(|&at| summary.activity() > at)
+        {
+            self.archived.remove(id);
+        }
+        self.ids.insert(id.to_owned(), path.clone());
     }
 
     /// Chat `id`: its session file and summary.
@@ -207,23 +208,22 @@ impl Index {
             .map(|(path, summary)| (path.as_path(), summary))
     }
 
-    /// Chat `id`'s mark.
-    pub fn mark(&self, id: &str) -> Option<Mark> {
-        self.marks.get(id).copied()
+    /// Whether you archived chat `id`, and it has had no activity since.
+    pub fn is_archived(&self, id: &str) -> bool {
+        self.archived.contains_key(id)
     }
 
-    /// Set or clear chat `id`'s mark, and return whether it changed.
-    pub fn set_mark(&mut self, id: &str, mark: Option<Mark>) -> bool {
-        let old = match mark {
-            Some(mark) => self.marks.insert(id.to_owned(), mark),
-            None => self.marks.remove(id),
+    /// Archive or unarchive chat `id`, and return whether that changed
+    /// anything. A chat pi hasn't written yet can't be archived.
+    pub fn set_archived(&mut self, id: &str, archived: bool) -> bool {
+        if !archived {
+            return self.archived.remove(id).is_some();
+        }
+        let Some((_, summary)) = self.find(id) else {
+            return false;
         };
-        old != mark
-    }
-
-    /// The ids of the chats that have marks.
-    pub fn marked(&self) -> impl Iterator<Item = &str> {
-        self.marks.keys().map(String::as_str)
+        let at = summary.activity();
+        self.archived.insert(id.to_owned(), at) != Some(at)
     }
 
     /// The number of session files.
