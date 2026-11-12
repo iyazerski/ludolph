@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// How many events wait for the engine before pi has to wait. pi honors
 /// stdout backpressure, so a slow reader slows pi rather than growing memory.
@@ -42,13 +42,16 @@ pub struct Options {
     pub env: Vec<(String, String)>,
 }
 
-/// A running pi. Dropping it kills the process; [`Pi::stop`] stops it cleanly.
+/// A running pi. Dropping it kills its process group; [`Pi::stop`] stops
+/// it cleanly.
 #[derive(Debug)]
 pub struct Pi {
-    child: Child,
+    pid: u32,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     pending: Pending,
     next_id: AtomicU64,
+    /// The exit status once pi has exited; `None` inside if it couldn't be read.
+    exit: watch::Receiver<Option<Option<ExitStatus>>>,
 }
 
 /// Calls waiting for their response, by id. The reader takes the map when pi
@@ -164,26 +167,29 @@ impl Pi {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .process_group(0)
-            .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("starting {}", options.program.display()))?;
+        let pid = child.id().expect("a child that was just started has a pid");
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
         let (events, receiver) = mpsc::channel(EVENT_QUEUE);
         tokio::spawn(read(stdout, pending.clone(), events));
+        let (exited, exit) = watch::channel(None);
+        tokio::spawn(reap(child, exited));
         let pi = Self {
-            child,
+            pid,
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             pending,
             next_id: AtomicU64::new(1),
+            exit,
         };
         Ok((pi, receiver))
     }
 
     /// The process id, which is also its process group id.
-    pub fn pid(&self) -> Option<u32> {
-        self.child.id()
+    pub fn pid(&self) -> u32 {
+        self.pid
     }
 
     /// Send a command, such as `{"type": "get_state"}`, and return its
@@ -240,25 +246,45 @@ impl Pi {
     /// # Errors
     ///
     /// Fails if waiting for the process fails.
-    pub async fn stop(mut self, grace: Duration) -> Result<ExitStatus> {
+    pub async fn stop(&self, grace: Duration) -> Result<ExitStatus> {
         self.stdin.lock().await.take();
-        if let Ok(status) = tokio::time::timeout(grace, self.child.wait()).await {
-            return status.context("waiting for pi");
+        if let Ok(status) = tokio::time::timeout(grace, self.wait()).await {
+            return status;
         }
-        if let Some(pid) = self.pid() {
-            crate::runtime::kill_group(pid);
-        }
-        self.child.wait().await.context("waiting for pi")
+        crate::runtime::kill_group(self.pid);
+        self.wait().await
     }
 
-    /// Wait for pi to exit by itself, as it does after a crash.
+    /// Wait for pi to exit.
     ///
     /// # Errors
     ///
-    /// Fails if waiting for the process fails.
-    pub async fn wait(&mut self) -> Result<ExitStatus> {
-        self.child.wait().await.context("waiting for pi")
+    /// Fails if pi's exit status couldn't be read.
+    pub async fn wait(&self) -> Result<ExitStatus> {
+        let mut exit = self.exit.clone();
+        let status = exit
+            .wait_for(Option::is_some)
+            .await
+            .context("waiting for pi")?;
+        status.flatten().context("reading pi's exit status")
     }
+}
+
+impl Drop for Pi {
+    fn drop(&mut self) {
+        if self.exit.borrow().is_none() {
+            crate::runtime::kill_group(self.pid);
+        }
+    }
+}
+
+/// Wait for pi to exit, and publish its status.
+async fn reap(mut child: Child, exited: watch::Sender<Option<Option<ExitStatus>>>) {
+    let status = child.wait().await;
+    if let Err(e) = &status {
+        eprintln!("waiting for pi: {e}");
+    }
+    exited.send_replace(Some(status.ok()));
 }
 
 /// Read pi's stdout until it closes: responses go to their calls, and events
