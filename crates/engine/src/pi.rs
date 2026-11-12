@@ -1,0 +1,328 @@
+//! One pi process in RPC mode (pi's `docs/rpc.md`): commands and their
+//! responses, matched by id, and the events it streams.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::{ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow, bail};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::{mpsc, oneshot};
+
+/// How many events wait for the engine before pi has to wait. pi honors
+/// stdout backpressure, so a slow reader slows pi rather than growing memory.
+const EVENT_QUEUE: usize = 256;
+
+/// Which session a process opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Session {
+    /// A new session with this id, created in the process's folder.
+    New(String),
+    /// The session in this file.
+    Resume(PathBuf),
+}
+
+/// How to start a pi process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    /// The `pi` executable.
+    pub program: PathBuf,
+    /// The folder pi runs in, which is the chat's project.
+    pub cwd: PathBuf,
+    pub session: Session,
+    /// Extensions to load with `--extension`, on top of pi's own.
+    pub extensions: Vec<PathBuf>,
+    /// Extra environment variables.
+    pub env: Vec<(String, String)>,
+}
+
+/// A running pi. Dropping it kills the process; [`Pi::stop`] stops it cleanly.
+#[derive(Debug)]
+pub struct Pi {
+    child: Child,
+    stdin: tokio::sync::Mutex<Option<ChildStdin>>,
+    pending: Pending,
+    next_id: AtomicU64,
+}
+
+/// Calls waiting for their response, by id. The reader takes the map when pi
+/// exits, which fails the calls still waiting and any later ones.
+type Pending = Arc<Mutex<Option<HashMap<String, oneshot::Sender<Response>>>>>;
+
+#[derive(Debug, Deserialize)]
+struct Response {
+    id: Option<String>,
+    success: bool,
+    data: Option<Value>,
+    error: Option<String>,
+}
+
+/// An event pi streams (pi's `docs/json.md` and `docs/rpc-extension-ui.md`),
+/// with the ones the engine doesn't use as `Other`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+#[non_exhaustive]
+pub enum Event {
+    AgentStart,
+    /// pi has no more automatic work for the run.
+    AgentSettled {
+        aborted: bool,
+    },
+    MessageStart {
+        message: Value,
+    },
+    /// One content-block change to the streaming assistant message.
+    MessageUpdate {
+        assistant_message_event: Value,
+    },
+    /// The final message, which replaces the streamed one.
+    MessageEnd {
+        message: Value,
+    },
+    ToolExecutionStart {
+        tool_call_id: String,
+        tool_name: String,
+        args: Value,
+    },
+    ToolExecutionUpdate {
+        tool_call_id: String,
+        partial_result: Value,
+    },
+    ToolExecutionEnd {
+        tool_call_id: String,
+        is_error: bool,
+    },
+    /// The whole steering and follow-up queue.
+    QueueUpdate {
+        steering: Vec<String>,
+        follow_up: Vec<String>,
+    },
+    SessionInfoChanged {
+        name: Option<String>,
+    },
+    AutoRetryStart {
+        attempt: u32,
+        max_attempts: u32,
+        error_message: Option<String>,
+    },
+    AutoRetryEnd {
+        success: bool,
+        final_error: Option<String>,
+    },
+    CompactionStart,
+    CompactionEnd,
+    /// An extension asking something, or telling something (`notify` and
+    /// the other fire-and-forget methods).
+    ExtensionUiRequest {
+        id: String,
+        method: String,
+        title: Option<String>,
+        message: Option<String>,
+        options: Option<Vec<String>>,
+        placeholder: Option<String>,
+        prefill: Option<String>,
+        timeout: Option<u64>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+impl Pi {
+    /// Start pi in RPC mode, and return it with its events.
+    ///
+    /// The events end when pi exits. pi runs in its own process group, so
+    /// [`Pi::stop`] can stop the tools it started with it. Its stderr goes to
+    /// the engine's.
+    ///
+    /// # Errors
+    ///
+    /// Fails if pi can't be started.
+    pub fn start(options: &Options) -> Result<(Self, mpsc::Receiver<Event>)> {
+        let mut command = Command::new(&options.program);
+        command.args(["--mode", "rpc"]);
+        match &options.session {
+            Session::New(id) => command.arg("--session-id").arg(id),
+            Session::Resume(file) => command.arg("--session").arg(file),
+        };
+        for extension in &options.extensions {
+            command.arg("--extension").arg(extension);
+        }
+        let mut child = command
+            .envs(options.env.iter().map(|(k, v)| (k, v)))
+            .current_dir(&options.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("starting {}", options.program.display()))?;
+        let stdin = child.stdin.take().expect("stdin is piped");
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
+        let (events, receiver) = mpsc::channel(EVENT_QUEUE);
+        tokio::spawn(read(stdout, pending.clone(), events));
+        let pi = Self {
+            child,
+            stdin: tokio::sync::Mutex::new(Some(stdin)),
+            pending,
+            next_id: AtomicU64::new(1),
+        };
+        Ok((pi, receiver))
+    }
+
+    /// The process id, which is also its process group id.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    /// Send a command, such as `{"type": "get_state"}`, and return its
+    /// response's `data` (`null` if it has none).
+    ///
+    /// # Errors
+    ///
+    /// Fails with pi's error if pi refuses the command, and fails if pi exits
+    /// before it answers.
+    pub async fn call(&self, mut command: Value) -> Result<Value> {
+        let id = format!("l{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let kind = command["type"].as_str().unwrap_or("command").to_owned();
+        command["id"] = json!(id);
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("lock poisoned")
+            .as_mut()
+            .ok_or_else(|| anyhow!("pi exited"))?
+            .insert(id.clone(), sender);
+        if let Err(e) = self.send(&command).await {
+            if let Some(pending) = self.pending.lock().expect("lock poisoned").as_mut() {
+                pending.remove(&id);
+            }
+            return Err(e);
+        }
+        let response = receiver
+            .await
+            .map_err(|_| anyhow!("pi exited before answering {kind}"))?;
+        if !response.success {
+            bail!("pi refused {kind}: {}", response.error.unwrap_or_default());
+        }
+        Ok(response.data.unwrap_or(Value::Null))
+    }
+
+    /// Write one record that gets no response, such as an
+    /// `extension_ui_response`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if pi has exited or is being stopped.
+    pub async fn send(&self, record: &Value) -> Result<()> {
+        let mut line = serde_json::to_vec(record)?;
+        line.push(b'\n');
+        let mut stdin = self.stdin.lock().await;
+        let stdin = stdin.as_mut().ok_or_else(|| anyhow!("pi is stopping"))?;
+        stdin.write_all(&line).await.context("writing to pi")?;
+        stdin.flush().await.context("writing to pi")
+    }
+
+    /// Stop pi: close its stdin, which asks it to finish and exit, and kill
+    /// its process group if it hasn't exited after `grace`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if waiting for the process fails.
+    pub async fn stop(mut self, grace: Duration) -> Result<ExitStatus> {
+        self.stdin.lock().await.take();
+        if let Ok(status) = tokio::time::timeout(grace, self.child.wait()).await {
+            return status.context("waiting for pi");
+        }
+        if let Some(pid) = self.pid() {
+            crate::runtime::kill_group(pid);
+        }
+        self.child.wait().await.context("waiting for pi")
+    }
+
+    /// Wait for pi to exit by itself, as it does after a crash.
+    ///
+    /// # Errors
+    ///
+    /// Fails if waiting for the process fails.
+    pub async fn wait(&mut self) -> Result<ExitStatus> {
+        self.child.wait().await.context("waiting for pi")
+    }
+}
+
+/// Read pi's stdout until it closes: responses go to their calls, and events
+/// to `events`.
+async fn read(stdout: ChildStdout, pending: Pending, events: mpsc::Sender<Event>) {
+    let mut reader = BufReader::new(stdout);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line).await {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("reading pi's output: {e}");
+                break;
+            }
+        }
+        // Records end with LF, maybe after a CR (`docs/rpc.md`).
+        let record = line.strip_suffix(b"\n").unwrap_or(&line);
+        let record = record.strip_suffix(b"\r").unwrap_or(record);
+        let value: Value = match serde_json::from_slice(record) {
+            Ok(value) => value,
+            Err(e) => {
+                eprintln!("skipping a record from pi that isn't JSON: {e}");
+                continue;
+            }
+        };
+        if value["type"] == "response" {
+            respond(&pending, value);
+            continue;
+        }
+        match serde_json::from_value::<Event>(value) {
+            Ok(event) => {
+                if events.send(event).await.is_err() {
+                    // Nobody listens, but responses still need reading.
+                    continue;
+                }
+            }
+            Err(e) => eprintln!("skipping an event from pi: {e}"),
+        }
+    }
+    pending.lock().expect("lock poisoned").take();
+}
+
+/// Hand a response to the call waiting for it.
+fn respond(pending: &Pending, value: Value) {
+    let response: Response = match serde_json::from_value(value) {
+        Ok(response) => response,
+        Err(e) => return eprintln!("skipping a response from pi: {e}"),
+    };
+    let Some(id) = &response.id else {
+        // Only a command pi couldn't parse has no id.
+        return eprintln!(
+            "pi couldn't parse a command: {}",
+            response.error.unwrap_or_default()
+        );
+    };
+    let waiting = pending
+        .lock()
+        .expect("lock poisoned")
+        .as_mut()
+        .and_then(|pending| pending.remove(id));
+    if let Some(waiting) = waiting {
+        // The call may have been dropped; then nobody needs the answer.
+        let _ = waiting.send(response);
+    }
+}
