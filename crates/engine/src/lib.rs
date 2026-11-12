@@ -12,3 +12,4 @@ pub mod session;
 mod text;
 pub mod tools;
 pub mod transcript;
+pub mod watch;
