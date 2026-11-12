@@ -90,6 +90,12 @@ struct Progress {
 }
 
 impl Summary {
+    /// When the chat was last active: its last user or assistant message, or
+    /// its start. A new title doesn't count.
+    pub fn activity(&self) -> DateTime<Utc> {
+        self.last_activity.unwrap_or(self.created)
+    }
+
     /// When the file was last modified, as of its last read.
     pub fn modified(&self) -> SystemTime {
         self.progress.modified

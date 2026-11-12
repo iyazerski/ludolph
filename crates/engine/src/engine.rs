@@ -5,7 +5,7 @@
 //! chat first needs one and stops after a few idle minutes (`docs/design.md`,
 //! "pi processes").
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -17,8 +17,7 @@ use tokio::sync::{OwnedMutexGuard, mpsc, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
-use crate::archive;
-use crate::index::{self, Index, Mark};
+use crate::index::{self, Index};
 use crate::live::Live;
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
@@ -54,9 +53,6 @@ pub struct Config {
     pub grace: Duration,
     /// The user's home folder. Chats there have no project.
     pub home: PathBuf,
-    /// How many recent chats each project lists before older ones are
-    /// archived.
-    pub keep: usize,
 }
 
 impl Config {
@@ -308,16 +304,13 @@ impl Engine {
             runtime,
             chats,
         };
-        let engine = Self(Arc::new_cyclic(|inner| Inner {
+        Ok(Self(Arc::new_cyclic(|inner| Inner {
             config,
             state: Mutex::new(state),
             list: watch::channel(0).0,
             transcripts: Arc::default(),
             watching: tokio::spawn(follow(inner.clone(), watcher)).abort_handle(),
-        }));
-        // The rule also runs at start, for a changed `keep` or new sessions.
-        engine.changed();
-        Ok(engine)
+        })))
     }
 
     /// Every chat, most recently active first.
@@ -507,16 +500,11 @@ impl Engine {
     pub fn archive(&self, id: &str, archived: bool) -> Result<()> {
         {
             let mut state = self.state();
-            let summary = state.index.find(id).map(|(_, s)| s);
-            let Some(summary) = summary else {
+            if state.index.find(id).is_none() {
                 known(&state, id)?;
                 bail!("chat {id} has no messages yet");
-            };
-            let mark = Mark {
-                archived,
-                at: archive::activity(summary),
-            };
-            if !state.index.set_mark(id, Some(mark)) {
+            }
+            if !state.index.set_archived(id, archived) {
                 return Ok(());
             }
         }
@@ -1027,26 +1015,7 @@ impl Engine {
         self.state().index.save(&path)
     }
 
-    /// Tell the list's viewers it changed, after applying the archive rule
-    /// to it.
     fn changed(&self) {
-        let marked = {
-            let mut state = self.state();
-            let State { index, chats, .. } = &mut *state;
-            let busy: HashSet<&str> = chats
-                .iter()
-                .filter(|(_, chat)| {
-                    let running = chat.process.as_ref();
-                    running.is_some_and(|r| r.live.working() || !r.questions.is_empty())
-                })
-                .map(|(id, _)| id.as_str())
-                .collect();
-            let config = &self.0.config;
-            archive::apply(index, config.keep, &busy, |cwd| config.is_project(cwd))
-        };
-        if marked && let Err(e) = self.save_index() {
-            eprintln!("saving the index: {e:#}");
-        }
         self.0.list.send_modify(|revision| *revision += 1);
     }
 }
@@ -1092,7 +1061,7 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
         status: status(chat, Some(summary)),
         summary: Some(summary.clone()),
         elsewhere: chat.is_some_and(|chat| chat.elsewhere),
-        archived: archive::mark(&state.index, summary).is_some_and(|mark| mark.archived),
+        archived: state.index.is_archived(&summary.id),
     }
 }
 

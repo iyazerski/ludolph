@@ -86,7 +86,7 @@ A fork (`/fork`, `/clone`) copies entries, with their ids, into a new file. So a
 One row per session file, in two parts:
 
 - **Derived from the file**, and rebuilt from it at any time: path, session id, cwd, created time, title, last activity, a preview of the last user message, the last turn's outcome, the current leaf, and the byte offset the row was built up to.
-- **Ludolph's own**, which can't be rebuilt: the archive state (see [archiving](#archiving)) and a title imported from Zeron that isn't in pi's file yet.
+- **Ludolph's own**, which can't be rebuilt: the archive state (see [the chat list and archiving](#the-chat-list-and-archiving)) and a title imported from Zeron that isn't in pi's file yet.
 
 Since files are append-only, the engine parses only the bytes after the saved offset, and only complete lines. A partial last line waits for the next read. If a file got smaller or its header changed, the engine parses it again from the start. The parse streams line by line and keeps only the index fields, so a 45 MB file never sits in memory whole. On this Mac that's 270 files and 511 MB, so the first build reads everything once, and later builds read only what's new.
 
@@ -94,7 +94,7 @@ The engine watches the sessions folder with FSEvents, so it also sees sessions t
 
 ## Projects
 
-A project is a session's `cwd`, as is. Its name is the folder's name. Chats whose cwd is the home folder, or a Ludolph scratch folder, go under **No project**, which is one group for listing and for archiving.
+A project is a session's `cwd`, as is. Its name is the folder's name. Chats whose cwd is the home folder, or a Ludolph scratch folder, go under **No project**, which is one group in the list.
 
 A chat started without a project gets its own scratch folder, `~/Library/Application Support/Ludolph/scratch/<date>-<short id>`, the way Zeron does.
 
@@ -178,18 +178,22 @@ Renaming a chat by hand goes through the same `set_session_name`. The engine nev
 
 Only 1 of the 270 sessions on this Mac has a `session_info` entry, because Zeron keeps its titles in its own database. See [migration](#migration-from-zeron).
 
-## Archiving
+## The chat list and archiving
 
-Archiving is part of the main flow, with the rule zeron-tools uses now:
+Nothing is archived automatically. Zeron's rule (archive all but each project's 10 newest chats) existed because Zeron slowed down with many chats. Ludolph's index keeps every summary in memory, so a long list costs nothing to produce. Keeping it short is the list's job:
 
-- In each project, and in **No project**, the most recent chats stay in the list (a setting, default 10). The rest are archived.
-- A chat that's working or waiting for an answer is never archived.
-- An archived chat stays searchable and opens and resumes like any other.
-- A chat you unarchive stays unarchived until it has new activity. This is the "memory" in `archive.rs`.
+- Each project, and **No project**, shows its 10 newest chats and its total. **Show more** adds 10. The windows remember what's expanded in memory only, so a restart shows 10 again.
+- `list_chat_groups` returns every group with its newest chats, and takes a higher limit for each expanded group. A window asks for the whole list again on each list notice, so there are no offsets that drift when chats change order.
+- The phone keeps its flat `list_chats`, the 200 newest chats.
 
-"Activity" means a new user or assistant message. A new title doesn't count, so titling neither moves a chat up the list nor undoes your unarchive.
+Archiving is something you do, to put away a chat you're done with:
 
-The archive state is Ludolph's own part of the index row: who set it (the rule or you), and the chat's last activity at that moment. A chat you unarchived is left alone until its last activity is newer than that. The rule runs when the index changes, not on a timer.
+- An archived chat leaves the groups and the phone's list. `list_chats` with `archived: true` lists the archived chats, for an **Archived** section that pages the same way.
+- An archived chat opens and resumes like any other. When it has new activity, it's no longer archived.
+
+"Activity" means a new user or assistant message. A new title doesn't count, so titling neither moves a chat up the list nor brings it back from the archive.
+
+The archive state is Ludolph's own part of the index: each archived chat's id, with its last activity at that moment. The index drops it when the chat's activity is newer.
 
 ## Turn changes
 
@@ -225,6 +229,7 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | Tool | In Ludolph |
 |---|---|
 | `list_chats` | From the index |
+| `list_chat_groups` | From the index, by project |
 | `list_projects` | The distinct cwds in the index |
 | `chat_view` | The [transcript](#live-view-and-the-file)'s latest messages, a page at a time. Long tool output and images load on request. |
 | `send_message` | `prompt`, or a steering `prompt` |
@@ -323,7 +328,7 @@ src/main.rs     the `ludolph` binary: `engine`, the app, and `install`/`uninstal
 - **Chats:** nothing to do. Zeron runs pi with session files under `~/.pi/agent/sessions`, so Ludolph's index finds them.
 - **Zeron's scratch folders:** chats Zeron started without a project ran in `~/.zeron/scratch/<date>-<id>`, and their sessions keep that cwd. Without help, each shows as a project of its own. The import decides how they're grouped.
 - **Moved chats:** when Zeron moved a chat to a project, it left a copy of the session file under the old folder, with the same session id. The index lists a session once, by the copy written last.
-- **Titles and archive state:** these live in Zeron's database. A one-time import runs while Zeron still runs, through zeron-tools' IPC client. It lists chats with their titles and archive state. It then maps each to its session file through `~/.pi/agent/zeron-sessions/<hash>.json`, which holds `{sessionId, sessionFile}`. That the hash is derived from the Zeron chat id is still to be checked. The import writes titles and archive state to Ludolph's part of the index only. It starts no pi, so it's safe while Zeron still runs. Each imported title moves into pi's file with `set_session_name` the next time its chat runs in Ludolph. If the import is skipped, titles fall back to first words, and archiving starts from scratch.
+- **Titles and archive state:** these live in Zeron's database. A one-time import runs while Zeron still runs, through zeron-tools' IPC client. It lists chats with their titles and archive state. It then maps each to its session file through `~/.pi/agent/zeron-sessions/<hash>.json`, which holds `{sessionId, sessionFile}`. That the hash is derived from the Zeron chat id is still to be checked. The import writes titles and archive state to Ludolph's part of the index only. It starts no pi, so it's safe while Zeron still runs. Each imported title moves into pi's file with `set_session_name` the next time its chat runs in Ludolph. If the import is skipped, titles fall back to first words, and nothing is archived.
 - **Turn changes:** zeron-tools' saved turns (`~/.zeron/turn-snapshots` and its own store) aren't carried over.
 
 ## Milestones

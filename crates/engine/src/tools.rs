@@ -2,6 +2,7 @@
 //! answers in the shapes the phone app reads today (zeron-tools'
 //! `connect/tools.rs`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -15,6 +16,8 @@ use crate::engine::{ChatInfo, Config, Delivery, Dialog, Engine, Question, Reply,
 /// Chats `list_chats` returns without a `limit`, and at most.
 const DEFAULT_CHATS: usize = 50;
 const MAX_CHATS: usize = 500;
+/// Chats `list_chat_groups` returns per group without a `limit`.
+const DEFAULT_GROUP_CHATS: usize = 10;
 /// Messages `chat_view` returns without a `limit`, and at most.
 const DEFAULT_MESSAGES: usize = 40;
 const MAX_MESSAGES: usize = 500;
@@ -23,6 +26,7 @@ const MAX_MESSAGES: usize = 500;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     ListChats,
+    ListChatGroups,
     ListProjects,
     ChatView,
     SendMessage,
@@ -39,6 +43,7 @@ impl FromStr for Tool {
     fn from_str(name: &str) -> Result<Self> {
         Ok(match name {
             "list_chats" => Self::ListChats,
+            "list_chat_groups" => Self::ListChatGroups,
             "list_projects" => Self::ListProjects,
             "chat_view" => Self::ChatView,
             "send_message" => Self::SendMessage,
@@ -60,6 +65,7 @@ impl FromStr for Tool {
 pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
     match tool {
         Tool::ListChats => list_chats(engine, parse(args)?),
+        Tool::ListChatGroups => list_chat_groups(engine, parse(args)?),
         Tool::ListProjects => Ok(list_projects(engine)),
         Tool::ChatView => chat_view(engine, parse(args)?).await,
         Tool::SendMessage => send_message(engine, parse(args)?).await,
@@ -81,12 +87,16 @@ fn parse<T: DeserializeOwned>(args: Value) -> Result<T> {
 #[serde(deny_unknown_fields)]
 struct ListChatsArgs {
     limit: Option<usize>,
+    /// List the archived chats instead.
+    #[serde(default)]
+    archived: bool,
 }
 
-/// The chats that aren't archived, most recently active first.
+/// The chats that aren't archived, or only the archived ones, most recently
+/// active first.
 fn list_chats(engine: &Engine, args: ListChatsArgs) -> Result<Value> {
     let mut chats = engine.chats();
-    chats.retain(|chat| !chat.archived);
+    chats.retain(|chat| chat.archived == args.archived);
     let limit = args.limit.unwrap_or(DEFAULT_CHATS).clamp(1, MAX_CHATS);
     let summaries: Vec<Value> = chats
         .iter()
@@ -94,6 +104,63 @@ fn list_chats(engine: &Engine, args: ListChatsArgs) -> Result<Value> {
         .map(|chat| summary(chat, engine.config()))
         .collect();
     Ok(json!({"total": chats.len(), "chats": summaries}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListChatGroupsArgs {
+    /// Chats per group.
+    limit: Option<usize>,
+    /// Groups the user expanded, with their own limits.
+    #[serde(default)]
+    more: Vec<GroupLimit>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupLimit {
+    /// The project's id, or none for "No project".
+    project: Option<PathBuf>,
+    limit: usize,
+}
+
+/// The chats that aren't archived, by project, with "No project" as one
+/// group. Groups come most recently active first, each with its newest
+/// chats and its total, so a list can offer to show more.
+fn list_chat_groups(engine: &Engine, args: ListChatGroupsArgs) -> Result<Value> {
+    let config = engine.config();
+    let default = args
+        .limit
+        .unwrap_or(DEFAULT_GROUP_CHATS)
+        .clamp(1, MAX_CHATS);
+    let mut groups: Vec<(Option<PathBuf>, Vec<ChatInfo>)> = Vec::new();
+    let mut positions: HashMap<Option<PathBuf>, usize> = HashMap::new();
+    for chat in engine.chats().into_iter().filter(|chat| !chat.archived) {
+        let project = config.is_project(&chat.cwd).then(|| chat.cwd.clone());
+        let at = *positions.entry(project.clone()).or_insert_with(|| {
+            groups.push((project, Vec::new()));
+            groups.len() - 1
+        });
+        groups[at].1.push(chat);
+    }
+    let groups: Vec<Value> = groups
+        .iter()
+        .map(|(project, chats)| {
+            let more = args.more.iter().find(|more| more.project == *project);
+            let limit = more.map_or(default, |more| more.limit.clamp(1, MAX_CHATS));
+            let page: Vec<Value> = chats
+                .iter()
+                .take(limit)
+                .map(|chat| summary(chat, config))
+                .collect();
+            json!({
+                "project": project.as_deref().map(self::project),
+                "total": chats.len(),
+                "chats": page,
+            })
+        })
+        .collect();
+    Ok(json!({"groups": groups}))
 }
 
 /// The projects: every chat's folder, except the home and scratch folders.

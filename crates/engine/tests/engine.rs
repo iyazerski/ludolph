@@ -29,7 +29,6 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         idle,
         grace: Duration::from_secs(2),
         home: dir.to_owned(),
-        keep: 2,
     };
     Engine::start(config).await.unwrap()
 }
@@ -264,17 +263,37 @@ async fn an_extensions_dialog_waits_for_an_answer() {
     engine.shutdown().await.unwrap();
 }
 
-/// The ids `list_chats` returns, newest first.
-async fn listed(engine: &Engine) -> Vec<String> {
-    let chats = tool(engine, "list_chats", json!({})).await.unwrap();
-    let chats = chats["chats"].as_array().unwrap().iter();
+/// The ids `list_chats` returns with `args`, newest first.
+async fn listed(engine: &Engine, args: Value) -> Vec<String> {
+    let chats = tool(engine, "list_chats", args).await.unwrap();
+    ids(&chats["chats"])
+}
+
+fn ids(chats: &Value) -> Vec<String> {
+    let chats = chats.as_array().unwrap().iter();
     chats
         .map(|c| c["id"].as_str().unwrap().to_owned())
         .collect()
 }
 
+/// Each group `list_chat_groups` returns with `args`: its project's id,
+/// total, and chat ids.
+async fn groups(engine: &Engine, args: Value) -> Vec<(Value, u64, Vec<String>)> {
+    let groups = tool(engine, "list_chat_groups", args).await.unwrap();
+    let groups = groups["groups"].as_array().unwrap().iter();
+    groups
+        .map(|g| {
+            (
+                g["project"]["id"].clone(),
+                g["total"].as_u64().unwrap(),
+                ids(&g["chats"]),
+            )
+        })
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn each_project_lists_its_recent_chats_and_archives_the_rest() {
+async fn chats_list_by_project_and_stay_archived_until_used_again() {
     let dir = tempfile::tempdir().unwrap();
     let folder = dir.path().join("sessions/--app--");
     std::fs::create_dir_all(&folder).unwrap();
@@ -282,8 +301,14 @@ async fn each_project_lists_its_recent_chats_and_archives_the_rest() {
         let message = json!({"role": "user", "content": "hi", "timestamp": at});
         json!({"type": "message", "id": format!("m{at}"), "parentId": null, "timestamp": "2026-05-01T10:00:00.000Z", "message": message})
     };
-    for (id, at) in [("a", 1_000), ("b", 2_000), ("c", 3_000), ("d", 4_000)] {
-        let header = json!({"type": "session", "version": 3, "id": id, "timestamp": "2026-05-01T10:00:00.000Z", "cwd": "/work/app"});
+    let home = dir.path().display().to_string();
+    for (id, at, cwd) in [
+        ("a", 1_000, "/work/app"),
+        ("b", 2_000, "/work/app"),
+        ("c", 3_000, "/work/app"),
+        ("d", 4_000, home.as_str()),
+    ] {
+        let header = json!({"type": "session", "version": 3, "id": id, "timestamp": "2026-05-01T10:00:00.000Z", "cwd": cwd});
         std::fs::write(
             folder.join(format!("{id}.jsonl")),
             format!("{header}\n{}\n", user(at)),
@@ -291,9 +316,26 @@ async fn each_project_lists_its_recent_chats_and_archives_the_rest() {
         .unwrap();
     }
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
-    assert_eq!(listed(&engine).await, ["d", "c"]);
+    let app = json!("/work/app");
+    assert_eq!(
+        groups(&engine, json!({"limit": 2})).await,
+        [
+            (Value::Null, 1, vec!["d".into()]),
+            (app.clone(), 3, vec!["c".into(), "b".into()])
+        ]
+    );
+    let more = json!({"limit": 2, "more": [{"project": "/work/app", "limit": 12}]});
+    assert_eq!(groups(&engine, more).await[1].2, ["c", "b", "a"]);
 
-    // Your choices hold against the rule.
+    tool(&engine, "archive_chat", json!({"chat": "b"}))
+        .await
+        .unwrap();
+    tool(&engine, "archive_chat", json!({"chat": "a"}))
+        .await
+        .unwrap();
+    assert_eq!(listed(&engine, json!({})).await, ["d", "c"]);
+    assert_eq!(listed(&engine, json!({"archived": true})).await, ["b", "a"]);
+    assert_eq!(groups(&engine, json!({})).await[1].1, 1);
     tool(
         &engine,
         "archive_chat",
@@ -301,24 +343,19 @@ async fn each_project_lists_its_recent_chats_and_archives_the_rest() {
     )
     .await
     .unwrap();
+    assert_eq!(listed(&engine, json!({})).await, ["d", "c", "a"]);
+
+    // A chat used again comes back, and the rest stay archived after a restart.
     tool(&engine, "archive_chat", json!({"chat": "c"}))
         .await
         .unwrap();
-    assert_eq!(listed(&engine).await, ["d", "a"]);
-
-    // New activity brings a chat back, and the rule makes room for it.
     append(&folder.join("b.jsonl"), &user(5_000));
     until(&engine, |c| c.iter().any(|c| c.id == "b" && !c.archived)).await;
-    assert_eq!(listed(&engine).await, ["b", "d", "a"]);
-
     engine.shutdown().await.unwrap();
     drop(engine);
     let engine = self::engine(dir.path(), Duration::from_secs(60)).await;
-    assert_eq!(
-        listed(&engine).await,
-        ["b", "d", "a"],
-        "the marks were saved"
-    );
+    assert_eq!(listed(&engine, json!({})).await, ["b", "d", "a"]);
+    assert_eq!(listed(&engine, json!({"archived": true})).await, ["c"]);
     engine.shutdown().await.unwrap();
 }
 
