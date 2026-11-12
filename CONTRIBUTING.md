@@ -8,12 +8,18 @@ Thanks for helping with Ludolph. Bug reports, ideas and pull requests are all we
 
 ## Make a change
 
-Ludolph is in design, so there's no code to build yet. Comments on the design are the most useful help right now.
+You need macOS on Apple silicon and [Rust](https://rustup.rs). Ludolph is early: the engine is being built first, and [docs/design.md](docs/design.md) describes the plan.
+
+```sh
+make test
+```
 
 Before you open a pull request:
 
-1. Install the hooks with [prek](https://github.com/j178/prek): `prek install`.
-2. Keep pull requests small and focused on one change.
+1. Install the hooks with [prek](https://github.com/j178/prek): `prek install`. They run `cargo fmt`, `cargo check` and `cargo clippy`.
+2. Run `make test`.
+3. If you changed dependencies, run `make licenses` and commit `THIRD_PARTY_LICENSES.md`. It needs [cargo-about](https://github.com/EmbarkStudios/cargo-about).
+4. Keep pull requests small and focused on one change.
 
 ## Code style
 
