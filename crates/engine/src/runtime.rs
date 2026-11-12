@@ -106,15 +106,21 @@ impl Runtime {
         self.save()
     }
 
-    /// Forget `session`'s process, once it has exited.
+    /// Forget `session`'s process `pid`, once it has exited. A newer process
+    /// for the same session stays.
     ///
     /// # Errors
     ///
     /// Fails if the file can't be written.
-    pub fn remove(&mut self, session: &str) -> Result<()> {
-        if self.processes.remove(session).is_none() {
+    pub fn remove(&mut self, session: &str, pid: u32) -> Result<()> {
+        if self
+            .processes
+            .get(session)
+            .is_none_or(|process| process.pid != pid)
+        {
             return Ok(());
         }
+        self.processes.remove(session);
         self.save()
     }
 

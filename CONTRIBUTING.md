@@ -12,6 +12,7 @@ You need macOS on Apple silicon and [Rust](https://rustup.rs). Ludolph is early:
 
 ```sh
 make test
+make engine   # run a development engine, with its own files in target/dev
 ```
 
 Before you open a pull request:

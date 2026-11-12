@@ -125,7 +125,7 @@ async fn stop_kills_a_pi_that_wont_exit_with_its_tools() {
 #[tokio::test]
 async fn calls_fail_once_pi_exits() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut pi, mut events) = Pi::start(&options(dir.path(), &[])).unwrap();
+    let (pi, mut events) = Pi::start(&options(dir.path(), &[])).unwrap();
     let exited = pi.call(json!({"type": "exit"})).await.unwrap_err();
     assert_eq!(exited.to_string(), "pi exited before answering exit");
     assert_eq!(events.recv().await, None);
