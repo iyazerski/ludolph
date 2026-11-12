@@ -15,6 +15,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::jsonl::fix_surrogates;
+
 /// How many events wait for the engine before pi has to wait. pi honors
 /// stdout backpressure, so a slow reader slows pi rather than growing memory.
 const EVENT_QUEUE: usize = 256;
@@ -303,6 +305,7 @@ async fn read(stdout: ChildStdout, pending: Pending, events: mpsc::Sender<Event>
             }
         }
         // Records end with LF, maybe after a CR (`docs/rpc.md`).
+        fix_surrogates(&mut line);
         let record = line.strip_suffix(b"\n").unwrap_or(&line);
         let record = record.strip_suffix(b"\r").unwrap_or(record);
         let value: Value = match serde_json::from_slice(record) {

@@ -1,13 +1,21 @@
 //! The engine's Unix socket: JSON lines carrying tool calls and their
-//! answers, and pushed notices that the chat list changed.
+//! answers, and pushed notices that something changed.
 //!
 //! A call is `{"id": …, "call": "list_chats", "args": {…}}`, answered with
 //! `{"id": …, "ok": …}` or `{"id": …, "error": "…"}`. Calls on one connection
 //! run at the same time, so their answers can come in any order.
-//! `{"id": …, "subscribe": "chats"}` is answered at once, and then pushes
-//! `{"event": "chats", "revision": n}` after changes. Changes that come
-//! faster than the client reads merge into one notice.
+//!
+//! A subscription is answered the same way, and then pushes notices:
+//!
+//! - `{"id": …, "subscribe": "chats"}` pushes `{"event": "chats",
+//!   "revision": n}` when the chat list changes.
+//! - `{"id": …, "subscribe": "chat", "args": {"chat": …}}` pushes
+//!   `{"event": "chat", "chat": …, "revision": n}` when the chat's view does.
+//!
+//! Changes that come faster than the client reads merge into one notice.
+//! `{"id": …, "unsubscribe": <the subscription's id>}` ends one.
 
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -17,8 +25,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::sync::{mpsc, watch};
+use tokio::task::{AbortHandle, JoinSet};
 
 use crate::engine::Engine;
 use crate::tools::{self, Tool};
@@ -65,6 +73,7 @@ struct Request {
     #[serde(default)]
     args: Value,
     subscribe: Option<String>,
+    unsubscribe: Option<Value>,
 }
 
 async fn connection(engine: Engine, stream: UnixStream) {
@@ -81,6 +90,8 @@ async fn connection(engine: Engine, stream: UnixStream) {
     });
     let mut calls = JoinSet::new();
     let mut subscriptions = JoinSet::new();
+    // By the subscribing request's id, in its JSON form.
+    let mut handles: HashMap<String, AbortHandle> = HashMap::new();
     let mut reader = BufReader::new(read);
     let mut line = Vec::new();
     loop {
@@ -95,6 +106,7 @@ async fn connection(engine: Engine, stream: UnixStream) {
                 call: Some(name),
                 args,
                 subscribe: None,
+                unsubscribe: None,
             }) => {
                 calls.spawn(call(engine.clone(), id, name, args, out.clone()));
                 continue;
@@ -103,19 +115,32 @@ async fn connection(engine: Engine, stream: UnixStream) {
                 id,
                 call: None,
                 subscribe: Some(topic),
-                ..
-            }) if topic == "chats" => {
-                subscriptions.spawn(push_chats(engine.clone(), out.clone()));
-                json!({"id": id, "ok": null})
-            }
+                args,
+                unsubscribe: None,
+            }) => match subscription(&engine, &topic, args) {
+                Ok((changes, event)) => {
+                    let handle = subscriptions.spawn(push(changes, event, out.clone()));
+                    if let Some(old) = handles.insert(id.to_string(), handle) {
+                        old.abort();
+                    }
+                    json!({"id": id, "ok": null})
+                }
+                Err(e) => json!({"id": id, "error": format!("{e:#}")}),
+            },
             Ok(Request {
                 id,
                 call: None,
-                subscribe: Some(topic),
+                subscribe: None,
+                unsubscribe: Some(subscription),
                 ..
-            }) => json!({"id": id, "error": format!("no subscription {topic}")}),
+            }) => {
+                if let Some(handle) = handles.remove(&subscription.to_string()) {
+                    handle.abort();
+                }
+                json!({"id": id, "ok": null})
+            }
             Ok(Request { id, .. }) => {
-                json!({"id": id, "error": "a request needs one of call or subscribe"})
+                json!({"id": id, "error": "a request needs one of call, subscribe or unsubscribe"})
             }
             Err(e) => json!({"id": null, "error": format!("invalid request: {e}")}),
         };
@@ -146,17 +171,36 @@ async fn call(engine: Engine, id: Value, name: String, args: Value, out: mpsc::S
     let _ = out.send(record).await;
 }
 
-/// Tell the client whenever the chat list changes, until it leaves.
-async fn push_chats(engine: Engine, out: mpsc::Sender<Value>) {
-    let mut changes = engine.subscribe();
+/// The changes `topic` follows, and the notice that tells of them.
+fn subscription(
+    engine: &Engine,
+    topic: &str,
+    args: Value,
+) -> Result<(watch::Receiver<u64>, Value)> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ChatArgs {
+        chat: String,
+    }
+    match topic {
+        "chats" => Ok((engine.subscribe(), json!({"event": "chats"}))),
+        "chat" => {
+            let args: ChatArgs = serde_json::from_value(args).context("invalid arguments")?;
+            let changes = engine.subscribe_chat(&args.chat)?;
+            Ok((changes, json!({"event": "chat", "chat": args.chat})))
+        }
+        _ => bail!("no subscription {topic}"),
+    }
+}
+
+/// Send `event` with the latest revision whenever `changes` moves, until
+/// the client leaves.
+async fn push(mut changes: watch::Receiver<u64>, event: Value, out: mpsc::Sender<Value>) {
     changes.mark_unchanged();
     while changes.changed().await.is_ok() {
-        let revision = *changes.borrow_and_update();
-        if out
-            .send(json!({"event": "chats", "revision": revision}))
-            .await
-            .is_err()
-        {
+        let mut notice = event.clone();
+        notice["revision"] = json!(*changes.borrow_and_update());
+        if out.send(notice).await.is_err() {
             break;
         }
     }

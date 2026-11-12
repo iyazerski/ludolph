@@ -15,12 +15,16 @@ use crate::engine::{ChatInfo, Delivery, Engine, Status};
 /// Chats `list_chats` returns without a `limit`, and at most.
 const DEFAULT_CHATS: usize = 50;
 const MAX_CHATS: usize = 500;
+/// Messages `chat_view` returns without a `limit`, and at most.
+const DEFAULT_MESSAGES: usize = 40;
+const MAX_MESSAGES: usize = 500;
 
 /// A tool, by its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     ListChats,
     ListProjects,
+    ChatView,
     SendMessage,
     CreateChat,
     InterruptChat,
@@ -33,6 +37,7 @@ impl FromStr for Tool {
         Ok(match name {
             "list_chats" => Self::ListChats,
             "list_projects" => Self::ListProjects,
+            "chat_view" => Self::ChatView,
             "send_message" => Self::SendMessage,
             "create_chat" => Self::CreateChat,
             "interrupt_chat" => Self::InterruptChat,
@@ -50,6 +55,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
     match tool {
         Tool::ListChats => list_chats(engine, parse(args)?),
         Tool::ListProjects => Ok(list_projects(engine)),
+        Tool::ChatView => chat_view(engine, parse(args)?).await,
         Tool::SendMessage => send_message(engine, parse(args)?).await,
         Tool::CreateChat => create_chat(engine, parse(args)?).await,
         Tool::InterruptChat => interrupt_chat(engine, parse(args)?).await,
@@ -103,6 +109,45 @@ fn list_projects(engine: &Engine) -> Value {
         })
         .collect();
     json!({"projects": projects})
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewArgs {
+    chat: String,
+    limit: Option<usize>,
+    /// The `version` the caller shows.
+    known: Option<String>,
+}
+
+/// A chat and its latest messages. `read` is `null` when the caller already
+/// shows this `version`.
+async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
+    let limit = args
+        .limit
+        .unwrap_or(DEFAULT_MESSAGES)
+        .clamp(1, MAX_MESSAGES);
+    let view = engine.view(&args.chat, limit).await?;
+    let version = format!(
+        "{}|{}|{}|{limit}",
+        view.page.leaf.as_deref().unwrap_or_default(),
+        view.revision,
+        label(view.chat.status),
+    );
+    let read = (args.known.as_deref() != Some(version.as_str())).then(|| {
+        json!({
+            "total": view.page.total,
+            "olderRemaining": view.page.older(),
+            "pendingInput": null,
+            "messages": view.page.messages,
+            "turnChanges": [],
+        })
+    });
+    Ok(json!({
+        "chat": summary(&view.chat, &home(), &scratch_root(engine)),
+        "version": version,
+        "read": read,
+    }))
 }
 
 #[derive(Deserialize)]

@@ -1,10 +1,9 @@
 //! A working chat's live tail, built from pi's events.
 //!
 //! pi's events carry no entry ids, and pi sends `message_end` before it
-//! appends the entry to the session file. So the tail is never merged into
-//! the file's transcript: it stands in for everything after the run's base
-//! until the run settles and the file is read again (`docs/design.md`,
-//! "Live view and the file").
+//! appends the entry to the session file. So the transcript shows the tail's
+//! messages until the file has them, matched by role and timestamp
+//! (`docs/design.md`, "Live view and the file").
 
 use std::collections::BTreeMap;
 

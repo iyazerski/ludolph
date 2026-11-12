@@ -98,7 +98,7 @@ async fn calls_and_events_reach_the_live_tail() {
     );
     assert_eq!(tool_progress, [Value::Null, json!("a.txt")]);
     let roles: Vec<&Value> = live.messages().iter().map(|m| &m["role"]).collect();
-    assert_eq!(roles, ["user", "assistant", "toolResult"]);
+    assert_eq!(roles, ["user", "assistant", "toolResult", "assistant"]);
     assert!(!live.working() && live.streaming().is_none() && live.tools().is_empty());
 
     assert!(pi.stop(GRACE).await.unwrap().success());

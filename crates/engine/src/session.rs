@@ -7,14 +7,17 @@
 //! user and assistant messages count as activity.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+
+use crate::jsonl::{self, Mark, Reopen, fix_surrogates, open, read_header, read_line};
+use crate::text::one_line;
 
 /// The most characters of a message kept as a preview.
 const PREVIEW_CHARS: usize = 200;
@@ -125,24 +128,25 @@ impl Summary {
     ///
     /// Fails if the file can't be read.
     pub fn update(&mut self, path: &Path) -> Result<Freshness> {
-        let (mut reader, len, modified) = open(path)?;
-        if len == self.progress.len && modified == self.progress.modified {
-            return Ok(Freshness::Unchanged);
-        }
-        if len < self.progress.offset {
-            return Ok(Freshness::Rewritten);
-        }
-        let mut buf = Vec::new();
-        match read_header(&mut reader, &mut buf, path)? {
-            Some(header) if header.id == self.id && header.version == self.progress.version => {}
-            _ => return Ok(Freshness::Rewritten),
-        }
-        reader
-            .seek(SeekFrom::Start(self.progress.offset))
-            .with_context(|| format!("reading {}", path.display()))?;
+        let mark = Mark {
+            id: &self.id,
+            version: self.progress.version,
+            offset: self.progress.offset,
+            len: self.progress.len,
+            modified: self.progress.modified,
+        };
+        let (mut reader, len, modified) = match jsonl::reopen(path, &mark)? {
+            Reopen::Unchanged => return Ok(Freshness::Unchanged),
+            Reopen::Rewritten => return Ok(Freshness::Rewritten),
+            Reopen::Appended {
+                reader,
+                len,
+                modified,
+            } => (reader, len, modified),
+        };
         self.progress.len = len;
         self.progress.modified = modified;
-        self.read_entries(&mut reader, &mut buf, path)?;
+        self.read_entries(&mut reader, &mut Vec::new(), path)?;
         Ok(Freshness::Updated)
     }
 
@@ -180,7 +184,7 @@ impl Summary {
                     self.add_message(message, entry.timestamp);
                 }
             }
-            Kind::Session | Kind::Other => {}
+            Kind::Other => {}
         }
     }
 
@@ -215,77 +219,6 @@ impl Summary {
     }
 }
 
-/// Open `path` with its size and modification time.
-fn open(path: &Path) -> Result<(BufReader<File>, u64, SystemTime)> {
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    let meta = file
-        .metadata()
-        .with_context(|| format!("reading {}", path.display()))?;
-    Ok((BufReader::new(file), meta.len(), meta.modified()?))
-}
-
-/// Read one complete line into `buf` and return its length in bytes.
-///
-/// Returns `None` at the end of the file, and for a last line without its
-/// newline: pi may be writing it, so it's read once it's complete.
-fn read_line(reader: &mut BufReader<File>, buf: &mut Vec<u8>, path: &Path) -> Result<Option<u64>> {
-    buf.clear();
-    let len = reader
-        .read_until(b'\n', buf)
-        .with_context(|| format!("reading {}", path.display()))?;
-    if buf.last() != Some(&b'\n') {
-        return Ok(None);
-    }
-    Ok(Some(
-        u64::try_from(len).expect("a line is shorter than u64::MAX"),
-    ))
-}
-
-/// A session file's first line.
-struct Header {
-    id: String,
-    cwd: PathBuf,
-    timestamp: DateTime<Utc>,
-    version: u32,
-    /// The header line's length in bytes.
-    len: u64,
-}
-
-/// Read the first line as a session header; `None` if it isn't one.
-fn read_header(
-    reader: &mut BufReader<File>,
-    buf: &mut Vec<u8>,
-    path: &Path,
-) -> Result<Option<Header>> {
-    #[derive(Deserialize)]
-    struct Line {
-        #[serde(rename = "type")]
-        kind: Kind,
-        id: String,
-        cwd: PathBuf,
-        timestamp: DateTime<Utc>,
-        // Version 1 files have none (`docs/session-format.md`).
-        #[serde(default = "first_version")]
-        version: u32,
-    }
-    fn first_version() -> u32 {
-        1
-    }
-    let Some(len) = read_line(reader, buf, path)? else {
-        return Ok(None);
-    };
-    Ok(serde_json::from_slice::<Line>(buf)
-        .ok()
-        .filter(|line| line.kind == Kind::Session)
-        .map(|line| Header {
-            id: line.id,
-            cwd: line.cwd,
-            timestamp: line.timestamp,
-            version: line.version,
-            len,
-        }))
-}
-
 /// One session entry, with only the fields a summary needs. Message content
 /// stays raw, so long tool output and images are skipped, not copied.
 #[derive(Deserialize)]
@@ -314,7 +247,6 @@ struct Message<'a> {
 #[derive(Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
-    Session,
     SessionInfo,
     Message,
     #[serde(other)]
@@ -359,7 +291,12 @@ fn preview(content: &str) -> Option<String> {
         kind: String,
         text: Option<String>,
     }
-    let text = match serde_json::from_str::<Content>(content).ok()? {
+    let parsed = serde_json::from_str::<Content>(content).or_else(|_| {
+        let mut fixed = content.as_bytes().to_vec();
+        fix_surrogates(&mut fixed);
+        serde_json::from_slice(&fixed)
+    });
+    let text = match parsed.ok()? {
         Content::Text(text) => text,
         Content::Blocks(blocks) => blocks
             .into_iter()
@@ -368,13 +305,5 @@ fn preview(content: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" "),
     };
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.is_empty() {
-        return None;
-    }
-    let line = words.join(" ");
-    Some(match line.char_indices().nth(PREVIEW_CHARS) {
-        Some((end, _)) => format!("{}…", &line[..end]),
-        None => line,
-    })
+    one_line(&text, PREVIEW_CHARS)
 }
