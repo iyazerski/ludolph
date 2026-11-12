@@ -1,6 +1,6 @@
 # Ludolph design
 
-Status: draft.
+Status: accepted.
 
 ## Goal
 
@@ -75,19 +75,26 @@ pi documents the file format in `docs/session-format.md`. What Ludolph uses:
 - The first line is the header: `{"type":"session","id":…,"timestamp":…,"cwd":…}`. `cwd` never changes for a session, so it's the chat's project.
 - `session_info` entries carry the title (`name`). The latest one wins.
 - `message` entries hold user, assistant, and tool-result messages. An assistant message's `stopReason` tells whether the last turn ended well, failed, or was aborted.
-- Files are append-only trees (`id`, `parentId`).
+- Files are append-only trees (`id`, `parentId`). pi can still rewrite a whole file, for example when it migrates an old version on load.
+
+The file order mixes branches: going back with `/tree` leaves the old branch in the file. So the transcript is never "every `message` entry". It's the path from the current leaf (the last entry appended) back to the root, following `parentId`. Compaction doesn't hide history: the transcript shows every message on the path, with the compaction summary as a row where it happened. `branch_summary` and displayed `custom_message` entries are rows too.
+
+A fork (`/fork`, `/clone`) copies entries, with their ids, into a new file. So anything keyed by an entry id is keyed by session id and entry id together.
 
 ### Index
 
-One row per session file: path, session id, cwd, created time, title, last activity, a preview of the last user message, the last turn's outcome, the archive state, and the byte offset the row was built up to.
+One row per session file, in two parts:
 
-Since files are append-only, the engine parses only the bytes after the saved offset. If a file got smaller or its header changed (pi migrates old versions on load), the engine parses it again from the start. On this Mac that's 270 files and 511 MB, so the first full build reads everything once, and later builds read only what's new.
+- **Derived from the file**, and rebuilt from it at any time: path, session id, cwd, created time, title, last activity, a preview of the last user message, the last turn's outcome, the current leaf, and the byte offset the row was built up to.
+- **Ludolph's own**, which can't be rebuilt: the archive state (see [archiving](#archiving)) and a title imported from Zeron that isn't in pi's file yet.
 
-The engine watches the sessions folder with FSEvents, so it also sees sessions that pi run in a terminal changes.
+Since files are append-only, the engine parses only the bytes after the saved offset, and only complete lines. A partial last line waits for the next read. If a file got smaller or its header changed, the engine parses it again from the start. The parse streams line by line and keeps only the index fields, so a 45 MB file never sits in memory whole. On this Mac that's 270 files and 511 MB, so the first build reads everything once, and later builds read only what's new.
+
+The engine watches the sessions folder with FSEvents, so it also sees sessions that a terminal pi changes. FSEvents can drop or merge events, so it's a hint, not a log: on start, and whenever FSEvents reports dropped events, the engine compares every file's size and modification time with the index.
 
 ## Projects
 
-A project is a session's `cwd`, as is. Its name is the folder's name. Chats whose cwd is the home folder, or a Ludolph scratch folder, go under **No project**.
+A project is a session's `cwd`, as is. Its name is the folder's name. Chats whose cwd is the home folder, or a Ludolph scratch folder, go under **No project**, which is one group for listing and for archiving.
 
 A chat started without a project gets its own scratch folder, `~/Library/Application Support/Ludolph/scratch/<date>-<short id>`, the way Zeron does.
 
@@ -103,12 +110,24 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 - **Open chat:** reading a transcript needs no process. The engine reads the session file. A process starts only when a chat needs pi: to send a message, change the model, or list skills.
 - **Send:** `prompt`. While the agent works, `prompt` with `streamingBehavior: "steer"`.
 - **Stop:** `clear_queue`, then `abort`.
-- **Model and thinking level:** `get_available_models`, `set_model`, `get_available_thinking_levels`, `set_thinking_level`. The model list is cached, since it's the same for every chat.
+- **Model and thinking level:** `get_available_models`, `set_model`, `get_available_thinking_levels`, `set_thinking_level`. Project-local extensions can add providers, so the model list is cached per project and refreshed whenever a process in that project starts. Thinking levels come from the chat's own process, for its current model.
 - **Skills** (the `$` menu): `get_commands`, keeping those with `source: "skill"`.
 - **Images:** sent in the `prompt` command as base64. There's no upload store.
-- **Live view:** the engine rebuilds the streaming message from `message_update` deltas and replaces it with `message_end`, as pi's `docs/json.md` describes.
+- **Live view:** see [live view and the file](#live-view-and-the-file).
 - **Stopping idle processes:** once a chat settles (`agent_settled`) and has no open question, the engine closes its process's stdin after a few idle minutes (a setting, default 5). pi then shuts down cleanly, and the next message starts it again with `--session <file>`. A restart costs about 270 ms even for a large session, while a loaded process holds up to ~300 MB, so stopping idle processes is the biggest memory saving.
-- **Crashes:** if pi exits during a turn, the chat shows as failed, and the next message starts pi again.
+- **Crashes:** if pi exits during a run, the chat shows as interrupted, and the next message starts pi again.
+- **Engine restarts:** the engine writes a small runtime file, `runtime.json`, with each pi process's pid, its session, and whether a run is in flight. On start, it stops any pi it finds there that's still running (close stdin, then SIGTERM, then SIGKILL after 10 s), before any new pi may write to that session. A run that was in flight shows as interrupted. It doesn't count as finished, since the file alone can't tell.
+- **Shutdown:** on SIGTERM, the engine closes every pi's stdin and gives them 10 s to finish before it kills what's left. Each pi runs in its own process group, so its tool processes go with it.
+
+### Live view and the file
+
+Two sources describe a working chat: pi's events, and the file. pi sends `message_end` before it appends the entry to the file (`agent-session.js`, pi 1.5.2), and its events carry no entry ids. So the engine never adds the two together:
+
+1. When a run starts, the engine notes the file's current leaf. That's the run's base.
+2. During the run, the transcript is the file up to the base, plus a live tail built from the events: messages from `message_end`, and the streaming one from its `message_update` deltas, replaced by its final block content as each block ends.
+3. When the run settles, the engine reads the file again. It replaces the live tail with the entries now after the base, which carry their ids.
+
+Every change bumps the chat's revision. A subscriber gets a snapshot with its revision, then changes in order. A subscriber that reconnects, or falls behind, gets a fresh snapshot.
 
 ### Status
 
@@ -116,7 +135,8 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 |---|---|
 | Working | After `agent_start`, until `agent_settled` |
 | Needs you | A dialog `extension_ui_request` (`select`, `confirm`, `input`, `editor`) has no answer yet |
-| Failed | The last turn ended with an error, or `auto_retry_end` with `success: false`, or pi exited during a turn |
+| Failed | The last turn ended with an error, or `auto_retry_end` with `success: false` |
+| Interrupted | pi or the engine stopped during a run |
 | Idle | Anything else |
 
 For a chat with no process, the status comes from the index: the outcome of its last turn.
@@ -127,18 +147,22 @@ Questions use the shape of Claude Code's `AskUserQuestion` tool, which the phone
 
 They come from two places:
 
-- **`ask_user`:** Ludolph loads one small extension of its own with `--extension`. It adds an `ask_user` tool with the shape above. pi's RPC dialogs ask one thing at a time and can't pick several options, so the tool doesn't use them. It calls the engine over the [engine socket](#engine-api) and waits for the answer, the way Zeron's MCP bridge (`zeron-mcp.mjs`) calls Zeron. The engine starts each pi with the chat's session id in an environment variable, so the tool's call names its chat.
+- **`ask_user`:** Ludolph loads one small extension of its own with `--extension`. It adds an `ask_user` tool with the shape above. pi's RPC dialogs ask one thing at a time and can't pick several options, so the tool doesn't use them. It calls the engine and waits for the answer, the way Zeron's MCP bridge (`zeron-mcp.mjs`) calls Zeron. It uses its own socket, `ask.sock`, which has one call, `ask`. The engine starts each pi with a random token in an environment variable, and the token names the chat. So the extension can ask only in its own chat, and it can't reach the rest of the engine API.
 - **Other extensions' dialogs:** every `extension_ui_request` dialog (`select`, `confirm`, `input`, `editor`) shows as a one-question form. The answer goes back as an `extension_ui_response` (`docs/rpc-extension-ui.md`).
+
+The engine keeps one list of open questions. Each entry has its id, its chat, where it came from (`ask_user` or a dialog), and the pi process that asked. `respond_to_input` looks the id up and sends the answer the right way. An id is answered once. Later answers, and answers to a question from a process that's gone, are refused. A question leaves the list when it's answered, when its dialog's `timeout` runs out, when the run is aborted, when the `ask` call's connection drops, or when its pi exits.
 
 ### Sessions open elsewhere
 
 pi doesn't lock session files and doesn't keep them open between writes (checked with `lsof` on running pi processes). If a session is also open in a terminal pi, two writers would append to the same file and fork its history.
 
-The engine knows when its own pi processes write. So when a session file grows and Ludolph has no process for it, another pi is writing. Then:
+A pi loads its session file once and then only appends (`session-manager.js`, pi 1.5.2). So a second pi doesn't just add lines. It also writes from an old leaf, and the file branches.
 
+The engine knows when its own pi processes write. So when a session file grows with entries its own process didn't send, another pi is writing. Then:
+
+- The engine stops its own pi for that chat, if it has one, since that pi's view of the file is now stale.
 - The chat shows a banner, "Open in another pi", and its transcript follows the file live.
-- Sending is off until the file has been quiet for 2 minutes.
-- **Take over** turns sending back on at once, for a terminal pi you know you closed.
+- Sending stays off until you press **Take over**. It never turns back on by itself, since a terminal pi can run a long tool call without writing anything. Take over starts a fresh pi, which loads the file as it is then.
 
 A terminal pi that's open but idle writes nothing, so this can't see it. The real fix is a lock in pi itself: we'll propose an advisory lock (`flock`) on the session file upstream, and use it once pi has it.
 
@@ -147,11 +171,11 @@ A terminal pi that's open but idle writes nothing, so this can't see it. The rea
 Titles are part of the main flow:
 
 1. Until a chat has a title, the app shows the first words of its first prompt.
-2. After a chat's first turn settles, the engine asks the title model for a title, with `pi -p` and no session, as zeron-tools' `rename.rs` does today.
-3. It stores the title with `set_session_name` on the chat's live process. That adds a `session_info` entry to pi's file, so pi's own `/resume` shows the same title.
-4. If that call fails, it tries again after the next turn.
+2. After a chat's first run settles, the engine asks the title model for a title. It runs `pi -p` the way zeron-tools' `pi.rs` does: in a temporary folder, with no session, tools, extensions, skills, prompt templates, context files, or MCP, with a time limit, and with at most two running at once.
+3. When the title comes back, the engine checks the chat still has no title. If it got one in the meantime, from you or from pi, the new title is dropped. Then it stores the title with `set_session_name` on the chat's live process. That adds a `session_info` entry to pi's file, so pi's own `/resume` shows the same title.
+4. If any step fails, it tries again after the next run.
 
-Renaming a chat by hand goes through the same `set_session_name`. The engine never replaces a title that a person or pi set.
+Renaming a chat by hand goes through the same `set_session_name`. The engine never replaces a title that a person or pi set. Calls that change one chat (title, rename, model) go through one queue per chat, so they can't overtake each other.
 
 Only 1 of the 270 sessions on this Mac has a `session_info` entry, because Zeron keeps its titles in its own database. See [migration](#migration-from-zeron).
 
@@ -159,28 +183,40 @@ Only 1 of the 270 sessions on this Mac has a `session_info` entry, because Zeron
 
 Archiving is part of the main flow, with the rule zeron-tools uses now:
 
-- In each project, the most recent chats stay in the list (a setting, default 10). The rest are archived.
+- In each project, and in **No project**, the most recent chats stay in the list (a setting, default 10). The rest are archived.
 - A chat that's working or waiting for an answer is never archived.
 - An archived chat stays searchable and opens and resumes like any other.
 - A chat you unarchive stays unarchived until it has new activity. This is the "memory" in `archive.rs`.
 
-The archive state lives in the index. The rule runs when the index changes, not on a timer.
+"Activity" means a new user or assistant message. A new title doesn't count, so titling neither moves a chat up the list nor undoes your unarchive.
+
+The archive state is Ludolph's own part of the index row: who set it (the rule or you), and the chat's last activity at that moment. A chat you unarchived is left alone until its last activity is newer than that. The rule runs when the index changes, not on a timer.
 
 ## Turn changes
 
-Each turn's changes are kept, so the app can show what any turn changed, as zeron-tools does now. Zeron keeps one snapshot per chat. Ludolph takes its own with git, without touching your index or your work:
+The app shows what each run changed, as zeron-tools does now. A run is everything from the prompt that starts it until pi settles, including any steering messages sent in between. pi's own `turn_start` is one assistant response, which is too small a unit, and the engine can't pause pi to take a snapshot in the middle of a run.
 
-1. When a turn starts, the engine writes the working tree, including untracked files, to a tree object. It uses a temporary index (`GIT_INDEX_FILE`, `git add -A`, `git write-tree`).
-2. When the turn settles, it does the same again.
-3. It diffs the two trees and saves the patch and its line counts under the entry id of the user message that started the turn. The oldest saved turns are dropped when the total goes over a size budget, as `turns.rs` does now.
+The engine takes its snapshots with git, without touching your repo:
 
-Folders that aren't git repos get no turn changes. Two chats working in the same repo at once see each other's changes in their diffs.
+1. **Before** it forwards a prompt to an idle chat, it snapshots the working tree, and only then sends the prompt. So no tool can change a file before the snapshot.
+2. When the run settles, it snapshots again. A new prompt waits for that snapshot.
+3. It diffs the two snapshots and saves the patch and its line counts under the session id and the entry id of the user message that started the run.
+
+A snapshot copies the repo's index to a temporary file and runs `git add -A` and `git write-tree` against that copy (`GIT_INDEX_FILE`). New file contents go to Ludolph's own object store (`GIT_OBJECT_DIRECTORY`), with the repo's objects as an alternate (`GIT_ALTERNATE_OBJECT_DIRECTORIES`). So the repo gets no new objects, your index and staged changes stay as they are, and `.gitignore` is respected, which keeps ignored secrets out. This was checked on a test repo, and a snapshot of zeron-tools took 44 ms.
+
+Limits:
+
+- A snapshot that takes more than 10 s, or a new file over 10 MB, skips that run's changes and says so.
+- Binary files show as changed, without content.
+- Ludolph's object store is pruned with the saved patches: when they go over the size budget (as in `turns.rs` now), the oldest go first, then `git prune` removes what no saved run or running run still needs.
+
+Folders that aren't git repos get no run changes. Two chats working in the same repo at once see each other's changes in their diffs.
 
 ## Engine API
 
 The app and the relay link use the same tool layer, as `connect` and the Companion do now.
 
-- **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push changes. These are list changes, a chat's live transcript, and the engine's state. Pushing instead of polling means no 1-second timer while a window is hidden. The `ask_user` extension uses the same socket for its one call, `ask`.
+- **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push changes. These are list changes, a chat's live transcript, and the engine's state. Pushing instead of polling means no 1-second timer while a window is hidden. Each subscriber has a small, bounded queue. Changes waiting in it merge, and a subscriber that still falls behind gets a fresh snapshot instead of a backlog.
 - **Relay ↔ engine:** the relay protocol as it is now (`relay-proto`). Only the phone's tools are allowed, and they're checked in the engine, not on the relay.
 
 ### Tools
@@ -191,11 +227,11 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 |---|---|
 | `list_chats` | From the index |
 | `list_projects` | The distinct cwds in the index |
-| `chat_view` | Read from the session file, plus the live message if the chat is working |
+| `chat_view` | The [transcript](#live-view-and-the-file), latest messages first, in pages. Long tool output and images load on request. |
 | `send_message` | `prompt`, or a steering `prompt` |
 | `create_chat` | Start pi in the project's folder or a scratch folder, then `prompt` |
 | `interrupt_chat` | `clear_queue` and `abort` |
-| `respond_to_input` | `extension_ui_response` |
+| `respond_to_input` | The [open question](#questions-from-the-agent) with that id: the `ask` call's answer, or `extension_ui_response` |
 | `archive_chat` | Index |
 | `turn_changes` | Saved turn changes |
 | `composer_info` | Branch (`git`), context use (`get_session_stats`), model and thinking level |
@@ -238,8 +274,12 @@ They live in a `ui` crate. Each window gives them its own layout.
 The relay, its Kubernetes manifests, and the phone app (`relay/assets`) move into this repo. The phone app keeps its look and flows.
 
 - **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command.
-- **Notifications:** finished, needs you, and failed. As now, they wait until the Mac has been idle for 2 minutes, unless set to always notify.
+- **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later.
 - **Self-hosting:** the README explains how to run the relay (container image and manifests) and how to create the setup link.
+
+### Trust
+
+The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac, and keep the Mac's relay token in the Keychain. End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
 
 ## Performance budget
 
@@ -252,11 +292,18 @@ Targets on an Apple silicon Mac, with no chat working:
 | App, main window open | under 150 MB | about 0% when nothing changes on screen |
 | pi | one process per chat that's working or was used in the last few minutes | — |
 
+What keeps the engine inside its budget:
+
+- Index parsing streams line by line (see [index](#index)).
+- Transcripts load in pages, and long tool output and images load only when shown.
+- Subscriber queues are bounded (see [engine API](#engine-api)).
+- pi's stdout is read all the time, as pi asks, but the engine keeps only each chat's live tail.
+
 How we check:
 
 - `ps -o rss,pcpu` sampled over a minute in each state, on every release.
 - Index build time and memory with the 270 sessions on this Mac, cold and warm.
-- A soak test: 5 chats working at once for 10 minutes. The engine's memory shouldn't keep growing.
+- A soak test: 5 chats working at once for 10 minutes, one of them streaming a long answer, with a phone that stops reading. The engine's memory shouldn't keep growing.
 
 ## Repo layout
 
@@ -275,7 +322,7 @@ src/main.rs     the `ludolph` binary: `engine`, the app, and `install`/`uninstal
 ## Migration from Zeron
 
 - **Chats:** nothing to do. Zeron runs pi with session files under `~/.pi/agent/sessions`, so Ludolph's index finds them.
-- **Titles and archive state:** these live in Zeron's database. A one-time import runs while Zeron still runs, through zeron-tools' IPC client. It lists chats with their titles and archive state. It then maps each to its session file through `~/.pi/agent/zeron-sessions/<hash>.json`, which holds `{sessionId, sessionFile}`. That the hash is derived from the Zeron chat id is still to be checked. The import writes titles with `set_session_name` and archive state to the index. If the import is skipped, titles fall back to first words, and archiving starts from scratch.
+- **Titles and archive state:** these live in Zeron's database. A one-time import runs while Zeron still runs, through zeron-tools' IPC client. It lists chats with their titles and archive state. It then maps each to its session file through `~/.pi/agent/zeron-sessions/<hash>.json`, which holds `{sessionId, sessionFile}`. That the hash is derived from the Zeron chat id is still to be checked. The import writes titles and archive state to Ludolph's part of the index only. It starts no pi, so it's safe while Zeron still runs. Each imported title moves into pi's file with `set_session_name` the next time its chat runs in Ludolph. If the import is skipped, titles fall back to first words, and archiving starts from scratch.
 - **Turn changes:** zeron-tools' saved turns (`~/.zeron/turn-snapshots` and its own store) aren't carried over.
 
 ## Milestones
