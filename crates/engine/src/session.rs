@@ -90,6 +90,11 @@ struct Progress {
 }
 
 impl Summary {
+    /// When the file was last modified, as of its last read.
+    pub fn modified(&self) -> SystemTime {
+        self.progress.modified
+    }
+
     /// Read the session file at `path` from the start.
     ///
     /// Returns `None` if the file doesn't start with a complete pi session
