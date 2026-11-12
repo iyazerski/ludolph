@@ -204,6 +204,64 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     engine.shutdown().await.unwrap();
 }
 
+/// Call `tool` as the phone does.
+async fn tool(engine: &Engine, tool: &str, args: Value) -> anyhow::Result<Value> {
+    ludolph_engine::tools::call(engine, tool.parse().unwrap(), args).await
+}
+
+/// The text of the chat's last message, once it's settled.
+async fn last_reply(engine: &Engine, id: &str) -> String {
+    until(engine, |c| c[0].status == Status::Idle).await;
+    let view = engine.view(id, 40).await.unwrap();
+    let parts = &view.page.messages.last().unwrap().parts;
+    match parts.last().unwrap() {
+        Part::Text { text } => text.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_extensions_dialog_waits_for_an_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let id = engine.create(dir.path()).await.unwrap();
+
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    let view = tool(&engine, "chat_view", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(view["chat"]["status"], "awaitingInput");
+    assert_eq!(
+        view["read"]["pendingInput"],
+        json!({"requestId": "d1", "questions": [{"id": "answer", "header": null, "question": "Pick one",
+               "options": ["red", "blue"], "multiSelect": false, "multiline": false, "prefill": null}]})
+    );
+    let answer = json!({"chat": id, "request_id": "d1", "answers": [{"question_id": "answer", "labels": ["blue"]}]});
+    tool(&engine, "respond_to_input", answer.clone())
+        .await
+        .unwrap();
+    assert_eq!(last_reply(&engine, &id).await, "You picked blue.");
+    let again = tool(&engine, "respond_to_input", answer).await.unwrap_err();
+    assert!(
+        again.to_string().contains("no such open question"),
+        "{again:#}"
+    );
+
+    // Interrupting dismisses the dialog.
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    engine.interrupt(&id).await.unwrap();
+    assert_eq!(last_reply(&engine, &id).await, "You picked cancelled.");
+
+    // A dialog's own timeout ends the question.
+    engine.send(&id, "ask-briefly", Vec::new()).await.unwrap();
+    until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    assert_eq!(last_reply(&engine, &id).await, "You picked nothing.");
+    assert_eq!(engine.question(&id), None);
+    engine.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pi_that_dies_mid_run_leaves_the_chat_interrupted() {
     let dir = tempfile::tempdir().unwrap();

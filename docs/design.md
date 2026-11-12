@@ -145,9 +145,9 @@ For a chat with no process, the status comes from the index: the outcome of its 
 
 ### Questions from the agent
 
-Ludolph adds no question tool of its own. The questions it shows are extensions' dialogs: every `extension_ui_request` dialog (`select`, `confirm`, `input`, `editor`) waits for an answer, so a run would hang without one. Each shows as a one-question form in the shape of Claude Code's `AskUserQuestion` tool, which the phone app and the Companion already render: an optional `header`, the `question`, and `options` (each with a `label`). An answer is the picked label, or typed text. It goes back as an `extension_ui_response` (`docs/rpc-extension-ui.md`).
+Ludolph adds no question tool of its own. The questions it shows are extensions' dialogs: every `extension_ui_request` dialog (`select`, `confirm`, `input`, `editor`) waits for an answer, so a run would hang without one. Each shows as a one-question form in the shape the phone app and the Companion already render: an optional `header`, the `question`, `options` as strings, `multiline` and `prefill`. A `select` offers its options, a `confirm` offers Yes and No under its title, and an `editor` is multi-line with its prefilled text. An answer is the picked option, or typed text. It goes back as an `extension_ui_response` (`docs/rpc-extension-ui.md`).
 
-The engine keeps one list of open questions. Each entry has its id, its chat, and the pi process that asked. `respond_to_input` looks the id up and answers it. An id is answered once. Later answers, and answers to a question from a process that's gone, are refused. A question leaves the list when it's answered, when its dialog's `timeout` runs out, when the run is aborted, or when its pi exits.
+Each pi process keeps its open questions, oldest first, and the chat shows the oldest. `respond_to_input` looks the id up and answers it. An id is answered once. Later answers, and answers to a question from a process that's gone, are refused. A question leaves when it's answered, when its dialog's `timeout` runs out (pi resolves it itself and doesn't say so), when the run is interrupted (the engine dismisses it first), or when its pi exits. A pi with an open question isn't stopped for being idle, since an extension command can wait on it outside a run.
 
 ### Sessions open elsewhere
 
