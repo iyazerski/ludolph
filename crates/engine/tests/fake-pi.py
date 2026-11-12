@@ -76,10 +76,11 @@ def now():
 def prompt(command):
     respond(command, {"disposition": "started"})
     user = {"role": "user", "content": command["message"], "timestamp": now()}
+    # Written before it's reported, the harder order for telling whose it is.
+    write(user)
     emit({"type": "agent_start"})
     emit({"type": "message_start", "message": user})
     emit({"type": "message_end", "message": user})
-    write(user)
     if command["message"] == "crash":
         log("crash")
         os._exit(1)

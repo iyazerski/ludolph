@@ -28,6 +28,7 @@ pub enum Tool {
     SendMessage,
     CreateChat,
     InterruptChat,
+    TakeOverChat,
 }
 
 impl FromStr for Tool {
@@ -41,6 +42,7 @@ impl FromStr for Tool {
             "send_message" => Self::SendMessage,
             "create_chat" => Self::CreateChat,
             "interrupt_chat" => Self::InterruptChat,
+            "take_over_chat" => Self::TakeOverChat,
             _ => bail!("no tool {name}"),
         })
     }
@@ -59,6 +61,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::SendMessage => send_message(engine, parse(args)?).await,
         Tool::CreateChat => create_chat(engine, parse(args)?).await,
         Tool::InterruptChat => interrupt_chat(engine, parse(args)?).await,
+        Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
     }
 }
 
@@ -227,6 +230,11 @@ async fn interrupt_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
     Ok(json!({"chatId": args.chat}))
 }
 
+async fn take_over_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
+    engine.take_over(&args.chat).await?;
+    Ok(json!({"chatId": args.chat}))
+}
+
 fn find(engine: &Engine, id: &str) -> Result<ChatInfo> {
     engine
         .chats()
@@ -246,6 +254,7 @@ fn summary(chat: &ChatInfo, home: &Path, scratch: &Path) -> Value {
         "harness": "pi",
         "archived": false,
         "status": label(chat.status),
+        "openElsewhere": chat.elsewhere,
         "lastMessageAt": summary.and_then(|s| s.last_activity),
         "lastMessagePreview": summary.and_then(|s| s.last_prompt.as_deref()),
         "firstPrompt": summary.and_then(|s| s.first_prompt.as_deref()),

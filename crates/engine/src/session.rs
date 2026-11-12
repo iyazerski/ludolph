@@ -37,6 +37,9 @@ pub struct Summary {
     pub first_prompt: Option<String>,
     /// The last user message with text.
     pub last_prompt: Option<String>,
+    /// The `timestamp` pi gave the last user message, in milliseconds. pi
+    /// copies it from the message it reports, so it tells whose pi sent it.
+    pub last_user_at: Option<i64>,
     /// The newest user or assistant message.
     pub last_activity: Option<DateTime<Utc>>,
     /// How the last message left the chat; `None` before the first one.
@@ -108,6 +111,7 @@ impl Summary {
             title: None,
             first_prompt: None,
             last_prompt: None,
+            last_user_at: None,
             last_activity: None,
             outcome: None,
             leaf: None,
@@ -209,6 +213,9 @@ impl Summary {
             .or(entry_time);
         if let Some(time) = time {
             self.last_activity = self.last_activity.max(Some(time));
+        }
+        if message.role == Role::User {
+            self.last_user_at = message.timestamp;
         }
         if message.role == Role::User
             && let Some(text) = message.content.and_then(|content| preview(content.get()))

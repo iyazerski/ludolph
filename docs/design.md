@@ -155,11 +155,13 @@ pi doesn't lock session files and doesn't keep them open between writes (checked
 
 A pi loads its session file once and then only appends (`session-manager.js`, pi 1.5.2). So a second pi doesn't just add lines. It also writes from an old leaf, and the file branches.
 
-The engine knows when its own pi processes write. So when a session file grows with entries its own process didn't send, another pi is writing. Then:
+Every run starts with a user message, and pi writes the `timestamp` of the message it reports into the file. So each chat remembers the timestamps of the user messages its own pi reported. When the newest user message in a changed file isn't one of them, another pi wrote it. pi may write the file before it reports the message, so while the chat has its own pi, the engine gives that pi a second to report it first. Then:
 
 - The engine stops its own pi for that chat, if it has one, since that pi's view of the file is now stale.
 - The chat shows a banner, "Open in another pi", and its transcript follows the file live.
 - Sending stays off until you press **Take over**. It never turns back on by itself, since a terminal pi can run a long tool call without writing anything. Take over starts a fresh pi, which loads the file as it is then.
+
+This also marks chats that Ludolph never opened, when a terminal pi sends a prompt in them. The mark lives in memory, so it's cleared when the engine restarts.
 
 A terminal pi that's open but idle writes nothing, so this can't see it. The real fix is a lock in pi itself: we'll propose an advisory lock (`flock`) on the session file upstream, and use it once pi has it.
 

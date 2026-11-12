@@ -143,42 +143,61 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
     engine.shutdown().await.unwrap();
 }
 
+/// Append `entry` to `path` the way pi does: open, write, close. macOS
+/// reports a write when the file is closed.
+fn append(path: &Path, entry: &Value) {
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    std::io::Write::write_all(&mut file, format!("{entry}\n").as_bytes()).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn another_pis_writes_reach_the_list_and_the_chat() {
+async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
-    let path = dir.path().join("sessions/--work-app--/s1.jsonl");
+    let path = dir.path().join("sessions/--app--/s1.jsonl");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let user = |id: &str, parent: Option<&str>, text: &str| {
-        let message = json!({"role": "user", "content": text, "timestamp": 1});
+    let user = |id: &str, parent: Option<&str>, text: &str, at: i64| {
+        let message = json!({"role": "user", "content": text, "timestamp": at});
         json!({"type": "message", "id": id, "parentId": parent, "timestamp": "2026-05-01T10:00:00.000Z", "message": message})
     };
-    let header = json!({"type": "session", "version": 3, "id": "s1", "timestamp": "2026-05-01T10:00:00.000Z", "cwd": "/work/app"});
-    std::fs::write(&path, format!("{header}\n{}\n", user("a", None, "first"))).unwrap();
+    let header = json!({"type": "session", "version": 3, "id": "s1", "timestamp": "2026-05-01T10:00:00.000Z", "cwd": dir.path()});
+    std::fs::write(
+        &path,
+        format!("{header}\n{}\n", user("a", None, "first", 1)),
+    )
+    .unwrap();
     let chats = until(&engine, |c| {
         c.len() == 1 && last_prompt(&c[0]) == Some("first")
     })
     .await;
-    assert_eq!(chats[0].id, "s1");
+    assert_eq!((chats[0].id.as_str(), chats[0].elsewhere), ("s1", true));
 
     let mut changes = engine.subscribe_chat("s1").unwrap();
-    // Closed at once, like pi's appends: macOS reports a write on close.
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .unwrap();
-    std::io::Write::write_all(
-        &mut file,
-        format!("{}\n", user("b", Some("a"), "second")).as_bytes(),
-    )
-    .unwrap();
-    drop(file);
+    append(&path, &user("b", Some("a"), "second", 2));
     tokio::time::timeout(Duration::from_secs(5), changes.changed())
         .await
         .expect("the chat never changed")
         .unwrap();
-    let view = engine.view("s1", 40).await.unwrap();
-    assert_eq!(view.page.total, 2);
+    assert_eq!(engine.view("s1", 40).await.unwrap().page.total, 2);
+
+    // Sending waits for a take-over, and the chat's own prompts don't count
+    // as another pi's.
+    let refused = engine.send("s1", "mine", Vec::new()).await.unwrap_err();
+    assert!(refused.to_string().contains("another pi"), "{refused:#}");
+    engine.take_over("s1").await.unwrap();
+    engine.send("s1", "mine", Vec::new()).await.unwrap();
+    until(&engine, |c| {
+        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("mine")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!engine.chats()[0].elsewhere);
+
+    // Another pi's prompt while the chat's pi is open stops that pi.
+    let leaf = engine.chats()[0].summary.as_ref().unwrap().leaf.clone();
+    append(&path, &user("c", leaf.as_deref(), "theirs", 3));
+    until(&engine, |c| c[0].elsewhere).await;
+    all_exited(dir.path()).await;
 
     std::fs::remove_file(&path).unwrap();
     until(&engine, <[ChatInfo]>::is_empty).await;

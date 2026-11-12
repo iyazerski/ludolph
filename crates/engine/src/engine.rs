@@ -5,7 +5,7 @@
 //! chat first needs one and stops after a few idle minutes (`docs/design.md`,
 //! "pi processes").
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -28,6 +28,15 @@ use crate::watch::{Changes, Watcher};
 /// How long FSEvents waits for more changes to merge with one. pi writes a
 /// line per message, so this only merges bursts, like a compaction's.
 const WATCH_LATENCY: Duration = Duration::from_millis(100);
+
+/// How long a prompt the chat's own pi may have written waits for pi to
+/// report it, before it counts as another pi's. pi writes the file and
+/// reports the message in either order.
+const REPORT_WAIT: Duration = Duration::from_secs(1);
+
+/// How many of its own prompts a chat remembers. Only the newest in the file
+/// is ever looked up.
+const SENT_KEPT: usize = 64;
 
 /// Where the engine keeps its files and finds pi's, and how it runs pi.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +92,11 @@ struct Chat {
     process: Option<Running>,
     /// pi or the engine stopped during the last run.
     interrupted: bool,
+    /// The `timestamp`s of the user messages the chat's own pi reported.
+    sent: VecDeque<i64>,
+    /// Another pi wrote a prompt to the session, so sending waits for a
+    /// take-over.
+    elsewhere: bool,
     /// Bumped whenever the chat's view changes.
     changes: watch::Sender<u64>,
 }
@@ -94,6 +108,8 @@ impl Default for Chat {
             draft: None,
             process: None,
             interrupted: false,
+            sent: VecDeque::new(),
+            elsewhere: false,
             changes: watch::channel(0).0,
         }
     }
@@ -102,6 +118,22 @@ impl Default for Chat {
 impl Chat {
     fn changed(&self) {
         self.changes.send_modify(|revision| *revision += 1);
+    }
+
+    /// Remember a user message the chat's own pi reported.
+    fn sent(&mut self, message: &Value) {
+        let Some(at) = message["timestamp"]
+            .as_i64()
+            .filter(|_| message["role"] == "user")
+        else {
+            return;
+        };
+        if !self.sent.contains(&at) {
+            if self.sent.len() == SENT_KEPT {
+                self.sent.pop_front();
+            }
+            self.sent.push_back(at);
+        }
     }
 }
 
@@ -129,6 +161,8 @@ pub struct ChatInfo {
     /// The session's summary; `None` for a draft.
     pub summary: Option<Summary>,
     pub status: Status,
+    /// Another pi wrote to the session, so sending is off until a take-over.
+    pub elsewhere: bool,
 }
 
 /// A chat and the latest messages of its transcript.
@@ -362,6 +396,14 @@ impl Engine {
     pub async fn send(&self, id: &str, text: &str, images: Vec<Value>) -> Result<Delivery> {
         let ops = self.ops(id)?;
         let _ops = ops.lock().await;
+        if self
+            .state()
+            .chats
+            .get(id)
+            .is_some_and(|chat| chat.elsewhere)
+        {
+            bail!("this chat is open in another pi; take it over to send from Ludolph");
+        }
         let pi = self.process(id)?;
         {
             let mut state = self.state();
@@ -384,6 +426,23 @@ impl Engine {
             Some("handled") => Ok(Delivery::Handled),
             other => bail!("pi answered the prompt with {other:?}"),
         }
+    }
+
+    /// Turn sending back on for a chat another pi wrote to. The next message
+    /// starts a fresh pi, which loads the file as it is then.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat.
+    pub async fn take_over(&self, id: &str) -> Result<()> {
+        let ops = self.ops(id)?;
+        let _ops = ops.lock().await;
+        if let Some(chat) = self.state().chats.get_mut(id) {
+            chat.elsewhere = false;
+            chat.changed();
+        }
+        self.changed();
+        Ok(())
     }
 
     /// Stop a chat's run: drop its queued messages, then abort.
@@ -532,9 +591,17 @@ impl Engine {
         let Some(chat) = chats.get_mut(id) else {
             return Ok(());
         };
-        let Some(running) = chat.process.as_mut().filter(|r| Arc::ptr_eq(&r.pi, pi)) else {
+        if !chat
+            .process
+            .as_ref()
+            .is_some_and(|r| Arc::ptr_eq(&r.pi, pi))
+        {
             return Ok(());
-        };
+        }
+        if let Event::MessageStart { message } | Event::MessageEnd { message } = event {
+            chat.sent(message);
+        }
+        let running = chat.process.as_mut().expect("checked above");
         let working = running.live.working();
         let mut view_changed = running.live.apply(event);
         let mut list_changed = running.live.working() != working;
@@ -639,6 +706,16 @@ impl Engine {
     fn sync(&self, changes: Changes) {
         let sessions_dir = &self.0.config.sessions_dir;
         let mut state = self.state();
+        let prompts: HashMap<PathBuf, Option<i64>> = if changes.rescan {
+            let rows = state.index.iter();
+            rows.map(|(path, summary)| (path.to_owned(), summary.last_user_at))
+                .collect()
+        } else {
+            let paths = changes.paths.iter();
+            let rows = paths.map(|path| (path.clone(), state.index.get(path)));
+            rows.map(|(path, summary)| (path, summary.and_then(|s| s.last_user_at)))
+                .collect()
+        };
         let changed = if changes.rescan {
             state.index.refresh(sessions_dir).unwrap_or_else(|e| {
                 eprintln!("rescanning {}: {e:#}", sessions_dir.display());
@@ -658,14 +735,69 @@ impl Engine {
         if changed.is_empty() {
             return;
         }
+        let mut unreported = Vec::new();
+        let State { index, chats, .. } = &mut *state;
         for path in &changed {
-            let id = state.index.get(path).map(|summary| &summary.id);
-            if let Some(chat) = id.and_then(|id| state.chats.get(id)) {
-                chat.changed();
+            let Some(summary) = index.get(path) else {
+                continue;
+            };
+            let prompt = summary.last_user_at;
+            let new_prompt = prompt.filter(|at| prompts.get(path) != Some(&Some(*at)));
+            match (new_prompt, chats.get_mut(&summary.id)) {
+                (Some(at), Some(chat)) if !chat.sent.contains(&at) => {
+                    if chat.process.is_some() {
+                        unreported.push((summary.id.clone(), at));
+                    } else {
+                        chat.elsewhere = true;
+                    }
+                    chat.changed();
+                }
+                (_, Some(chat)) => chat.changed(),
+                (Some(_), None) => {
+                    let chat = Chat {
+                        elsewhere: true,
+                        ..Chat::default()
+                    };
+                    chats.insert(summary.id.clone(), chat);
+                }
+                (None, None) => {}
             }
         }
         drop(state);
         self.changed();
+        for (id, at) in unreported {
+            tokio::spawn(self.clone().unless_reported(id, at));
+        }
+    }
+
+    /// Wait for the chat's own pi to report the prompt sent at `at`. If it
+    /// doesn't, another pi wrote it: the chat's pi has a stale view of the
+    /// file now, so it's stopped, and sending waits for a take-over.
+    async fn unless_reported(self, id: String, at: i64) {
+        tokio::time::sleep(REPORT_WAIT).await;
+        let pi = {
+            let mut state = self.state();
+            let Some(chat) = state
+                .chats
+                .get_mut(&id)
+                .filter(|chat| !chat.sent.contains(&at))
+            else {
+                return;
+            };
+            chat.elsewhere = true;
+            chat.changed();
+            chat.process.as_ref().map(|running| running.pi.clone())
+        };
+        self.changed();
+        let Some(pi) = pi else { return };
+        let Ok(ops) = self.ops(&id) else { return };
+        let _ops = ops.lock().await;
+        if let Err(e) = pi.stop(self.0.config.grace).await {
+            eprintln!("chat {id}: stopping pi: {e:#}");
+        }
+        if let Err(e) = self.detach(&id, &pi) {
+            eprintln!("chat {id}: {e:#}");
+        }
     }
 
     fn save_index(&self) -> Result<()> {
@@ -719,6 +851,7 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
         created: summary.created,
         status: status(chat, Some(summary)),
         summary: Some(summary.clone()),
+        elsewhere: chat.is_some_and(|chat| chat.elsewhere),
     }
 }
 
@@ -732,6 +865,7 @@ fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
         created: draft.created,
         summary: None,
         status: status(Some(chat), None),
+        elsewhere: chat.elsewhere,
     })
 }
 
