@@ -12,7 +12,7 @@ use crate::session::{Freshness, Summary};
 
 /// The saved index's format. A file in any other format is ignored, and the
 /// index is built again from the session files.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 
 /// Every session file pi has written, by path.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
