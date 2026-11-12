@@ -29,6 +29,8 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         idle,
         grace: Duration::from_secs(2),
         home: dir.to_owned(),
+        title_model: None,
+        title_thinking: "low".into(),
     };
     Engine::start(config).await.unwrap()
 }
@@ -356,6 +358,46 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
     let engine = self::engine(dir.path(), Duration::from_secs(60)).await;
     assert_eq!(listed(&engine, json!({})).await, ["b", "d", "a"]);
     assert_eq!(listed(&engine, json!({"archived": true})).await, ["c"]);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chats_are_titled_as_soon_as_they_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("sessions/--old--/old.jsonl");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    let header = json!({"type": "session", "version": 3, "id": "old", "timestamp": "2026-05-01T10:00:00.000Z", "cwd": dir.path()});
+    let message = json!({"role": "user", "content": "rename the old module", "timestamp": 1_000});
+    let first = json!({"type": "message", "id": "m1", "parentId": null, "timestamp": "2026-05-01T10:00:00.000Z", "message": message});
+    std::fs::write(&old, format!("{header}\n{first}\n")).unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let title = |chat: &ChatInfo| chat.title.clone();
+    let saved = |chat: &ChatInfo| chat.summary.as_ref().and_then(|s| s.title.clone());
+
+    let id = engine.create(dir.path()).await.unwrap();
+    engine
+        .send(&id, "fix the build please", Vec::new())
+        .await
+        .unwrap();
+    let chats = until(&engine, |c| c.iter().any(|c| title(c).is_some())).await;
+    let chat = chats.iter().find(|c| c.id == id).unwrap();
+    assert_eq!(title(chat).as_deref(), Some("Fix The Build"));
+    // pi wrote it to the session, so pi's own `/resume` shows it too.
+    until(&engine, |c| {
+        c.iter()
+            .any(|c| saved(c).as_deref() == Some("Fix The Build"))
+    })
+    .await;
+    engine.send(&id, "and the tests", Vec::new()).await.unwrap();
+
+    // An old chat without a title gets one from its first prompt.
+    engine.send("old", "more", Vec::new()).await.unwrap();
+    let old = |c: &[ChatInfo]| c.iter().any(|c| c.id == "old" && saved(c).is_some());
+    let chats = until(&engine, old).await;
+    let chat = chats.iter().find(|c| c.id == "old").unwrap();
+    assert_eq!(saved(chat).as_deref(), Some("Rename The Old"));
+    let asked = std::fs::read_to_string(dir.path().join("pi.log-titles")).unwrap();
+    assert_eq!(asked, "fix the build\nrename the old\n");
     engine.shutdown().await.unwrap();
 }
 

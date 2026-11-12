@@ -240,7 +240,7 @@ async fn send_message(engine: &Engine, args: SendArgs) -> Result<Value> {
     let delivery = engine.send(&args.chat, text, Vec::new()).await?;
     Ok(json!({
         "chatId": args.chat,
-        "title": before.summary.and_then(|s| s.title),
+        "title": before.title,
         "sent": sent(delivery, before.status),
     }))
 }
@@ -388,7 +388,7 @@ struct ArchiveArgs {
 fn archive_chat(engine: &Engine, args: ArchiveArgs) -> Result<Value> {
     let archived = args.archived.unwrap_or(true);
     engine.archive(&args.chat, archived)?;
-    let title = find(engine, &args.chat)?.summary.and_then(|s| s.title);
+    let title = find(engine, &args.chat)?.title;
     Ok(json!({"chatId": args.chat, "title": title, "archived": archived}))
 }
 
@@ -410,7 +410,7 @@ fn summary(chat: &ChatInfo, config: &Config) -> Value {
     let summary = chat.summary.as_ref();
     json!({
         "id": chat.id,
-        "title": summary.and_then(|s| s.title.as_deref()),
+        "title": chat.title,
         "project": config.is_project(&chat.cwd).then(|| project(&chat.cwd)),
         "cwd": chat.cwd,
         "harness": "pi",

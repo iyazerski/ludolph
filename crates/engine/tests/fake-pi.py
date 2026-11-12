@@ -45,12 +45,27 @@ def session():
     return id, folder and os.path.join(folder, "--fake--", f"{id}.jsonl")
 
 
+def title():
+    """Answer like `pi -p` titling a chat, with the quotes and period models
+    add anyway. Calls go to their own log, apart from the chats' pi."""
+    words = sys.stdin.read().split()[:3]
+    if os.environ.get("FAKE_PI_LOG"):
+        with open(os.environ["FAKE_PI_LOG"] + "-titles", "a") as f:
+            f.write(" ".join(words) + "\n")
+    print(f'"{" ".join(words).title()}."')
+
+
+if "-p" in sys.argv:
+    title()
+    sys.exit(0)
+
 SESSION_ID, SESSION_FILE = session()
+NAME = None
 
 
-def write(message):
-    """Append a message entry to the session file, after a header if it's
-    new, as a child of the last entry, like pi."""
+def write(message, kind="message"):
+    """Append an entry to the session file, after a header if it's new, as a
+    child of the last entry, like pi."""
     if not SESSION_FILE:
         return
     os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
@@ -62,8 +77,13 @@ def write(message):
     else:
         lines.append({"type": "session", "version": 3, "id": SESSION_ID,
                       "timestamp": "2026-05-01T10:00:00.000Z", "cwd": os.getcwd()})
-    lines.append({"type": "message", "id": f"e{time.monotonic_ns()}", "parentId": parent,
-                  "timestamp": "2026-05-01T10:00:00.000Z", "message": message})
+    entry = {"type": kind, "id": f"e{time.monotonic_ns()}", "parentId": parent,
+             "timestamp": "2026-05-01T10:00:00.000Z"}
+    if kind == "message":
+        entry["message"] = message
+    else:
+        entry.update(message)
+    lines.append(entry)
     with open(SESSION_FILE, "a") as f:
         f.writelines(json.dumps(line) + "\n" for line in lines)
 
@@ -143,6 +163,7 @@ def ask(briefly):
 
 
 def main():
+    global NAME
     if os.environ.get("FAKE_PI_STUBBORN"):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     log("start " + " ".join(sys.argv[1:]))
@@ -154,7 +175,11 @@ def main():
             # pi accepts CRLF too.
             emit({"id": command["id"], "type": "response", "command": kind, "success": True,
                   "data": {"args": sys.argv[1:], "cwd": os.getcwd(), "sessionId": SESSION_ID,
-                           "sessionFile": SESSION_FILE}}, end="\r\n")
+                           "sessionFile": SESSION_FILE, "sessionName": NAME}}, end="\r\n")
+        elif kind == "set_session_name":
+            NAME = command["name"]
+            write({"name": NAME}, "session_info")
+            respond(command)
         elif kind == "prompt":
             prompt(command)
         elif kind == "spawn_child":
