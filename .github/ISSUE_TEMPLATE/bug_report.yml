@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in Ludolph doesn't work as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a chat
+        2. Send a message
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: Ludolph version
+    validations:
+      required: true
+  - type: input
+    id: pi
+    attributes:
+      label: pi version
+      description: The output of `pi --version`.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "26.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options:
+        - Main window
+        - Floating window
+        - Phone
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The end of Ludolph's log. Remove anything private first.
+      render: text

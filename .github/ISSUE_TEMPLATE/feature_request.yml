@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a change or a new feature.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: Describe the problem or the task, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How could Ludolph help? Screenshots or sketches are welcome.
