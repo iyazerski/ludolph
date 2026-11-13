@@ -1,0 +1,41 @@
+# ludolph-relay
+
+A tiny server that lets your phone reach the Ludolph engines on your Macs. Each Mac dials out to it, so the Macs need no open port. You sign in on the phone with a passkey. The relay keeps a few KB of state: passkeys, sessions, Mac tokens, and Web Push subscriptions. It never stores chats.
+
+## Run it
+
+It serves plain HTTP on `BIND_ADDR` (default `0.0.0.0:8080`). It needs a TLS-terminating proxy in front, since passkeys and Web Push need HTTPS. Settings, as flags or environment variables:
+
+| Variable | What it is |
+| --- | --- |
+| `PUBLIC_URL` | The address people open, like `https://ludolph.example.com`. Passkeys are bound to its host, so changing it later means new passkeys. |
+| `DATA_DIR` | Where state is kept. Default `data`. |
+| `SETUP_TOKEN` | A secret that lets you create the first passkey. Only needed until one exists. |
+
+Build the image from the repository root. It's a static binary in an empty image, and it cross-compiles, so an amd64 image builds on an arm64 Mac without emulation:
+
+```sh
+docker build -f crates/relay/Dockerfile --platform linux/amd64 -t ludolph-relay .
+```
+
+Or run it from source: `cargo run -p ludolph-relay -- --public-url https://ludolph.example.com`.
+
+## Kubernetes
+
+`k8s/` has the manifests for a cluster with Traefik and cert-manager. They assume a ClusterIssuer named `letsencrypt-prod` (see `k8s/certificate.yaml`). Fill in the image and host:
+
+```sh
+export APP_IMAGE=ghcr.io/you/ludolph-relay:1 PUBLIC_HOST=ludolph.example.com
+kubectl create secret generic ludolph-relay-secrets --from-literal=SETUP_TOKEN=$(openssl rand -hex 16)
+kubectl apply -f k8s/storage.yaml -f k8s/service.yaml -f k8s/traefik.yaml
+for f in certificate ingressroute deployment; do
+  sed -e "s|__APP_IMAGE__|$APP_IMAGE|g" -e "s|__PUBLIC_HOST__|$PUBLIC_HOST|g" k8s/$f.yaml | kubectl apply -f -
+done
+```
+
+Run one replica only: one process owns the state file and the Mac links.
+
+## First use
+
+1. Open `https://<host>/#/setup/<SETUP_TOKEN>` on your phone and create a passkey. Then you can remove `SETUP_TOKEN`.
+2. In the app, tap **Add a Mac**. It shows a `ludolph link …` command. Run it on the Mac, then `ludolph install` so the engine connects.

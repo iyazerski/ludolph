@@ -24,7 +24,7 @@ target/release/ludolph link --relay https://relay.example.com --token <token>
 target/release/ludolph install     # again, so the engine connects
 ```
 
-The token comes from the phone app's **Add a Mac**. `ludolph uninstall` stops the engine and removes it from login. The engine logs to `~/Library/Logs/Ludolph/engine.log`.
+The token comes from the phone app's **Add a Mac**, on a relay you host: see [crates/relay](crates/relay/README.md). `ludolph uninstall` stops the engine and removes it from login. The engine logs to `~/Library/Logs/Ludolph/engine.log`.
 
 Ideas and questions are welcome in [Discussions](https://github.com/iyazerski/ludolph/discussions).
 

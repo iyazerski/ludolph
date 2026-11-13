@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ludolph-relay
+  labels:
+    app.kubernetes.io/part-of: ludolph
+    app: ludolph-relay
+spec:
+  secretName: ludolph-relay-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - __PUBLIC_HOST__

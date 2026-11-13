@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ludolph-relay
+  labels:
+    app.kubernetes.io/part-of: ludolph
+    app: ludolph-relay
+spec:
+  type: ClusterIP
+  selector:
+    app: ludolph-relay
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

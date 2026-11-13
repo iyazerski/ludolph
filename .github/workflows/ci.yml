@@ -22,6 +22,17 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  # The relay ships as a Linux image, so it's tested there too.
+  relay:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - name: Test
+        run: cargo test -p ludolph-relay --locked
+
   licenses:
     runs-on: macos-26
 

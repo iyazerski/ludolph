@@ -31,6 +31,11 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+# The relay's session cookie and a Mac's Bearer token.
+axum-extra = { version = "0.12", default-features = false, features = ["cookie", "typed-header"] }
+base64 = "0.23"
+clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 dispatch2 = { version = "0.3", default-features = false, features = ["alloc"] }
@@ -43,13 +48,24 @@ objc2-io-kit = { version = "0.3", default-features = false, features = ["libc", 
 objc2-core-services = { version = "0.3", default-features = false, features = ["FSEvents", "dispatch2", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+# The relay's Web Push: rustls on ring, which also signs the VAPID tokens.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+ring = "0.17"
 # With only `ring` enabled, rustls picks its crypto provider on its own;
 # tokio-tungstenite leaves that to the app.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3"
+# The relay's session cookie Max-Age, as the cookie crate takes it.
+time = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+url = "2"
 uuid = { version = "1", features = ["v4"] }
+# Web Push encryption (RFC 8291).
+web-push-native = { version = "0.5", default-features = false }
+webauthn-rs = "0.6"
+# reqwest's TLS roots for Web Push (see the relay's `Push::open`).
+webpki-root-certs = "1"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

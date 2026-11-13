@@ -1,0 +1,40 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ludolph-relay-web
+  labels:
+    app.kubernetes.io/part-of: ludolph
+    app: ludolph-relay
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`__PUBLIC_HOST__`)
+      kind: Rule
+      middlewares:
+        - name: ludolph-relay-https-redirect
+      services:
+        - name: ludolph-relay
+          port: 8080
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ludolph-relay-websecure
+  labels:
+    app.kubernetes.io/part-of: ludolph
+    app: ludolph-relay
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`__PUBLIC_HOST__`)
+      kind: Rule
+      middlewares:
+        - name: ludolph-relay-security-headers
+        - name: ludolph-relay-rate-limit
+      services:
+        - name: ludolph-relay
+          port: 8080
+  tls:
+    secretName: ludolph-relay-tls
