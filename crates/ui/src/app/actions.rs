@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 
 use super::page::{Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
 use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
-use crate::data::{ChatView, ComposerInfo, Diff, Frame, Message, Polished, Role, Skills};
+use crate::data::{
+    ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Polished, Role, Skills,
+};
 use crate::dictation::{self, Heard, Listening};
 use crate::message::with_skill_refs;
 
@@ -61,6 +63,16 @@ impl State {
             }
         };
         chat.error = None;
+        // A streaming reply grows every frame, and springing the page to each new
+        // size keeps the window drawing at the display's rate for the whole reply.
+        if !frame.reset
+            && frame
+                .messages
+                .iter()
+                .any(|m| m.status == MessageStatus::Streaming)
+        {
+            tx.instant();
+        }
         let mut kept: HashMap<String, Message> = if frame.reset {
             chat.before.clear();
             chat.before_changes.clear();
