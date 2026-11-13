@@ -35,6 +35,12 @@ done
 
 Run one replica only: one process owns the state file and the Mac links.
 
+In a fork, `.github/workflows/deploy-relay.yml` does the same on each push to `main` that changes the relay. It runs once you set these on the repository:
+
+- the variable `RELAY_PUBLIC_HOST`, like `ludolph.example.com`;
+- the secret `KUBE_CONFIG_B64`, a base64 kubeconfig for the cluster;
+- optionally, `KUBE_NAMESPACE` (default `default`), and `KUBE_PULL_SECRET`, the cluster's secret for pulling the image while it's private on ghcr.io.
+
 ## First use
 
 1. Open `https://<host>/#/setup/<SETUP_TOKEN>` on your phone and create a passkey. Then you can remove `SETUP_TOKEN`.
