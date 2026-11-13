@@ -25,6 +25,7 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, header};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::engine::{Alert, AlertKind, Engine};
+use crate::settings::Notify;
 use crate::text::one_line;
 use crate::tools::{self, Tool};
 use crate::transcript::{self, Part};
@@ -53,15 +54,6 @@ const AWAY_AFTER: Duration = Duration::from_secs(120);
 /// How long building one notice (reading its chat) may take.
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(15);
 const BODY_CHARS: usize = 240;
-
-/// When the phone gets notifications.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotifyWhen {
-    /// Only while nobody uses the Mac: at it, you see the chat yourself.
-    Away,
-    /// Whether or not someone uses the Mac.
-    Always,
-}
 
 /// The relay's address and this Mac's token, from the phone's "Add a Mac".
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,9 +99,9 @@ impl Link {
 }
 
 /// Stay connected to the relay, answer its calls, and pass alerts on as
-/// `notify` allows, reconnecting when the link drops. It returns only when
-/// the relay rejects the token, since trying again can't help then.
-pub async fn run(engine: Engine, link: Link, notify: NotifyWhen) {
+/// the settings allow, reconnecting when the link drops. It returns only
+/// when the relay rejects the token, since trying again can't help then.
+pub async fn run(engine: Engine, link: Link) {
     let url = match socket_url(&link.relay) {
         Ok(url) => url,
         Err(e) => {
@@ -125,7 +117,7 @@ pub async fn run(engine: Engine, link: Link, notify: NotifyWhen) {
             let socket = dial(&url, &link.token).await?;
             eprintln!("relay: connected to {url}");
             connected = Some(Instant::now());
-            serve(socket, &engine, &slots, notify).await
+            serve(socket, &engine, &slots).await
         }
         .await;
         if connected.is_some_and(|at| at.elapsed() >= STABLE_AFTER) {
@@ -168,12 +160,7 @@ type Socket =
 ///
 /// Alerts from before it began are dropped: a late notice would only be
 /// noise (`docs/design.md`, "Phone and relay").
-async fn serve(
-    socket: Socket,
-    engine: &Engine,
-    slots: &Arc<Semaphore>,
-    notify: NotifyWhen,
-) -> Result<()> {
+async fn serve(socket: Socket, engine: &Engine, slots: &Arc<Semaphore>) -> Result<()> {
     let mut alerts = engine.alerts();
     let (mut sink, mut stream) = socket.split();
     sink.send(encode(&hello())?).await?;
@@ -209,7 +196,7 @@ async fn serve(
                 }
             }
             alert = alerts.recv() => match alert {
-                Ok(alert) => _ = calls.spawn(tell(engine.clone(), alert, notify)),
+                Ok(alert) => _ = calls.spawn(tell(engine.clone(), alert)),
                 Err(RecvError::Lagged(missed)) => eprintln!("relay: skipped {missed} notifications"),
                 Err(RecvError::Closed) => bail!("the engine stopped"),
             },
@@ -234,8 +221,11 @@ async fn answer(engine: Engine, slots: Arc<Semaphore>, call: Call) -> Up {
     let Call { id, tool, args } = call;
     let run = async {
         let _slot = slots.acquire().await?;
-        let tool: Tool = tool.parse()?;
-        tools::call(&engine, tool, args).await
+        let parsed: Tool = tool.parse()?;
+        if !parsed.for_phone() {
+            bail!("the phone can't call {tool}");
+        }
+        tools::call(&engine, parsed, args).await
     };
     let result = match tokio::time::timeout(CALL_TIMEOUT, run).await {
         Ok(result) => result.map_err(|e| format!("{e:#}")),
@@ -244,9 +234,10 @@ async fn answer(engine: Engine, slots: Arc<Semaphore>, call: Call) -> Up {
     Up::Reply { id, result }
 }
 
-/// The notice for `alert`, if `notify` allows one now and it's still news.
-async fn tell(engine: Engine, alert: Alert, notify: NotifyWhen) -> Option<Up> {
-    if notify == NotifyWhen::Away && !away() {
+/// The notice for `alert`, if the settings allow one now and it's still
+/// news.
+async fn tell(engine: Engine, alert: Alert) -> Option<Up> {
+    if engine.settings().notify == Notify::Away && !away() {
         return None;
     }
     match tokio::time::timeout(NOTICE_TIMEOUT, notice(&engine, &alert)).await {

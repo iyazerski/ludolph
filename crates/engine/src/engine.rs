@@ -23,6 +23,7 @@ use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
+use crate::settings::Settings;
 use crate::skills::{self, Skill};
 use crate::title::Titler;
 use crate::transcript::{Page, Tail, Transcripts};
@@ -60,10 +61,6 @@ pub struct Config {
     pub grace: Duration,
     /// The user's home folder. Chats there have no project.
     pub home: PathBuf,
-    /// The model that titles chats, or pi's default model.
-    pub title_model: Option<String>,
-    /// Its thinking level.
-    pub title_thinking: String,
 }
 
 impl Config {
@@ -96,6 +93,9 @@ struct Inner {
     watching: AbortHandle,
     /// Shared with titling tasks, which don't keep the engine alive.
     titler: Arc<Titler>,
+    /// The saved settings. Writes hold the lock until the file is saved, so
+    /// they land in order.
+    settings: Mutex<Settings>,
     turns: Arc<Turns>,
     catalog: Catalog,
 }
@@ -374,6 +374,7 @@ impl Engine {
             runtime,
             chats,
         };
+        let settings = Settings::load(&config.state_dir)?;
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
         // The engine's folder has no `.pi` settings to change the list.
         let catalog = Catalog::new(config.pi.clone(), config.state_dir.clone(), config.grace);
@@ -385,11 +386,8 @@ impl Engine {
             alerts: broadcast::channel(ALERTS).0,
             transcripts: Arc::default(),
             watching: tokio::spawn(follow(inner.clone(), watcher)).abort_handle(),
-            titler: Arc::new(Titler::new(
-                config.pi.clone(),
-                config.title_model.clone(),
-                config.title_thinking.clone(),
-            )),
+            titler: Arc::new(Titler::new(config.pi.clone())),
+            settings: Mutex::new(settings),
             config,
         })))
     }
@@ -684,9 +682,10 @@ impl Engine {
         };
         let engine = Arc::downgrade(&self.0);
         let titler = self.0.titler.clone();
+        let model = self.settings().sidecar_model;
         let id = id.to_owned();
         tokio::spawn(async move {
-            let title = titler.title(&prompt).await;
+            let title = titler.title(&prompt, model.as_deref()).await;
             let Some(engine) = engine.upgrade().map(Engine) else {
                 return;
             };
@@ -775,13 +774,45 @@ impl Engine {
         Ok(())
     }
 
-    /// `heard` from dictation, cleaned up by the title model.
+    /// `heard` from dictation, cleaned up by the sidecar model.
     ///
     /// # Errors
     ///
     /// Fails if it's blank, or the model fails.
     pub async fn polish(&self, heard: &str) -> Result<String> {
-        self.0.titler.polish(heard).await
+        let model = self.settings().sidecar_model;
+        self.0.titler.polish(heard, model.as_deref()).await
+    }
+
+    /// The current settings.
+    pub fn settings(&self) -> Settings {
+        self.0
+            .settings
+            .lock()
+            .expect("the settings lock isn't poisoned")
+            .clone()
+    }
+
+    /// Save `settings` and use them from now on.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the sidecar model isn't one pi lists, or the file can't be
+    /// written.
+    pub async fn set_settings(&self, settings: Settings) -> Result<Settings> {
+        if let Some(model) = &settings.sidecar_model
+            && self.0.catalog.find(model).await?.is_none()
+        {
+            bail!("pi has no model {model}");
+        }
+        let mut saved = self
+            .0
+            .settings
+            .lock()
+            .expect("the settings lock isn't poisoned");
+        settings.save(&self.0.config.state_dir)?;
+        *saved = settings.clone();
+        Ok(settings)
     }
 
     /// The models pi can use.

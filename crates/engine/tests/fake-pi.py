@@ -59,10 +59,11 @@ def title():
 
 def polish():
     """Answer like `pi -p` cleaning up dictation: without fillers, and with
-    the thinking level it was asked for."""
+    the model and thinking level it was asked for."""
     words = [w for w in sys.stdin.read().split() if w not in ("uh", "um")]
+    model = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else "default"
     thinking = sys.argv[sys.argv.index("--thinking") + 1]
-    print(f"\n{' '.join(words).capitalize()}. ({thinking})\n")
+    print(f"\n{' '.join(words).capitalize()}. ({model}, {thinking})\n")
 
 
 if "-p" in sys.argv:

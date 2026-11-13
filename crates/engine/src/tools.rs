@@ -1,6 +1,6 @@
 //! The tools the app and the phone call, by name, with JSON arguments and
 //! answers in the shapes the phone app reads today (zeron-tools'
-//! `connect/tools.rs`).
+//! `connect/tools.rs`). The settings tools are the app's alone.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -47,6 +47,16 @@ pub enum Tool {
     ComposerInfo,
     ListSkills,
     PolishDictation,
+    GetSettings,
+    SetSettings,
+}
+
+impl Tool {
+    /// Whether the phone may call it. The phone can't change settings, so a
+    /// relay can't, say, point dictation at a model of its choosing.
+    pub fn for_phone(self) -> bool {
+        !matches!(self, Self::GetSettings | Self::SetSettings)
+    }
 }
 
 impl FromStr for Tool {
@@ -71,6 +81,8 @@ impl FromStr for Tool {
             "composer_info" => Self::ComposerInfo,
             "list_skills" => Self::ListSkills,
             "polish_dictation" => Self::PolishDictation,
+            "get_settings" => Self::GetSettings,
+            "set_settings" => Self::SetSettings,
             _ => bail!("no tool {name}"),
         })
     }
@@ -100,6 +112,11 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::ComposerInfo => composer_info(engine, parse(args)?).await,
         Tool::ListSkills => list_skills(engine, parse(args)?).await,
         Tool::PolishDictation => polish_dictation(engine, parse(args)?).await,
+        Tool::GetSettings => Ok(serde_json::to_value(engine.settings())?),
+        // All of them at once: a field left out takes its default.
+        Tool::SetSettings => Ok(serde_json::to_value(
+            engine.set_settings(parse(args)?).await?,
+        )?),
     }
 }
 
