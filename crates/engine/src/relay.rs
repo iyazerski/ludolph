@@ -3,10 +3,12 @@
 //!
 //! The engine keeps one outgoing WebSocket to the relay, and answers its
 //! calls with the same tools the app uses. Only those tools exist, so the
-//! relay can't reach anything else on the Mac. It also passes the chats'
+//! relay can't reach anything else on the Mac. It streams the chats the phone
+//! has open as their feeds' frames. It also passes the chats'
 //! alerts on, so the phone can notify you, and the battery, which the
 //! phone shows.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,18 +16,19 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use ludolph_relay_proto::{CONNECT_PATH, Call, Notice, NoticeKind, PROTOCOL, Up};
+use ludolph_relay_proto::{CONNECT_PATH, Down, Notice, NoticeKind, PROTOCOL, Up};
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::task::JoinSet;
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::{AbortHandle, JoinSet};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, Uri, header};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::engine::{Alert, AlertKind, Engine};
+use crate::feed::{self, Feed};
 use crate::power;
 use crate::settings::Notify;
 use crate::text::one_line;
@@ -51,6 +54,13 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(25);
 const MAX_CALLS: usize = 16;
 /// Calls running or waiting on one connection; more are refused.
 const MAX_QUEUED_CALLS: usize = 64;
+/// Chats followed at once on one connection; more are refused.
+const MAX_WATCHES: usize = 32;
+/// The shortest time between two frames of a chat the phone follows: slower
+/// than on the Mac, since each goes over the network.
+const PHONE_FRAME: Duration = Duration::from_millis(200);
+/// Frames waiting to be sent; a followed chat waits when they're full.
+const FRAME_QUEUE: usize = 16;
 /// The Mac counts as in use if it had keyboard or mouse input this recently.
 const AWAY_AFTER: Duration = Duration::from_secs(120);
 /// How long building one notice (reading its chat) may take.
@@ -179,6 +189,11 @@ async fn serve(
     // Calls and notices being built. Dropping the set when the connection
     // ends stops them, since they have nowhere to go.
     let mut calls: JoinSet<Option<Up>> = JoinSet::new();
+    // The chats the phone follows, by watch id. Their tasks end with the
+    // connection, like the calls.
+    let mut watches: JoinSet<()> = JoinSet::new();
+    let mut watching: HashMap<u64, AbortHandle> = HashMap::new();
+    let (frames_tx, mut frames) = mpsc::channel::<Up>(FRAME_QUEUE);
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut heard = Instant::now();
     loop {
@@ -186,17 +201,35 @@ async fn serve(
             frame = stream.next() => {
                 heard = Instant::now();
                 match frame {
-                    Some(Ok(Message::Text(body))) => match serde_json::from_str::<Call>(&body) {
-                        Ok(call) if calls.len() >= MAX_QUEUED_CALLS => {
-                            let busy = Up::Reply { id: call.id, result: Err("this Mac is busy; try again".into()) };
+                    Some(Ok(Message::Text(body))) => match serde_json::from_str::<Down>(&body) {
+                        Ok(Down::Call { id, .. }) if calls.len() >= MAX_QUEUED_CALLS => {
+                            let busy = Up::Reply { id, result: Err("this Mac is busy; try again".into()) };
                             sink.send(encode(&busy)?).await?;
                         }
-                        Ok(call) => {
-                            let reply = answer(engine.clone(), slots.clone(), call);
+                        Ok(Down::Call { id, tool, args }) => {
+                            let reply = answer(engine.clone(), slots.clone(), id, tool, args);
                             calls.spawn(async { Some(reply.await) });
                         }
+                        Ok(Down::Watch { id, chat }) => {
+                            while watches.try_join_next().is_some() {}
+                            watching.retain(|_, handle| !handle.is_finished());
+                            if watching.len() >= MAX_WATCHES {
+                                let full = Up::Frame { id, frame: serde_json::json!({"error": "this Mac follows too many chats; close some"}) };
+                                sink.send(encode(&full)?).await?;
+                                continue;
+                            }
+                            let handle = watches.spawn(watch(engine.clone(), id, chat, frames_tx.clone()));
+                            if let Some(old) = watching.insert(id, handle) {
+                                old.abort();
+                            }
+                        }
+                        Ok(Down::Unwatch { id }) => {
+                            if let Some(handle) = watching.remove(&id) {
+                                handle.abort();
+                            }
+                        }
                         // The relay times out the call it holds.
-                        Err(e) => eprintln!("relay: skipped a bad call: {e}"),
+                        Err(e) => eprintln!("relay: skipped a bad message: {e}"),
                     },
                     Some(Ok(Message::Close(_))) | None => return Ok(()),
                     Some(Ok(_)) => {}
@@ -224,6 +257,7 @@ async fn serve(
                     sink.send(encode(&up)?).await?;
                 }
             }
+            Some(frame) = frames.recv() => sink.send(encode(&frame)?).await?,
             _ = ping.tick() => {
                 if heard.elapsed() > SILENCE_LIMIT {
                     bail!("no word from the relay for {}s", SILENCE_LIMIT.as_secs());
@@ -236,8 +270,13 @@ async fn serve(
 
 /// Run one call and return its reply. Waiting for a slot counts toward
 /// [`CALL_TIMEOUT`], so the reply still reaches the relay in time.
-async fn answer(engine: Engine, slots: Arc<Semaphore>, call: Call) -> Up {
-    let Call { id, tool, args } = call;
+async fn answer(
+    engine: Engine,
+    slots: Arc<Semaphore>,
+    id: u64,
+    tool: String,
+    args: serde_json::Value,
+) -> Up {
     let run = async {
         let _slot = slots.acquire().await?;
         let parsed: Tool = tool.parse()?;
@@ -251,6 +290,22 @@ async fn answer(engine: Engine, slots: Arc<Semaphore>, call: Call) -> Up {
         Err(_) => Err("the Mac didn't answer in time".into()),
     };
     Up::Reply { id, result }
+}
+
+/// Follow chat `chat` for the phone, sending its frames to `out` as watch
+/// `id`'s until the relay stops it or the connection ends.
+async fn watch(engine: Engine, id: u64, chat: String, out: mpsc::Sender<Up>) {
+    let send = move |frame| {
+        let out = out.clone();
+        async move { out.send(Up::Frame { id, frame }).await.is_ok() }
+    };
+    match engine.subscribe_chat(&chat) {
+        Ok(changes) => {
+            let feed = Feed::new(engine, chat, false);
+            feed::follow(changes, feed, PHONE_FRAME, send).await;
+        }
+        Err(e) => _ = send(serde_json::json!({"error": format!("{e:#}")})).await,
+    }
 }
 
 /// Wait for the battery to change; forever without a way to tell.

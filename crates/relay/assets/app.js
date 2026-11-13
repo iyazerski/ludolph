@@ -225,6 +225,68 @@ function poller(fn, interval) {
   return { now: tick, stop() { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", wake); } };
 }
 
+/** A stream with nothing, not even the relay's keep-alive, for this long is dead. */
+const STALL_TIMEOUT = 40000;
+
+/** Follow `path`'s server-sent events while the page is visible, passing each
+ * one's JSON to `onEvent`. `onDown` gets the relay's reason when it refuses the
+ * stream, and `null` once it's up. It reconnects after a drop, backing off
+ * while it keeps failing; each connection starts over, as the relay sends. */
+function eventStream(path, onEvent, onDown) {
+  let ctl = null, timer = null, stopped = false, failures = 0;
+  const open = async () => {
+    clearTimeout(timer);
+    if (stopped || document.hidden || ctl) return;
+    const mine = ctl = new AbortController();
+    let stall = null, refused = false;
+    const alive = () => { clearTimeout(stall); stall = setTimeout(() => mine.abort(), STALL_TIMEOUT); };
+    try {
+      alive();
+      const res = await fetch(path, { signal: mine.signal, headers: { Accept: "text/event-stream" } });
+      setOnline(true);
+      if (res.status === 401) { stopped = true; showSignIn(); return; }
+      if (!res.ok) {
+        refused = true;
+        const data = await res.json().catch(() => null);
+        onDown(data?.error || `HTTP ${res.status}`);
+        return;
+      }
+      onDown(null);
+      failures = 0;
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        alive();
+        buffer += value;
+        let end;
+        while ((end = buffer.indexOf("\n\n")) >= 0) {
+          const data = buffer.slice(0, end).split("\n").filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n");
+          buffer = buffer.slice(end + 2);
+          if (data) onEvent(JSON.parse(data));
+        }
+      }
+    } catch (e) {
+      // An abort is ours: hidden, stopped, or stalled.
+      if (e.name !== "AbortError") { refused = true; setOnline(false); }
+    } finally {
+      clearTimeout(stall);
+      if (ctl === mine) ctl = null;
+      if (refused) failures++;
+      if (!stopped) timer = setTimeout(open, refused ? Math.min(1000 * 2 ** Math.min(failures, 4), 15000) : 300);
+    }
+  };
+  const wake = () => (document.hidden ? ctl?.abort() : open());
+  document.addEventListener("visibilitychange", wake);
+  open();
+  return {
+    /** Connect now if the stream is down. */
+    now: open,
+    stop() { stopped = true; clearTimeout(timer); ctl?.abort(); document.removeEventListener("visibilitychange", wake); },
+  };
+}
+
 /** What the app knows about the Macs and their chats. `chats` holds every
  * Mac loaded so far, so switching back shows them at once; `loaded` names those Macs. */
 const store = { machines: null, chats: null, loaded: new Set() };
@@ -889,7 +951,7 @@ function chatView(machine, id, fromList) {
     h("button", { class: "circle", "aria-label": "Back", onclick: () => { haptic(5); fromList ? history.back() : go("#/"); } }, icon("back")),
     h("div", { class: "grow" }, titleEl, subEl),
     isDraft ? h("div", { class: "circle" }) : h("button", { class: "circle", "aria-label": "More", onclick: () => menu() }, icon("more"))));
-  const older = h("button", { class: "older hide", onclick: () => { earlier = 40; keepAnchor = true; poll.now(); } }, "Load earlier messages");
+  const older = h("button", { class: "older hide", onclick: () => loadEarlier() }, "Load earlier messages");
   const started = !isDraft && handoff?.chat === id ? handoff.text : null;
   if (started) handoff = null;
   const msgs = h("div", { class: `msgs${isDraft ? " blank" : ""}` }, older,
@@ -946,9 +1008,11 @@ function chatView(machine, id, fromList) {
   const dockSize = new ResizeObserver(() => el.style.setProperty("--dock", `${dock.offsetHeight}px`));
   dockSize.observe(dock);
 
-  // Once earlier messages are loaded, the page runs from its first message (`from`) to the end,
-  // so new ones don't push the loaded ones out.
-  let chat = null, read = null, from = null, earlier = 0, version = "", keepAnchor = false, pending = [];
+  // The page is the Mac's feed (`frame`, its messages by id in `ids` order),
+  // after the earlier messages loaded with chat_view (`before`).
+  let chat = null, read = null, frame = null, ids = [], keepAnchor = false, pending = [];
+  const feedMessages = new Map();
+  let before = [], beforeChanges = [];
   // The composer's branch, context, and model (composer_info): re-read when the chat
   // moves, at most every few seconds.
   let info = null, infoFor = "", infoAt = 0;
@@ -1218,8 +1282,7 @@ function chatView(machine, id, fromList) {
     try {
       await api("send_message", images.images.length ? { text, images: images.images } : { text });
       images.done();
-      version = "";
-      poll.now();
+      feed.now();
     } catch (e) {
       bubble.remove();
       pending = pending.filter(p => p.el !== bubble);
@@ -1239,8 +1302,7 @@ function chatView(machine, id, fromList) {
     try {
       await api("take_over_chat", {});
       elsewhere.classList.add("hide");
-      version = "";
-      poll.now();
+      feed.now();
     } catch (e) {
       toast({ title: "Not taken over", body: e.message, kind: "error" });
     }
@@ -1251,8 +1313,7 @@ function chatView(machine, id, fromList) {
     sendBtn.disabled = true;
     try {
       await api("interrupt_chat");
-      version = "";
-      poll.now();
+      feed.now();
     } catch (e) { toast({ title: "Couldn't stop", body: e.message, kind: "error" }); }
     finally { updateComposer(); }
   }
@@ -1290,8 +1351,7 @@ function chatView(machine, id, fromList) {
         try {
           await api("rename_chat", { title });
           close();
-          version = "";
-          poll.now();
+          feed.now();
         } catch (e) { toast({ title: "Couldn't rename", body: e.message, kind: "error" }); save.disabled = false; }
       } }, "Save");
       field.addEventListener("keydown", e => e.key === "Enter" && save.click());
@@ -1473,8 +1533,7 @@ function chatView(machine, id, fromList) {
       haptic(10);
       try {
         await api("respond_to_input", { id: input.id, ...reply });
-        version = "";
-        poll.now();
+        feed.now();
       } catch (e) { toast({ title: "Not sent", body: e.message, kind: "error" }); buttons.forEach(b => (b.disabled = false)); }
     };
     const choice = (label, reply) => {
@@ -1714,35 +1773,67 @@ function chatView(machine, id, fromList) {
     drawInfo();
   }
 
-  // One call per poll: the chat, and its messages only when they may have
-  // changed since `version` (the Mac decides; always while it works).
-  async function refresh() {
-    let view;
-    try {
-      view = await api("chat_view", from || earlier ? { from: from ?? read?.messages[0]?.id, earlier, known: version } : { known: version });
-    } catch (e) {
-      // Show why the Mac can't answer instead of a stale page.
-      const name = machineName(machine);
-      const why = /offline|didn't answer/.test(e.message) ? [`${name} is offline`] : null;
-      if (why) macOffline.replaceChildren(icon("alert"), ...why);
-      macOffline.classList.toggle("hide", !why);
-      throw e;
+  /** Show why the Mac can't stream the chat; `null` hides it. */
+  function down(reason) {
+    const why = reason && (/offline|didn't answer/.test(reason) ? `${machineName(machine)} is offline` : reason);
+    if (why) macOffline.replaceChildren(icon("alert"), why);
+    macOffline.classList.toggle("hide", !why);
+  }
+
+  // Each frame has the page's ids and only the messages that changed; the
+  // chat, its run, and what it asks come whole.
+  function onFrame(next) {
+    if (next.error) return down(next.error);
+    if (next.reset) { feedMessages.clear(); before = []; beforeChanges = []; }
+    for (const m of next.messages) feedMessages.set(m.id, m);
+    ids = next.ids;
+    if (feedMessages.size > ids.length) {
+      const keep = new Set(ids);
+      for (const id of feedMessages.keys()) if (!keep.has(id)) feedMessages.delete(id);
     }
-    macOffline.classList.add("hide");
-    chat = view.chat;
+    frame = next;
+    chat = frame.chat;
     elsewhere.classList.toggle("hide", !chat.openElsewhere);
     seen.mark(chat);
     drawHeader();
-    if (view.version !== infoFor && Date.now() - infoAt > 8000) { infoFor = view.version; loadInfo(); }
-    if (!view.read) return;
-    read = view.read;
-    if (earlier) { from = read.messages[0]?.id ?? from; earlier = 0; }
+    const infoKey = `${chat.status}|${chat.lastMessageAt}`;
+    if (infoKey !== infoFor && Date.now() - infoAt > 8000) { infoFor = infoKey; loadInfo(); }
+    compose();
     drawMessages();
-    // Only once the messages are shown, so a failed poll retries them.
-    version = view.version;
   }
 
-  const poll = isDraft ? null : poller(() => refresh(), () => (isWorking() ? 1100 : 3500));
+  function compose() {
+    const runs = new Set(frame.turnChanges.map(c => c.turn));
+    read = {
+      messages: [...before, ...ids.map(id => feedMessages.get(id))],
+      turnChanges: [...beforeChanges.filter(c => !runs.has(c.turn)), ...frame.turnChanges],
+      pendingInput: frame.pendingInput,
+      run: frame.run,
+      olderRemaining: Math.max(0, frame.olderRemaining - before.length),
+    };
+  }
+
+  // The feed follows the latest messages; earlier ones are read once.
+  async function loadEarlier() {
+    const first = read?.messages[0]?.id;
+    if (!first) return;
+    older.disabled = true;
+    try {
+      const view = await api("chat_view", { from: first, earlier: 40 });
+      const at = view.read.messages.findIndex(m => m.id === first);
+      before = [...view.read.messages.slice(0, Math.max(0, at)), ...before];
+      beforeChanges = [...view.read.turnChanges, ...beforeChanges];
+      keepAnchor = true;
+      compose();
+      drawMessages();
+    } catch (e) {
+      toast({ title: "Couldn't load earlier messages", body: e.message, kind: "error" });
+    } finally {
+      older.disabled = false;
+    }
+  }
+
+  const feed = isDraft ? null : eventStream(`/api/watch/${encodeURIComponent(machine)}/${encodeURIComponent(id)}`, onFrame, down);
   if (isDraft) loadDraft();
   return {
     kind: isDraft ? "new" : "chat",
@@ -1752,7 +1843,7 @@ function chatView(machine, id, fromList) {
       updateComposer();
       if (isDraft && machine) textarea.focus();
     },
-    destroy() { poll?.stop(); offline.stop(); dockSize.disconnect(); clearInterval(clock); stopDictation(); },
+    destroy() { feed?.stop(); offline.stop(); dockSize.disconnect(); clearInterval(clock); stopDictation(); },
   };
 }
 

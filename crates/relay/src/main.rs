@@ -13,6 +13,7 @@ mod hub;
 mod push;
 mod store;
 
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use anyhow::{Context, Result};
 use axum::extract::{DefaultBodyLimit, Path, Request, State, WebSocketUpgrade};
 use axum::http::{Method, StatusCode, header};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -184,6 +186,7 @@ async fn main() -> Result<()> {
             "/api/call/{machine}/{tool}",
             post(call_tool).layer(DefaultBodyLimit::max(MAX_CALL)),
         )
+        .route("/api/watch/{machine}/{chat}", get(watch_chat))
         .route("/push/key", post(push_key))
         .route("/push/subscribe", post(push_subscribe))
         .route("/push/unsubscribe", post(push_unsubscribe))
@@ -382,6 +385,31 @@ async fn call_tool(
 ) -> Response {
     match app.hub.call(&machine, tool, args).await {
         Ok(value) => Json(value).into_response(),
+        Err(error) => failure(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+/// Stream a chat's feed from a Mac as server-sent events, one frame each.
+/// The stream ends when the Mac goes away or the phone falls behind; the
+/// phone then connects again and starts over.
+async fn watch_chat(
+    State(app): State<App>,
+    Path((machine, chat)): Path<(String, String)>,
+) -> Response {
+    match app.hub.watch(&machine, chat).await {
+        Ok(watch) => {
+            let frames = futures_util::stream::unfold(watch, |mut watch| async move {
+                let frame = watch.frames.recv().await?;
+                Some((
+                    Ok::<_, Infallible>(Event::default().data(frame.to_string())),
+                    watch,
+                ))
+            });
+            // Comments keep proxies and phones from closing a quiet stream.
+            Sse::new(frames)
+                .keep_alive(KeepAlive::default())
+                .into_response()
+        }
         Err(error) => failure(StatusCode::BAD_REQUEST, error),
     }
 }

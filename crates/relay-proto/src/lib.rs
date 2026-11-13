@@ -1,8 +1,10 @@
 //! Messages between the Ludolph engine (on each Mac) and the relay.
 //!
 //! The Mac opens one WebSocket to the relay and keeps it open. Both sides
-//! send JSON text frames: the relay sends [`Call`]s, the Mac answers each with
-//! an [`Up::Reply`] and reports chat changes with [`Up::Notify`].
+//! send JSON text frames: the relay sends [`Down`] messages, calls and chats
+//! to follow for the phone, and the Mac answers each call with an
+//! [`Up::Reply`], streams followed chats as [`Up::Frame`]s, and reports chat
+//! changes with [`Up::Notify`].
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -11,17 +13,24 @@ use serde_json::Value;
 
 /// Bumped when a message or a tool's answer changes shape, since the relay
 /// serves the phone app the answers are for; it refuses other versions.
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 
 /// The path the Mac connects to, with `Authorization: Bearer <token>`.
 pub const CONNECT_PATH: &str = "/connect";
 
-/// Relay → Mac: run one of the phone's tools (`list_chats`, `send_message`, …).
+/// Relay → Mac.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Call {
-    pub id: u64,
-    pub tool: String,
-    pub args: Value,
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Down {
+    /// Run one of the phone's tools (`list_chats`, `send_message`, …), and
+    /// answer with an [`Up::Reply`] with the same `id`.
+    Call { id: u64, tool: String, args: Value },
+    /// Follow chat `chat` for the phone: push its feed's frames as
+    /// [`Up::Frame`]s with this `id` until [`Down::Unwatch`] or the
+    /// connection ends.
+    Watch { id: u64, chat: String },
+    /// Stop following the chat of [`Down::Watch`] `id`.
+    Unwatch { id: u64 },
 }
 
 /// Mac → relay.
@@ -39,6 +48,9 @@ pub enum Up {
         id: u64,
         result: Result<Value, String>,
     },
+    /// A frame of the chat followed for [`Down::Watch`] `id`: its latest
+    /// messages, then those that changed. A frame with an `error` is the last.
+    Frame { id: u64, frame: Value },
     /// A chat finished, needs an answer, failed, or was cut off.
     Notify(Notice),
     /// The Mac's battery, `None` on a Mac without one: sent after
@@ -127,6 +139,32 @@ mod tests {
 
     #[test]
     fn messages_keep_their_wire_shape() {
+        let call = Down::Call {
+            id: 7,
+            tool: "list_chats".into(),
+            args: json!({}),
+        };
+        let value = serde_json::to_value(&call).unwrap();
+        assert_eq!(
+            value,
+            json!({ "type": "call", "id": 7, "tool": "list_chats", "args": {} })
+        );
+        assert_eq!(serde_json::from_value::<Down>(value).unwrap(), call);
+        let watch = serde_json::to_value(Down::Watch {
+            id: 8,
+            chat: "c".into(),
+        })
+        .unwrap();
+        assert_eq!(watch, json!({ "type": "watch", "id": 8, "chat": "c" }));
+        let frame = serde_json::to_value(Up::Frame {
+            id: 8,
+            frame: json!({"reset": true}),
+        })
+        .unwrap();
+        assert_eq!(
+            frame,
+            json!({ "type": "frame", "id": 8, "frame": { "reset": true } })
+        );
         let reply = Up::Reply {
             id: 7,
             result: Err("no such chat".into()),

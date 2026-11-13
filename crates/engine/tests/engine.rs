@@ -913,6 +913,12 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
             .iter()
             .all(|f| f["chatId"] == *chat && f["error"].is_null())
     );
+    let last = frames.last().unwrap();
+    assert_eq!(
+        (&last["total"], &last["olderRemaining"]),
+        (&json!(4), &json!(0)),
+        "{last}"
+    );
 
     // A client that closes its side after sending still gets the answer.
     let (read, mut write) = UnixStream::connect(&socket).await.unwrap().into_split();
@@ -1029,7 +1035,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         .await
         .unwrap();
     assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
-    assert_eq!(from_mac(&mut socket).await["protocol"], 4);
+    assert_eq!(from_mac(&mut socket).await["protocol"], 5);
     // A Mac without a battery, like a CI machine, reports none.
     let power = from_mac(&mut socket).await;
     let battery = &power["battery"];
@@ -1041,9 +1047,9 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
 
     let calls = [
         json!("nonsense"),
-        json!({"id": 7, "tool": "list_chats", "args": {}}),
-        json!({"id": 8, "tool": "open_terminal", "args": {}}),
-        json!({"id": 6, "tool": "set_settings", "args": {"sidecarModel": null}}),
+        json!({"type": "call", "id": 7, "tool": "list_chats", "args": {}}),
+        json!({"type": "call", "id": 8, "tool": "open_terminal", "args": {}}),
+        json!({"type": "call", "id": 6, "tool": "set_settings", "args": {"sidecarModel": null}}),
     ];
     for call in calls {
         let text = call
@@ -1064,8 +1070,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     );
 
     // Each moment worth telling reaches the phone as a notice.
-    let create =
-        json!({"id": 9, "tool": "create_chat", "args": {"project": dir.path(), "prompt": "ask"}});
+    let create = json!({"type": "call", "id": 9, "tool": "create_chat", "args": {"project": dir.path(), "prompt": "ask"}});
     socket
         .send(Message::Text(create.to_string().into()))
         .await
@@ -1078,7 +1083,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         (&json!("input"), &json!(chat))
     );
     assert_eq!(asked["body"], "Needs your answer: Pick one");
-    let answer = json!({"id": 10, "tool": "respond_to_input", "args": {"chat": chat,
+    let answer = json!({"type": "call", "id": 10, "tool": "respond_to_input", "args": {"chat": chat,
                         "id": "d1", "value": "red"}});
     socket
         .send(Message::Text(answer.to_string().into()))
@@ -1089,7 +1094,39 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         (&finished["kind"], &finished["body"]),
         (&json!("finished"), &json!("You picked red."))
     );
-    let crash = json!({"id": 11, "tool": "send_message", "args": {"chat": chat, "text": "crash"}});
+    // The phone follows a chat as frames of its feed, until it stops.
+    for watch in [
+        json!({"type": "watch", "id": 20, "chat": chat}),
+        json!({"type": "watch", "id": 21, "chat": "nope"}),
+    ] {
+        socket
+            .send(Message::Text(watch.to_string().into()))
+            .await
+            .unwrap();
+    }
+    // In any order: the missing chat's answer needs no reading.
+    let mut frames = std::collections::BTreeMap::new();
+    while frames.len() < 2 {
+        let frame = until_from_mac(&mut socket, |m| m["type"] == "frame").await;
+        frames
+            .entry(frame["id"].as_u64().unwrap())
+            .or_insert(frame["frame"].clone());
+    }
+    assert_eq!(frames[&20]["reset"], true, "{}", frames[&20]);
+    assert_eq!(
+        frames[&20]["ids"].as_array().unwrap().len(),
+        2,
+        "{}",
+        frames[&20]
+    );
+    assert_eq!(frames[&21], json!({"error": "no chat nope"}));
+    let unwatch = json!({"type": "unwatch", "id": 20});
+    socket
+        .send(Message::Text(unwatch.to_string().into()))
+        .await
+        .unwrap();
+
+    let crash = json!({"type": "call", "id": 11, "tool": "send_message", "args": {"chat": chat, "text": "crash"}});
     socket
         .send(Message::Text(crash.to_string().into()))
         .await
