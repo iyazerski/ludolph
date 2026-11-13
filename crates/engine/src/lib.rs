@@ -6,6 +6,7 @@ pub mod feed;
 pub mod index;
 mod jsonl;
 pub mod live;
+pub mod login;
 pub mod models;
 pub mod pi;
 pub mod power;

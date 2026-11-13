@@ -4,8 +4,8 @@ INSTALLED = $(APPS)/Ludolph.app/Contents/MacOS/ludolph
 
 # Build Ludolph.app and put it in $(APPS), replacing a running copy and its
 # engine. It's signed with a local self-signed identity, so macOS keeps the
-# microphone and speech grants across installs. On start, the app points the
-# engine's launch agent and its login item at itself.
+# microphone and speech grants across installs. On start, the app starts its
+# engine again.
 install:
 	cargo build --release --locked
 	keychain="$$(scripts/local-identity.sh)" && \
@@ -14,6 +14,7 @@ install:
 	-pkill -f "$(INSTALLED)"
 	# The engine gives its pi processes up to 10 s to stop.
 	for _ in $$(seq 150); do pgrep -qf "$(INSTALLED)" || break; sleep 0.1; done
+	mkdir -p $(APPS)
 	rm -rf $(APPS)/Ludolph.app
 	cp -R target/Ludolph.app $(APPS)/Ludolph.app
 	open $(APPS)/Ludolph.app

@@ -48,13 +48,13 @@ So memory goes on two things: Zeron's engine, which Ludolph removes, and one pi 
                                          └── git            (turn changes)
 ```
 
-- **Engine** (`ludolph engine`): a launch agent. It starts at login, restarts after a crash, and runs whether a window is open or not. It owns the pi processes, the index, titles, archiving, turn changes, and the relay link. It has no UI.
-  - Its agent is `~/Library/LaunchAgents/dev.iyazerski.ludolph.engine.plist`, logging to `~/Library/Logs/Ludolph/engine.log`. Each time `Ludolph.app` starts, it points the agent at its own binary, and starts the engine if it isn't running, so moving or updating the app moves the engine too. `ludolph install` does the same from a binary outside a bundle, and `ludolph uninstall` removes the agent and the app's login item.
+- **Engine** (`ludolph engine`): a launchd job. It restarts after a crash, and keeps running when the app quits, so agents and the phone carry on. It owns the pi processes, the index, titles, archiving, turn changes, and the relay link. It has no UI.
+  - Nothing of Ludolph's starts at login unless you turn on **Open at login**. So the engine's plist isn't in `~/Library/LaunchAgents`: it's `engine.plist` in the state folder, and each time `Ludolph.app` starts, it loads that job for the rest of the login session. It reloads it if the app moved, and starts the engine if it stopped, as after an update. The engine logs to `~/Library/Logs/Ludolph/engine.log`. `ludolph uninstall` stops it and removes the app's login item.
   - launchd's environment is bare, so the engine starts by asking your login shell for its own, like VS Code does. It runs `env` through `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would: tools you install later, and the API keys and proxy settings your rc files export.
-- **App** (`Ludolph.app`): one UI process with both windows. It starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
+- **App** (`Ludolph.app`): one UI process with both windows. With **Open at login** on, it starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
   - `ludolph` with no arguments runs it and opens the main window, which is what opening `Ludolph.app` does. `--hidden` starts it with no window. It takes `app.lock` in the state folder, so a second copy quits instead of fighting over the shortcut.
-  - Its login item is a second launch agent, `dev.iyazerski.ludolph.plist`, which the app writes when it starts from its bundle. It runs `open -g -a Ludolph.app --args --hidden`: through LaunchServices, so opening the app later reaches the running copy, which opens the main window. The agent isn't loaded at once, since that would start the app again. Settings will turn it off.
-  - `LSUIElement` keeps the Dock icon off until the main window shows. A development run (`LUDOLPH_DIR` set, or outside a bundle) leaves both agents alone.
+  - The login item is a launch agent, `~/Library/LaunchAgents/dev.iyazerski.ludolph.plist`. The engine owns the `openAtLogin` setting, off by default, so it writes the item when the setting turns on, removes it when it turns off, and rewrites it on start if the app moved. The item runs `open -g -a Ludolph.app --args --hidden`: through LaunchServices, so opening the app later reaches the running copy, which opens the main window. It isn't loaded at once, since that would start the app again.
+  - `LSUIElement` keeps the Dock icon off until the main window shows. A development run (`LUDOLPH_DIR` set, or outside a bundle) leaves the engine's job and the login item alone, and you run its engine with `make engine`.
   - `scripts/bundle.sh` builds the bundle, and `make install` puts it in `/Applications`. It signs with a self-signed identity kept in its own keychain (`scripts/local-identity.sh`), so macOS keeps the microphone and speech grants across installs, as fettle does for `make dev`. Releases, signed with one certificate from CI, come with the first public release.
 - **Relay** (`crates/relay`): a small server you host. It started as zeron-tools' `zeron-relay`.
 
@@ -301,7 +301,7 @@ The engine keeps them, since it's the one using them and it runs while the app i
 - Minutes before an idle pi process stops
 - Global shortcut
 - Phone: relay address and link
-- Open at login
+- Open at login (`openAtLogin`, off until you turn it on)
 - The pi binary, if it's not on `PATH`
 
 ## Phone and relay

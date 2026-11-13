@@ -22,7 +22,7 @@ make install   # builds Ludolph.app, puts it in /Applications, and opens it
 /Applications/Ludolph.app/Contents/MacOS/ludolph link <code>   # links it to your phone
 ```
 
-The app starts its engine in the background and both start at login. ⌃⌥Space shows the quick window. The link code comes from the phone app's **Add a Mac**, on a relay you host: see [crates/relay](crates/relay/README.md). `ludolph uninstall` stops the engine and removes both from login. The engine logs to `~/Library/Logs/Ludolph/engine.log`.
+The app starts its engine in the background, and it keeps running when you quit the app, until you log out. Nothing starts at login unless you turn on **Open at login**, which comes with Settings. ⌃⌥Space shows the quick window. The link code comes from the phone app's **Add a Mac**, on a relay you host: see [crates/relay](crates/relay/README.md). `ludolph uninstall` stops the engine and removes the app from login. The engine logs to `~/Library/Logs/Ludolph/engine.log`.
 
 Ideas and questions are welcome in [Discussions](https://github.com/iyazerski/ludolph/discussions).
 
