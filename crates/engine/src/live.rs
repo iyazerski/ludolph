@@ -18,6 +18,10 @@ pub struct Live {
     /// Bumped by every change a viewer would see.
     revision: u64,
     working: bool,
+    /// Runs that settled, so a caller can tell whether one ended since it
+    /// looked.
+    #[serde(skip)]
+    settled: u64,
     /// Messages pi finished in this run, from `message_end`.
     messages: Vec<Value>,
     /// The assistant message pi is streaming, rebuilt from its deltas.
@@ -75,6 +79,25 @@ impl Live {
         self.working
     }
 
+    /// How many runs have settled.
+    pub fn settled(&self) -> u64 {
+        self.settled
+    }
+
+    /// Count a run as going from when pi answered that it started, ahead of
+    /// its `agent_start`, which comes through the event queue. Nothing
+    /// changes if a run settled since `settled` was read: that was this
+    /// one, already over. Returns whether it changed anything.
+    pub fn started(&mut self, settled: u64) -> bool {
+        if self.working || self.settled != settled {
+            return false;
+        }
+        self.working = true;
+        self.failure = None;
+        self.revision += 1;
+        true
+    }
+
     /// The messages pi finished in this run.
     pub fn messages(&self) -> &[Value] {
         &self.messages
@@ -103,6 +126,7 @@ impl Live {
             }
             Event::AgentSettled { .. } => {
                 self.working = false;
+                self.settled += 1;
                 self.streaming = None;
                 self.tools.clear();
                 self.retry = None;

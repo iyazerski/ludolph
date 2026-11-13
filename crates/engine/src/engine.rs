@@ -577,7 +577,16 @@ impl Engine {
                 });
             }
         }
+        let settled = self.live_of(id, &pi, |live| live.settled());
         let delivery = self.prompt(&pi, &skills::to_front(text), images).await;
+        if let (Ok(Delivery::Started), Some(settled)) = (&delivery, settled)
+            && self.live_of(id, &pi, |live| live.started(settled)) == Some(true)
+        {
+            if let Some(chat) = self.state().chats.get(id) {
+                chat.changed();
+            }
+            self.changed();
+        }
         if snapshotted
             && !matches!(delivery, Ok(Delivery::Started))
             && let Some(chat) = self.state().chats.get_mut(id)
@@ -589,6 +598,13 @@ impl Engine {
             self.title_soon(id, text);
         }
         Ok(delivery)
+    }
+
+    /// Run `f` on the live tail of chat `id`, if `pi` is still its process.
+    fn live_of<T>(&self, id: &str, pi: &Arc<Pi>, f: impl FnOnce(&mut Live) -> T) -> Option<T> {
+        let mut state = self.state();
+        let running = state.chats.get_mut(id)?.process.as_mut()?;
+        Arc::ptr_eq(&running.pi, pi).then(|| f(&mut running.live))
     }
 
     /// Send `text` to `pi` as a prompt, and return what pi did with it.
