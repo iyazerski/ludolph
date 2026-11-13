@@ -11,7 +11,10 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::engine::{ChatInfo, Config, Delivery, Dialog, Engine, Question, Reply, Status};
+use crate::engine::{
+    ChatInfo, Composer, Config, Delivery, Dialog, Engine, Question, Reply, Status,
+};
+use crate::repo;
 use crate::transcript::{Message, Role};
 use crate::turns::Counts;
 
@@ -38,6 +41,10 @@ pub enum Tool {
     RespondToInput,
     ArchiveChat,
     TurnChanges,
+    ListHarnesses,
+    ListModels,
+    SetChatModel,
+    ComposerInfo,
 }
 
 impl FromStr for Tool {
@@ -56,6 +63,10 @@ impl FromStr for Tool {
             "respond_to_input" => Self::RespondToInput,
             "archive_chat" => Self::ArchiveChat,
             "turn_changes" => Self::TurnChanges,
+            "list_harnesses" => Self::ListHarnesses,
+            "list_models" => Self::ListModels,
+            "set_chat_model" => Self::SetChatModel,
+            "composer_info" => Self::ComposerInfo,
             _ => bail!("no tool {name}"),
         })
     }
@@ -79,6 +90,10 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::RespondToInput => respond_to_input(engine, parse(args)?).await,
         Tool::ArchiveChat => archive_chat(engine, parse(args)?),
         Tool::TurnChanges => turn_changes(engine, parse(args)?).await,
+        Tool::ListHarnesses => Ok(list_harnesses()),
+        Tool::ListModels => list_models(engine, parse(args)?).await,
+        Tool::SetChatModel => set_chat_model(engine, parse(args)?).await,
+        Tool::ComposerInfo => composer_info(engine, parse(args)?).await,
     }
 }
 
@@ -289,6 +304,117 @@ async fn turn_changes(engine: &Engine, args: TurnArgs) -> Result<Value> {
     }
 }
 
+/// The one harness, as the phone's agent picker lists harnesses.
+fn list_harnesses() -> Value {
+    json!({"harnesses": [{
+        "id": "pi",
+        "name": "Pi",
+        "available": true,
+        "installed": true,
+        "steersMidTurn": true,
+        // For models pi doesn't list, so their own levels are unknown.
+        "reasoningLevels": ["off", "minimal", "low", "medium", "high"],
+    }]})
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListModelsArgs {
+    harness: String,
+}
+
+/// The models pi can use, with the thinking levels each supports.
+async fn list_models(engine: &Engine, args: ListModelsArgs) -> Result<Value> {
+    pi_only(Some(&args.harness))?;
+    let models = engine.models().await?;
+    let models: Vec<Value> = models
+        .iter()
+        .map(|model| {
+            json!({
+                "id": model.id,
+                "label": model.name,
+                "description": null,
+                "reasoningLevels": model.levels,
+            })
+        })
+        .collect();
+    Ok(json!({"harness": "pi", "models": models}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetModelArgs {
+    chat: String,
+    harness: Option<String>,
+    model: Option<String>,
+    reasoning: Option<String>,
+}
+
+/// Change a chat's model or thinking level from its next answer, and
+/// return its composer settings then.
+async fn set_chat_model(engine: &Engine, args: SetModelArgs) -> Result<Value> {
+    pi_only(args.harness.as_deref())?;
+    find(engine, &args.chat)?;
+    let (model, reasoning) = (args.model.as_deref(), args.reasoning.as_deref());
+    let composer = engine.set_model(&args.chat, model, reasoning).await?;
+    Ok(settings(&composer))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposerInfoArgs {
+    chat: Option<String>,
+    /// For a new chat, the project it would start in.
+    project: Option<PathBuf>,
+}
+
+/// What the composer shows under the text: the checkout and branch, the
+/// context use, and the model settings. A new chat has only the first.
+async fn composer_info(engine: &Engine, args: ComposerInfoArgs) -> Result<Value> {
+    let (cwd, composer) = match &args.chat {
+        Some(id) => {
+            let chat = find(engine, id)?;
+            (Some(chat.cwd), Some(engine.composer(id).await?))
+        }
+        None => (args.project, None),
+    };
+    let checkout = match &cwd {
+        Some(cwd) => repo::checkout(cwd).await,
+        None => None,
+    };
+    let mut answer = composer.as_ref().map_or_else(|| json!({}), settings);
+    answer["harness"] = json!("pi");
+    answer["checkout"] = json!(checkout.as_ref().map(|checkout| {
+        if checkout.worktree {
+            "worktree"
+        } else {
+            "local"
+        }
+    }));
+    answer["branch"] = json!(checkout.and_then(|checkout| checkout.branch));
+    Ok(answer)
+}
+
+/// A chat's model settings and context use, as the composer reads them.
+fn settings(composer: &Composer) -> Value {
+    json!({
+        "model": composer.model,
+        "reasoning": composer.thinking,
+        "contextUsage": {
+            "tokens": composer.context_tokens,
+            "window": composer.context_window,
+        },
+    })
+}
+
+/// Fail unless `harness` is pi or unset: it's the only one Ludolph runs.
+fn pi_only(harness: Option<&str>) -> Result<()> {
+    match harness {
+        None | Some("pi") => Ok(()),
+        Some(other) => bail!("Ludolph runs only pi, not {other}"),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SendArgs {
@@ -317,12 +443,21 @@ struct CreateChatArgs {
     /// The project's folder; without one, the chat gets a scratch folder.
     project: Option<PathBuf>,
     prompt: Option<String>,
+    harness: Option<String>,
+    /// `provider/model`; without one, pi's default.
+    model: Option<String>,
+    reasoning: Option<String>,
+    /// The branch the phone saw. Unused: the chat runs in the project's
+    /// checkout as it is.
+    #[serde(rename = "branch")]
+    _branch: Option<String>,
 }
 
 /// Create a chat, in a project or a scratch folder, and send it the first
 /// prompt. If the chat was created but the prompt didn't go, `sendError`
 /// says why: retrying the whole call would create a second chat.
 async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
+    pi_only(args.harness.as_deref())?;
     let cwd = match &args.project {
         Some(project) => project.clone(),
         None => {
@@ -340,6 +475,14 @@ async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
         "project": args.project.as_deref().map(project),
         "harness": "pi",
     });
+    if args.model.is_some() || args.reasoning.is_some() {
+        let (model, reasoning) = (args.model.as_deref(), args.reasoning.as_deref());
+        // The prompt isn't sent with the wrong model, and the phone keeps it.
+        if let Err(e) = engine.set_model(&id, model, reasoning).await {
+            answer["sendError"] = json!(format!("setting the model: {e:#}"));
+            return Ok(answer);
+        }
+    }
     if let Some(prompt) = args
         .prompt
         .as_deref()
@@ -480,6 +623,8 @@ fn summary(chat: &ChatInfo, config: &Config) -> Value {
         "project": config.is_project(&chat.cwd).then(|| project(&chat.cwd)),
         "cwd": chat.cwd,
         "harness": "pi",
+        "model": summary.and_then(|s| s.model.as_deref()),
+        "reasoning": summary.and_then(|s| s.thinking.as_deref()),
         "archived": chat.archived,
         "status": label(chat.status),
         "openElsewhere": chat.elsewhere,

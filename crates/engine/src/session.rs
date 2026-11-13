@@ -46,6 +46,17 @@ pub struct Summary {
     pub outcome: Option<Outcome>,
     /// The last entry in the file, which pi resumes from.
     pub leaf: Option<String>,
+    /// The model the chat uses, as `provider/model`: the latest
+    /// `model_change`, or the model of the latest answer.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The thinking level the chat uses, from the latest change.
+    #[serde(default)]
+    pub thinking: Option<String>,
+    /// The tokens in the context, from the last answer's usage, as pi
+    /// estimates them. A compaction clears it until the next answer.
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
     progress: Progress,
 }
 
@@ -126,6 +137,9 @@ impl Summary {
             last_activity: None,
             outcome: None,
             leaf: None,
+            model: None,
+            thinking: None,
+            context_tokens: None,
             progress: Progress {
                 version: header.version,
                 offset: header.len,
@@ -199,6 +213,17 @@ impl Summary {
                     self.add_message(message, entry.timestamp);
                 }
             }
+            Kind::ModelChange => {
+                if let (Some(provider), Some(model)) = (entry.provider, entry.model_id) {
+                    self.model = Some(format!("{provider}/{model}"));
+                }
+            }
+            Kind::ThinkingLevelChange => {
+                if entry.thinking_level.is_some() {
+                    self.thinking = entry.thinking_level;
+                }
+            }
+            Kind::Compaction => self.context_tokens = None,
             Kind::Other => {}
         }
     }
@@ -217,6 +242,24 @@ impl Summary {
         });
         if message.role == Role::ToolResult {
             return;
+        }
+        if message.role == Role::Assistant {
+            if let (Some(provider), Some(model)) = (message.provider, message.model) {
+                self.model = Some(format!("{provider}/{model}"));
+            }
+            // pi's estimate skips answers that failed, were stopped, or report no
+            // usage.
+            let counted = !matches!(
+                message.stop_reason,
+                Some(StopReason::Error | StopReason::Aborted)
+            );
+            let tokens = message
+                .usage
+                .filter(|_| counted)
+                .map(|usage| usage.tokens());
+            if let Some(tokens) = tokens.filter(|&tokens| tokens > 0) {
+                self.context_tokens = Some(tokens);
+            }
         }
         let time = message
             .timestamp
@@ -248,6 +291,12 @@ struct Entry<'a> {
     name: Option<String>,
     #[serde(borrow)]
     message: Option<Message<'a>>,
+    /// A `model_change`'s model.
+    provider: Option<String>,
+    #[serde(rename = "modelId")]
+    model_id: Option<String>,
+    #[serde(rename = "thinkingLevel")]
+    thinking_level: Option<String>,
 }
 
 /// A message entry's message, with its content left raw.
@@ -259,6 +308,35 @@ struct Message<'a> {
     content: Option<&'a RawValue>,
     timestamp: Option<i64>,
     stop_reason: Option<StopReason>,
+    /// An assistant message's model and usage.
+    provider: Option<String>,
+    model: Option<String>,
+    usage: Option<Usage>,
+}
+
+/// An answer's token usage (`docs/message-types.md`).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Usage {
+    #[serde(default)]
+    input: u64,
+    #[serde(default)]
+    output: u64,
+    #[serde(default)]
+    cache_read: u64,
+    #[serde(default)]
+    cache_write: u64,
+    total_tokens: Option<u64>,
+}
+
+impl Usage {
+    /// The context's size after the answer, as pi's `calculateContextTokens`
+    /// counts it.
+    fn tokens(&self) -> u64 {
+        self.total_tokens
+            .filter(|&total| total > 0)
+            .unwrap_or(self.input + self.output + self.cache_read + self.cache_write)
+    }
 }
 
 /// An entry's type, with the ones a summary ignores as `Other`.
@@ -267,6 +345,9 @@ struct Message<'a> {
 enum Kind {
     SessionInfo,
     Message,
+    ModelChange,
+    ThinkingLevelChange,
+    Compaction,
     #[serde(other)]
     Other,
 }
