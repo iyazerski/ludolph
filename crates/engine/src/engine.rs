@@ -5,7 +5,7 @@
 //! chat first needs one and stops after a few idle minutes (`docs/design.md`,
 //! "pi processes").
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -24,6 +24,7 @@ use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
 use crate::title::Titler;
 use crate::transcript::{Page, Tail, Transcripts};
+use crate::turns::{Counts, Diff, Snapshot, Turns};
 use crate::watch::{Changes, Watcher};
 
 /// How long FSEvents waits for more changes to merge with one. pi writes a
@@ -89,6 +90,7 @@ struct Inner {
     watching: AbortHandle,
     /// Shared with titling tasks, which don't keep the engine alive.
     titler: Arc<Titler>,
+    turns: Arc<Turns>,
 }
 
 impl Drop for Inner {
@@ -124,6 +126,9 @@ struct Chat {
     named: Option<String>,
     /// A title is being asked for.
     titling: bool,
+    /// The run Ludolph started, from its snapshot until its changes are
+    /// saved.
+    run: Option<Run>,
     /// Bumped whenever the chat's view changes.
     changes: watch::Sender<u64>,
 }
@@ -139,6 +144,7 @@ impl Default for Chat {
             elsewhere: false,
             named: None,
             titling: false,
+            run: None,
             changes: watch::channel(0).0,
         }
     }
@@ -164,6 +170,16 @@ impl Chat {
             self.sent.push_back(at);
         }
     }
+}
+
+/// A run whose changes will be saved once it settles.
+#[derive(Debug)]
+struct Run {
+    before: Snapshot,
+    /// The timestamp of the user message that started it, once pi reports
+    /// it. Views find the run by it.
+    key: Option<i64>,
+    settled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -320,7 +336,9 @@ impl Engine {
             runtime,
             chats,
         };
+        let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
         Ok(Self(Arc::new_cyclic(|inner| Inner {
+            turns,
             state: Mutex::new(state),
             list: watch::channel(0).0,
             transcripts: Arc::default(),
@@ -488,6 +506,23 @@ impl Engine {
             bail!("this chat is open in another pi; take it over to send from Ludolph");
         }
         let pi = self.process(id)?;
+        // The last run's changes are taken before anything can change more.
+        self.finish_run(id).await;
+        let (working, cwd) = {
+            let state = self.state();
+            let chat = state.chats.get(id).expect("a chat with a process is known");
+            let working = chat.process.as_ref().is_some_and(|r| r.live.working());
+            (working, cwd_of(&state, id))
+        };
+        // A message to an idle chat starts a run, so the tree is taken first.
+        let before = match cwd.filter(|_| !working) {
+            Some(cwd) => self.0.turns.before(&cwd).await.unwrap_or_else(|e| {
+                eprintln!("chat {id}: skipping this run's changes: {e:#}");
+                None
+            }),
+            None => None,
+        };
+        let snapshotted = before.is_some();
         {
             let mut state = self.state();
             let chat = state
@@ -495,7 +530,30 @@ impl Engine {
                 .get_mut(id)
                 .expect("a chat with a process is known");
             chat.interrupted = false;
+            if let Some(before) = before {
+                chat.run = Some(Run {
+                    before,
+                    key: None,
+                    settled: false,
+                });
+            }
         }
+        let delivery = self.prompt(&pi, text, images).await;
+        if snapshotted
+            && !matches!(delivery, Ok(Delivery::Started))
+            && let Some(chat) = self.state().chats.get_mut(id)
+        {
+            chat.run = None;
+        }
+        let delivery = delivery?;
+        if delivery != Delivery::Handled {
+            self.title_soon(id, text);
+        }
+        Ok(delivery)
+    }
+
+    /// Send `text` to `pi` as a prompt, and return what pi did with it.
+    async fn prompt(&self, pi: &Pi, text: &str, images: Vec<Value>) -> Result<Delivery> {
         // pi ignores `steer` when no run is going, so the answer says which
         // happened, even if a run started or ended meanwhile.
         let mut command = json!({"type": "prompt", "message": text, "streamingBehavior": "steer"});
@@ -503,14 +561,64 @@ impl Engine {
             command["images"] = Value::Array(images);
         }
         let answer = pi.call(command).await?;
-        let delivery = match answer["disposition"].as_str() {
-            Some("started") => Delivery::Started,
-            Some("queued") => Delivery::Queued,
-            Some("handled") => return Ok(Delivery::Handled),
+        match answer["disposition"].as_str() {
+            Some("started") => Ok(Delivery::Started),
+            Some("queued") => Ok(Delivery::Queued),
+            Some("handled") => Ok(Delivery::Handled),
             other => bail!("pi answered the prompt with {other:?}"),
+        }
+    }
+
+    /// Save the changes of the chat's run if it settled. Callers hold the
+    /// chat's `ops`, so a new run can't start before its snapshot.
+    async fn finish_run(&self, id: &str) {
+        let run = {
+            let mut state = self.state();
+            let chat = state.chats.get_mut(id);
+            chat.and_then(|chat| chat.run.take_if(|run| run.settled))
         };
-        self.title_soon(id, text);
-        Ok(delivery)
+        let Some(Run {
+            before,
+            key: Some(key),
+            ..
+        }) = run
+        else {
+            return;
+        };
+        let saved = async {
+            let changes = self.0.turns.after(before).await?;
+            let (turns, session) = (self.0.turns.clone(), id.to_owned());
+            tokio::task::spawn_blocking(move || turns.save(&session, key, &changes)).await?
+        };
+        match saved.await {
+            Ok(()) => {
+                if let Some(chat) = self.state().chats.get(id) {
+                    chat.changed();
+                }
+            }
+            Err(e) => eprintln!("chat {id}: saving this run's changes: {e:#}"),
+        }
+    }
+
+    /// The sizes of chat `id`'s saved runs, by the timestamp of the user
+    /// message that started each.
+    ///
+    /// # Errors
+    ///
+    /// Fails if they can't be read.
+    pub async fn run_counts(&self, id: &str) -> Result<BTreeMap<i64, Counts>> {
+        let (turns, id) = (self.0.turns.clone(), id.to_owned());
+        tokio::task::spawn_blocking(move || turns.counts(&id)).await?
+    }
+
+    /// What chat `id`'s run `key` changed, if it was saved.
+    ///
+    /// # Errors
+    ///
+    /// Fails if it can't be read.
+    pub async fn run_changes(&self, id: &str, key: i64) -> Result<Option<Diff>> {
+        let (turns, id) = (self.0.turns.clone(), id.to_owned());
+        tokio::task::spawn_blocking(move || turns.load(&id, key)).await?
     }
 
     /// Ask for a title in the background if the chat has none, from its
@@ -837,7 +945,13 @@ impl Engine {
         }
         if let Event::MessageStart { message } | Event::MessageEnd { message } = event {
             chat.sent(message);
+            if let Some(run) = chat.run.as_mut().filter(|run| run.key.is_none())
+                && message["role"] == "user"
+            {
+                run.key = message["timestamp"].as_i64();
+            }
         }
+        let mut finish = false;
         let running = chat.process.as_mut().expect("checked above");
         let working = running.live.working();
         let mut view_changed = running.live.apply(event);
@@ -846,6 +960,10 @@ impl Engine {
             Event::AgentStart => runtime.set_running(id, true)?,
             Event::AgentSettled { .. } => {
                 runtime.set_running(id, false)?;
+                if let Some(run) = chat.run.as_mut() {
+                    run.settled = true;
+                    finish = true;
+                }
                 if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
                     index.refresh_file(&path)?;
                 }
@@ -906,6 +1024,14 @@ impl Engine {
         }
         let settled = matches!(event, Event::AgentSettled { .. });
         drop(state);
+        if finish {
+            let (engine, id) = (self.clone(), id.to_owned());
+            tokio::spawn(async move {
+                let Ok(ops) = engine.ops(&id) else { return };
+                let _ops = ops.lock().await;
+                engine.finish_run(&id).await;
+            });
+        }
         if settled {
             self.save_index()?;
         }
@@ -963,6 +1089,8 @@ impl Engine {
         let Some(running) = chat.process.take_if(|r| Arc::ptr_eq(&r.pi, pi)) else {
             return Ok(());
         };
+        // A run that didn't settle has no end to diff against.
+        chat.run.take_if(|run| !run.settled);
         if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
             index.refresh_file(&path)?;
         }
@@ -1137,6 +1265,13 @@ fn known(state: &State, id: &str) -> Result<()> {
         bail!("no chat {id}");
     }
     Ok(())
+}
+
+/// The chat's folder: the session's, or the draft's.
+fn cwd_of(state: &State, id: &str) -> Option<PathBuf> {
+    let draft = state.chats.get(id).and_then(|chat| chat.draft.as_ref());
+    let session = state.index.find(id).map(|(_, s)| s.cwd.clone());
+    session.or_else(|| draft.map(|draft| draft.cwd.clone()))
 }
 
 /// The chat's session file: the index's, or the one pi named for a draft.

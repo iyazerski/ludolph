@@ -361,6 +361,117 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
     engine.shutdown().await.unwrap();
 }
 
+/// Run git in `repo`, and return what it printed.
+fn git(repo: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// The `turnChanges` of the chat's view, once it has `runs` saved runs.
+async fn turn_changes(engine: &Engine, id: &str, runs: usize) -> (Vec<Value>, Vec<Value>) {
+    for _ in 0..250 {
+        let view = tool(engine, "chat_view", json!({"chat": id}))
+            .await
+            .unwrap();
+        let read = &view["read"];
+        let messages = read["messages"].as_array().unwrap().clone();
+        let settled = view["chat"]["status"] == "idle";
+        let changes = read["turnChanges"].as_array().unwrap().clone();
+        let users = messages.iter().filter(|m| m["role"] == "user").count();
+        if settled
+            && users == runs
+            && std::fs::read_dir(state_runs(engine)).map_or(0, Iterator::count) == 0
+            && !changes.is_empty()
+        {
+            return (changes, messages);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the run's changes never showed");
+}
+
+/// Where runs keep their snapshots until their changes are saved.
+fn state_runs(engine: &Engine) -> PathBuf {
+    engine.config().state_dir.join("turns/runs")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join("b.txt"), "one\n").unwrap();
+    std::fs::write(repo.join(".gitignore"), "secret.env\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "start"]);
+    // A change you staged yourself, which must stay staged.
+    std::fs::write(repo.join("b.txt"), "two\n").unwrap();
+    git(&repo, &["add", "b.txt"]);
+    let status = git(&repo, &["status", "--porcelain"]);
+    let objects = git(&repo, &["count-objects"]);
+
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let id = engine.create(&repo).await.unwrap();
+    engine.send(&id, "edit", Vec::new()).await.unwrap();
+    let (changes, messages) = turn_changes(&engine, &id, 1).await;
+    assert_eq!(changes.len(), 1);
+    let run = &changes[0];
+    assert_eq!(
+        (&run["files"], &run["additions"], &run["deletions"]),
+        (&json!(2), &json!(2), &json!(0))
+    );
+    assert_eq!(run["after"], messages.last().unwrap()["id"]);
+
+    let diff = tool(
+        &engine,
+        "turn_changes",
+        json!({"chat": id, "turn": run["turn"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        diff["files"],
+        json!([{"path": "a.txt"}, {"path": "new.txt"}])
+    );
+    let patch = diff["patch"].as_str().unwrap();
+    assert!(
+        patch.contains("+changed") && !patch.contains("secret"),
+        "{patch}"
+    );
+
+    // A run that changes nothing gets no button, and ends the one before.
+    engine.send(&id, "hi", Vec::new()).await.unwrap();
+    let (changes, messages) = turn_changes(&engine, &id, 2).await;
+    let second = messages.iter().rposition(|m| m["role"] == "user").unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["after"], messages[second - 1]["id"]);
+
+    assert_eq!(status, "M  b.txt\n");
+    let status = git(&repo, &["status", "--porcelain"]);
+    assert_eq!(
+        status, " M a.txt\nM  b.txt\n?? new.txt\n",
+        "your staged change stays staged"
+    );
+    assert_eq!(
+        git(&repo, &["count-objects"]),
+        objects,
+        "the repo got no objects"
+    );
+    engine.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn chats_are_titled_as_soon_as_they_start() {
     let dir = tempfile::tempdir().unwrap();

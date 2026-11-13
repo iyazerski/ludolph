@@ -206,15 +206,16 @@ The engine takes its snapshots with git, without touching your repo:
 
 1. **Before** it forwards a prompt to an idle chat, it snapshots the working tree, and only then sends the prompt. So no tool can change a file before the snapshot.
 2. When the run settles, it snapshots again. A new prompt waits for that snapshot.
-3. It diffs the two snapshots and saves the patch and its line counts under the session id and the entry id of the user message that started the run.
+3. It diffs the two snapshots and saves the patch and its line counts as `turns/<session id>/<key>.json`. The key is the timestamp of the user message that started the run, which pi reports as the run starts. `chat_view` matches it to that message's `createdAt`, and a run lasts until the next saved run starts, so steering messages stay in it.
 
-A snapshot copies the repo's index to a temporary file and runs `git add -A` and `git write-tree` against that copy (`GIT_INDEX_FILE`). New file contents go to Ludolph's own object store (`GIT_OBJECT_DIRECTORY`), with the repo's objects as an alternate (`GIT_ALTERNATE_OBJECT_DIRECTORIES`). So the repo gets no new objects, your index and staged changes stay as they are, and `.gitignore` is respected, which keeps ignored secrets out. This was checked on a test repo, and a snapshot of zeron-tools took 44 ms.
+A snapshot copies the repo's index to a temporary file and runs `git add -A` and `git write-tree` against that copy (`GIT_INDEX_FILE`). New file contents go to an object store of the run's own (`GIT_OBJECT_DIRECTORY`), with the repo's objects as an alternate (`GIT_ALTERNATE_OBJECT_DIRECTORIES`). So the repo gets no new objects, your index and staged changes stay as they are, and `.gitignore` is respected, which keeps ignored secrets out. Once the patch is saved, the run's store is deleted, so nothing needs pruning. A store left by a stopped engine is deleted at start. A warm snapshot takes about 30 ms on zeron-tools and on Ludolph's own repo.
 
 Limits:
 
-- A snapshot that takes more than 10 s, or a new file over 10 MB, skips that run's changes and says so.
-- Binary files show as changed, without content.
-- Ludolph's object store is pruned with the saved patches: when they go over the size budget (as in `turns.rs` now), the oldest go first, then `git prune` removes what no saved run or running run still needs.
+- A snapshot that takes more than 10 s, or a changed file over 10 MB, skips that run's changes, with a line in the engine's log.
+- Binary files show as changed, without content. A patch over 1 MB is cut at a line's end and marked `truncated`.
+- The saved patches have a 50 MB budget, and the oldest go first.
+- A run whose pi exits before it settles has no changes.
 
 Folders that aren't git repos get no run changes. Two chats working in the same repo at once see each other's changes in their diffs.
 
