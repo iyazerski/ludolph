@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixStream};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{
+    Callback, ErrorResponse, Request, Response,
+};
 
 /// An engine in `dir` that runs the fake pi, which logs to `dir/pi.log`.
 async fn engine(dir: &Path, idle: Duration) -> Engine {
@@ -790,6 +793,19 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     engine.shutdown().await.unwrap();
 }
 
+/// Keeps the `Authorization` header of the Mac's handshake.
+struct Bearer<'a>(&'a mut Option<String>);
+
+impl Callback for Bearer<'_> {
+    fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+        let header = request.headers().get("authorization");
+        *self.0 = header
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok(response)
+    }
+}
+
 /// The next message the Mac sent the relay.
 async fn from_mac(socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>) -> Value {
     loop {
@@ -828,14 +844,10 @@ async fn the_relay_link_answers_the_phones_calls() {
     tokio::spawn(relay::run(engine.clone(), Link { relay, token }));
     let (tcp, _) = listener.accept().await.unwrap();
     let mut bearer = None;
-    let mut socket = tokio_tungstenite::accept_hdr_async(tcp, |request: &_, response| {
-        let request: &tokio_tungstenite::tungstenite::handshake::server::Request = request;
-        bearer = request.headers().get("authorization").cloned();
-        Ok(response)
-    })
-    .await
-    .unwrap();
-    assert_eq!(bearer.unwrap(), "Bearer t0ken");
+    let mut socket = tokio_tungstenite::accept_hdr_async(tcp, Bearer(&mut bearer))
+        .await
+        .unwrap();
+    assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
     assert_eq!(from_mac(&mut socket).await["protocol"], 1);
     assert_eq!(from_mac(&mut socket).await["state"], "running");
 
