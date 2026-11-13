@@ -2,6 +2,7 @@
 //! app and the phone read.
 
 pub mod engine;
+pub mod feed;
 pub mod index;
 mod jsonl;
 pub mod live;

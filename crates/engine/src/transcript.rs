@@ -35,6 +35,9 @@ const MAX_FILES: usize = 8;
 /// The most characters of a tool call's subject, like a command, shown.
 const TOOL_CHARS: usize = 160;
 
+/// What the id of a message pi hasn't written yet starts with.
+const LIVE_ID: &str = "live-";
+
 /// One message, as a view shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +50,13 @@ pub struct Message {
     pub created_at: i64,
     pub status: MessageStatus,
     pub parts: Vec<Part>,
+}
+
+impl Message {
+    /// Whether pi has written the message, so its id stays.
+    pub fn written(&self) -> bool {
+        !self.id.starts_with(LIVE_ID)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -893,7 +903,7 @@ impl Piece {
     fn live(i: usize, message: &Value, streaming: bool) -> Option<Self> {
         let message = MessageView::deserialize(message).ok()?;
         Some(Self {
-            id: format!("live-{i}"),
+            id: format!("{LIVE_ID}{i}"),
             entry: EntryView::message(message),
             live: true,
             streaming,
