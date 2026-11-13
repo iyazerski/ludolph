@@ -12,7 +12,10 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+libc.workspace = true
 ludolph-engine = { path = "crates/engine" }
+plist = { version = "1", default-features = false, features = ["serde"] }
+serde.workspace = true
 tokio.workspace = true
 
 [workspace]

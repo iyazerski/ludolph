@@ -1,5 +1,9 @@
-//! The `ludolph` binary. `ludolph engine` runs the engine, and `ludolph
-//! link` links this Mac to a relay for the phone.
+//! The `ludolph` binary. `ludolph engine` runs the engine, `ludolph
+//! install` runs it in the background from now on, and `ludolph link` links
+//! this Mac to a relay for the phone.
+
+mod agent;
+mod shell;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,7 +23,13 @@ const GRACE: Duration = Duration::from_secs(10);
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["engine"] => engine(),
+        ["engine"] => {
+            // SAFETY: the engine's runtime, and so its threads, start after.
+            unsafe { shell::adopt_login_path() };
+            engine()
+        }
+        ["install"] => install(),
+        ["uninstall"] => uninstall(),
         ["link", "--relay", relay, "--token", token] => link(Link {
             relay: relay.to_owned(),
             token: token.to_owned(),
@@ -27,7 +37,7 @@ fn main() -> ExitCode {
         ["unlink"] => unlink(),
         _ => {
             eprintln!(
-                "usage: ludolph engine\n       ludolph link --relay <address> --token <token>\n       ludolph unlink"
+                "usage: ludolph engine\n       ludolph install\n       ludolph uninstall\n       ludolph link --relay <address> --token <token>\n       ludolph unlink"
             );
             return ExitCode::from(2);
         }
@@ -79,6 +89,26 @@ async fn engine() -> Result<()> {
     engine.shutdown().await
 }
 
+/// Run the engine in the background from now on, on this binary.
+fn install() -> Result<()> {
+    let log = agent::install(&home()?)?;
+    println!(
+        "The engine runs in the background now, and starts at login. It logs to {}.",
+        log.display()
+    );
+    Ok(())
+}
+
+/// Stop the background engine and remove its launch agent.
+fn uninstall() -> Result<()> {
+    if agent::uninstall(&home()?)? {
+        println!("The engine stopped, and won't start at login.");
+    } else {
+        println!("The engine isn't installed.");
+    }
+    Ok(())
+}
+
 /// Check that the relay takes the token, then save the link for the engine.
 #[tokio::main]
 async fn link(link: Link) -> Result<()> {
@@ -88,7 +118,10 @@ async fn link(link: Link) -> Result<()> {
         .with_context(|| format!("creating {}", state_dir.display()))?;
     link.save(&state_dir)?;
     // Until there are settings, the engine reads the link when it starts.
-    println!("Linked to {}. Restart the engine to connect.", link.relay);
+    println!(
+        "Linked to {}. Restart the engine to connect: ludolph install.",
+        link.relay
+    );
     Ok(())
 }
 

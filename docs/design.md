@@ -49,6 +49,8 @@ So memory goes on two things: Zeron's engine, which Ludolph removes, and one pi 
 ```
 
 - **Engine** (`ludolph engine`): a launch agent. It starts at login, restarts after a crash, and runs whether a window is open or not. It owns the pi processes, the index, titles, archiving, turn changes, and the relay link. It has no UI.
+  - `ludolph install` writes `~/Library/LaunchAgents/dev.iyazerski.ludolph.engine.plist` for the binary it's run from and loads it. It logs to `~/Library/Logs/Ludolph/engine.log`. `ludolph uninstall` removes it. The signed app will register the same agent itself.
+  - launchd's `PATH` is short, so the engine starts by asking your login shell for its own, like VS Code does. It runs `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's `PATH` if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would, including tools you install later.
 - **App** (`Ludolph.app`): one UI process with both windows. It starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
 - **Relay**: a small server you host. It's today's `zeron-relay`, moved into this repo.
 
