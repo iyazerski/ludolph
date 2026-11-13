@@ -96,7 +96,7 @@ The engine watches the sessions folder with FSEvents, so it also sees sessions t
 
 ## Projects
 
-A project is a session's `cwd`, as is. Its name is the folder's name. Chats whose cwd is the home folder, or a Ludolph scratch folder, go under **No project**, which is one group in the list.
+A project is a session's `cwd`, as is. Its name is the folder's name. Chats whose cwd is the home folder, a Ludolph scratch folder, or one of Zeron's (`~/.zeron/scratch`), go under **No project**, which is one group in the list.
 
 A chat started without a project gets its own scratch folder, `~/Library/Application Support/Ludolph/scratch/<date>-<short id>`, the way Zeron does.
 
@@ -108,7 +108,7 @@ If a chat's folder no longer exists (3 of the cwds here), pi's RPC mode refuses 
 
 The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rpc.md`): JSON lines on stdin and stdout, with responses matched by `id`. It splits records only on `\n`, as pi asks.
 
-- **New chat:** start `pi --mode rpc --session-id <uuid>` in the chat's cwd, so Ludolph picks the session id up front. Then send `get_state` to learn the session file. pi writes that file only on the first prompt (checked with pi 1.5.2), so a new chat is a draft in the app until its first message. Starting the process when the composer opens hides most of the 250 ms.
+- **New chat:** start `pi --mode rpc --session-id <uuid>` in the chat's cwd, so Ludolph picks the session id up front. Then send `get_state` to learn the session file. pi writes that file only on the first prompt (checked with pi 1.5.2), so a new chat is a draft in the app until its first message. Starting the process when the composer opens hides most of the 250 ms. A draft whose pi stops idle before writing the file is dropped, since there's nothing to show. One whose pi dies mid-run stays, interrupted, so its message can be sent again with the same session id.
 - **Open chat:** reading a transcript needs no process. The engine reads the session file. A process starts only when a chat needs pi: to send a message, change the model, or list skills.
 - **Send:** `prompt`. While the agent works, `prompt` with `streamingBehavior: "steer"`.
 - **Stop:** `clear_queue`, then `abort`.
@@ -253,9 +253,12 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | `list_skills` | `get_commands` (see [pi processes](#pi-processes)) |
 | `polish_dictation` | The sidecar model through `pi -p` |
 | `list_harnesses` | pi alone, since the phone's picker still asks |
+| `take_over_chat` | Turns sending back on for a chat [another pi](#sessions-open-elsewhere) has open |
 | `open_zeron` | Removed. If the engine isn't running, the Mac is offline. |
 
-Changes to the phone app: remove the "start Zeron" action (the agent picker already hides itself with one harness), and replace Zeron's name in its text. It still shows Zeron's composer references and chat-to-chat headers, since chats started in Zeron keep them. The relay protocol is at version 2, which drops the `Engine` message: a linked Mac is a running engine.
+The socket also has `get_settings`, `set_settings` and `import_chats`, which the relay refuses: a relay mustn't change settings or rewrite titles.
+
+Changes to the phone app: remove the "start Zeron" action (the agent picker already hides itself with one harness), and replace Zeron's name in its text. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. It still shows Zeron's composer references and chat-to-chat headers, since chats started in Zeron keep them. The relay protocol is at version 2, which drops the `Engine` message: a linked Mac is a running engine.
 
 ## App
 
@@ -339,9 +342,9 @@ src/main.rs     the `ludolph` binary: `engine`, the app, and `install`/`uninstal
 ## Migration from Zeron
 
 - **Chats:** nothing to do. Zeron runs pi with session files under `~/.pi/agent/sessions`, so Ludolph's index finds them.
-- **Zeron's scratch folders:** chats Zeron started without a project ran in `~/.zeron/scratch/<date>-<id>`, and their sessions keep that cwd. Without help, each shows as a project of its own. The import decides how they're grouped.
+- **Zeron's scratch folders:** chats Zeron started without a project ran in `~/.zeron/scratch/<date>-<id>`, and their sessions keep that cwd. They go under **No project**, as Ludolph's own scratch folders do.
 - **Moved chats:** when Zeron moved a chat to a project, it left a copy of the session file under the old folder, with the same session id. The index lists a session once, by the copy written last.
-- **Titles and archive state:** these live in Zeron's database. A one-time import runs while Zeron still runs, through zeron-tools' IPC client. It lists chats with their titles and archive state. It then maps each to its session file through `~/.pi/agent/zeron-sessions/<hash>.json`, which holds `{sessionId, sessionFile}`. That the hash is derived from the Zeron chat id is still to be checked. The import writes titles and archive state to Ludolph's part of the index only. It starts no pi, so it's safe while Zeron still runs. Each imported title moves into pi's file with `set_session_name` the next time its chat runs in Ludolph. If the import is skipped, titles fall back to first words, and nothing is archived.
+- **Titles and archive state:** these live in Zeron's database. `ludolph import-zeron` runs once, while Zeron and the engine both run. It lists Zeron's chats over Zeron's loopback RPC (`WatchChats` on `ws://127.0.0.1:27654`, with the token in `~/.zeron/ipc-token`) and keeps the pi ones. Each chat's session is the `sessionId` of the `sessionStarted` event in its journal (`~/.zeron/profiles/*/journals/<chat id>.jsonl`, and each account's under `~/.zeron/orgs`). A chat whose journal is gone gets the only session that started in its folder within 120 seconds after it. Zeron starts pi at once: sessions named in journals started at most 20 s after their chat. On this Mac, journals match 238 of 273 pi chats and the fallback 29 more. Checked against the journal matches, the fallback was never wrong, and it skipped 29 it couldn't tell apart. The other 6 have no session left. (`~/.pi/agent/zeron-sessions/<hash>.json` doesn't help: its names aren't derived from the chat id.) The import sends the matches to the engine's `import_chats`, which writes them to Ludolph's part of the index only. It starts no pi, and running it again changes nothing. An imported title is shown until the chat's next run writes it to pi's file with `set_session_name`, without asking the sidecar model. If the import is skipped, the list shows each chat's first prompt until it runs again, and nothing is archived.
 - **Turn changes:** zeron-tools' saved turns (`~/.zeron/turn-snapshots` and its own store) aren't carried over.
 
 ## Milestones
@@ -350,7 +353,7 @@ src/main.rs     the `ludolph` binary: `engine`, the app, and `install`/`uninstal
 2. **Quick window:** the Companion ported to the engine's socket, with the views moved into `ui`.
 3. **Main window:** the sidebar, Dock icon, and app bundle, signed like fettle.
 4. **Settings:** including linking a phone.
-5. **Migration import**, then the first public release.
+5. The first public release.
 
 ## Alternatives considered
 

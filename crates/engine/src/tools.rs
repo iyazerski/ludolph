@@ -49,13 +49,18 @@ pub enum Tool {
     PolishDictation,
     GetSettings,
     SetSettings,
+    ImportChats,
 }
 
 impl Tool {
     /// Whether the phone may call it. The phone can't change settings, so a
-    /// relay can't, say, point dictation at a model of its choosing.
+    /// relay can't, say, point dictation at a model of its choosing, nor
+    /// rewrite every title with an import.
     pub fn for_phone(self) -> bool {
-        !matches!(self, Self::GetSettings | Self::SetSettings)
+        !matches!(
+            self,
+            Self::GetSettings | Self::SetSettings | Self::ImportChats
+        )
     }
 }
 
@@ -83,6 +88,7 @@ impl FromStr for Tool {
             "polish_dictation" => Self::PolishDictation,
             "get_settings" => Self::GetSettings,
             "set_settings" => Self::SetSettings,
+            "import_chats" => Self::ImportChats,
             _ => bail!("no tool {name}"),
         })
     }
@@ -117,6 +123,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::SetSettings => Ok(serde_json::to_value(
             engine.set_settings(parse(args)?).await?,
         )?),
+        Tool::ImportChats => import_chats(engine, parse(args)?),
     }
 }
 
@@ -652,6 +659,31 @@ struct ArchiveArgs {
     chat: String,
     /// `false` unarchives.
     archived: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportArgs {
+    chats: Vec<Imported>,
+}
+
+/// One chat's title and archive state, from another app.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Imported {
+    chat: String,
+    title: String,
+    archived: bool,
+}
+
+fn import_chats(engine: &Engine, args: ImportArgs) -> Result<Value> {
+    let chats: Vec<_> = args
+        .chats
+        .into_iter()
+        .map(|c| (c.chat, c.title, c.archived))
+        .collect();
+    let found = engine.import(&chats)?;
+    Ok(json!({"imported": found, "unknown": chats.len() - found}))
 }
 
 fn archive_chat(engine: &Engine, args: ArchiveArgs) -> Result<Value> {

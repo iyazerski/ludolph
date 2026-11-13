@@ -12,7 +12,7 @@ It serves plain HTTP on `BIND_ADDR` (default `0.0.0.0:8080`). It needs a TLS-ter
 | `DATA_DIR` | Where state is kept. Default `data`. |
 | `SETUP_TOKEN` | A secret that lets you create the first passkey. Only needed until one exists. |
 
-Build the image from the repository root. It's a static binary in an empty image, and it cross-compiles, so an amd64 image builds on an arm64 Mac without emulation:
+Each change to the relay on `main` publishes `ghcr.io/iyazerski/ludolph/relay:latest` for linux/amd64, tagged with its commit too. To build it yourself, run this from the repository root. It's a static binary in an empty image, and it cross-compiles, so an amd64 image builds on an arm64 Mac without emulation:
 
 ```sh
 docker build -f crates/relay/Dockerfile --platform linux/amd64 -t ludolph-relay .
@@ -25,7 +25,7 @@ Or run it from source: `cargo run -p ludolph-relay -- --public-url https://ludol
 `k8s/` has the manifests for a cluster with Traefik and cert-manager. They assume a ClusterIssuer named `letsencrypt-prod` (see `k8s/certificate.yaml`). Fill in the image and host:
 
 ```sh
-export APP_IMAGE=ghcr.io/you/ludolph-relay:1 PUBLIC_HOST=ludolph.example.com
+export APP_IMAGE=ghcr.io/iyazerski/ludolph/relay:latest PUBLIC_HOST=ludolph.example.com
 kubectl create secret generic ludolph-relay-secrets --from-literal=SETUP_TOKEN=$(openssl rand -hex 16)
 kubectl apply -f k8s/storage.yaml -f k8s/service.yaml -f k8s/traefik.yaml
 for f in certificate ingressroute deployment; do
@@ -39,7 +39,7 @@ In a fork, `.github/workflows/deploy-relay.yml` does the same on each push to `m
 
 - the variable `RELAY_PUBLIC_HOST`, like `ludolph.example.com`;
 - the secret `KUBE_CONFIG_B64`, a base64 kubeconfig for the cluster;
-- optionally, `KUBE_NAMESPACE` (default `default`), and `KUBE_PULL_SECRET`, the cluster's secret for pulling the image while it's private on ghcr.io.
+- optionally, `KUBE_NAMESPACE` (default `default`), and `KUBE_PULL_SECRET`, the cluster's secret for pulling the image if your fork's package on ghcr.io is private.
 
 ## First use
 

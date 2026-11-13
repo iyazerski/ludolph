@@ -311,7 +311,13 @@ async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
             (NoticeKind::Input, format!("Needs your answer: {asked}"))
         }
     };
-    let title = view.chat.title.unwrap_or_else(|| "Untitled chat".into());
+    // Like the list, the first prompt stands in until there's a title.
+    let first = view.chat.summary.and_then(|s| s.first_prompt);
+    let title = view
+        .chat
+        .title
+        .or(first)
+        .unwrap_or_else(|| "Untitled chat".into());
     Ok(Some(Notice {
         kind,
         chat: view.chat.id,
