@@ -744,6 +744,15 @@ impl Engine {
         Ok(())
     }
 
+    /// `heard` from dictation, cleaned up by the title model.
+    ///
+    /// # Errors
+    ///
+    /// Fails if it's blank, or the model fails.
+    pub async fn polish(&self, heard: &str) -> Result<String> {
+        self.0.titler.polish(heard).await
+    }
+
     /// The models pi can use.
     ///
     /// # Errors

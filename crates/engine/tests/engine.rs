@@ -512,6 +512,13 @@ async fn chats_are_titled_as_soon_as_they_start() {
     assert_eq!(saved(chat).as_deref(), Some("Rename The Old"));
     let asked = std::fs::read_to_string(dir.path().join("pi.log-titles")).unwrap();
     assert_eq!(asked, "fix the build\nrename the old\n");
+
+    // Dictation goes through the same model, with thinking off.
+    let heard = json!({"text": " uh fix the um build "});
+    let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
+    assert_eq!(polished, json!({"text": "Fix the build. (off)"}));
+    let blank = tool(&engine, "polish_dictation", json!({"text": " "})).await;
+    assert!(blank.is_err());
     engine.shutdown().await.unwrap();
 }
 
