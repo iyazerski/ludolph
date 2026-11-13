@@ -7,6 +7,7 @@ mod jsonl;
 pub mod live;
 pub mod models;
 pub mod pi;
+pub mod power;
 pub mod relay;
 pub mod repo;
 pub mod runtime;

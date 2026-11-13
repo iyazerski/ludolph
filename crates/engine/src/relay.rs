@@ -4,7 +4,8 @@
 //! The engine keeps one outgoing WebSocket to the relay, and answers its
 //! calls with the same tools the app uses. Only those tools exist, so the
 //! relay can't reach anything else on the Mac. It also passes the chats'
-//! alerts on, so the phone can notify you.
+//! alerts on, so the phone can notify you, and the battery, which the
+//! phone shows.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, header};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::engine::{Alert, AlertKind, Engine};
+use crate::power;
 use crate::settings::Notify;
 use crate::text::one_line;
 use crate::tools::{self, Tool};
@@ -110,6 +112,9 @@ pub async fn run(engine: Engine, link: Link) {
         }
     };
     let slots = Arc::new(Semaphore::new(MAX_CALLS));
+    let mut power = power::Changes::new()
+        .inspect_err(|e| eprintln!("relay: the battery won't update: {e:#}"))
+        .ok();
     let mut backoff = MIN_BACKOFF;
     loop {
         let mut connected = None;
@@ -117,7 +122,7 @@ pub async fn run(engine: Engine, link: Link) {
             let socket = dial(&url, &link.token).await?;
             eprintln!("relay: connected to {url}");
             connected = Some(Instant::now());
-            serve(socket, &engine, &slots).await
+            serve(socket, &engine, &slots, &mut power).await
         }
         .await;
         if connected.is_some_and(|at| at.elapsed() >= STABLE_AFTER) {
@@ -160,7 +165,12 @@ type Socket =
 ///
 /// Alerts from before it began are dropped: a late notice would only be
 /// noise (`docs/design.md`, "Phone and relay").
-async fn serve(socket: Socket, engine: &Engine, slots: &Arc<Semaphore>) -> Result<()> {
+async fn serve(
+    socket: Socket,
+    engine: &Engine,
+    slots: &Arc<Semaphore>,
+    power: &mut Option<power::Changes>,
+) -> Result<()> {
     let mut alerts = engine.alerts();
     let (mut sink, mut stream) = socket.split();
     sink.send(encode(&hello())?).await?;
@@ -168,6 +178,8 @@ async fn serve(socket: Socket, engine: &Engine, slots: &Arc<Semaphore>) -> Resul
         running: Some(env!("CARGO_PKG_VERSION").to_owned()),
     };
     sink.send(encode(&Up::Engine(running))?).await?;
+    let mut battery = power::battery();
+    sink.send(encode(&Up::Power { battery })?).await?;
     // Calls and notices being built. Dropping the set when the connection
     // ends stops them, since they have nowhere to go.
     let mut calls: JoinSet<Option<Up>> = JoinSet::new();
@@ -200,6 +212,17 @@ async fn serve(socket: Socket, engine: &Engine, slots: &Arc<Semaphore>) -> Resul
                 Err(RecvError::Lagged(missed)) => eprintln!("relay: skipped {missed} notifications"),
                 Err(RecvError::Closed) => bail!("the engine stopped"),
             },
+            changed = power_change(power) => {
+                if let Err(e) = changed {
+                    eprintln!("relay: the battery won't update: {e:#}");
+                    *power = None;
+                }
+                let now = power::battery();
+                if now != battery {
+                    battery = now;
+                    sink.send(encode(&Up::Power { battery })?).await?;
+                }
+            }
             Some(Ok(up)) = calls.join_next() => {
                 if let Some(up) = up {
                     sink.send(encode(&up)?).await?;
@@ -232,6 +255,14 @@ async fn answer(engine: Engine, slots: Arc<Semaphore>, call: Call) -> Up {
         Err(_) => Err("the Mac didn't answer in time".into()),
     };
     Up::Reply { id, result }
+}
+
+/// Wait for the battery to change; forever without a way to tell.
+async fn power_change(power: &mut Option<power::Changes>) -> Result<()> {
+    match power {
+        Some(changes) => changes.next().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The notice for `alert`, if the settings allow one now and it's still
