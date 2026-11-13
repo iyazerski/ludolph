@@ -57,8 +57,17 @@ def title():
     print(f'"{" ".join(words).title()}."')
 
 
+def polish():
+    """Answer like `pi -p` cleaning up dictation: without fillers, and with
+    the thinking level it was asked for."""
+    words = [w for w in sys.stdin.read().split() if w not in ("uh", "um")]
+    thinking = sys.argv[sys.argv.index("--thinking") + 1]
+    print(f"\n{' '.join(words).capitalize()}. ({thinking})\n")
+
+
 if "-p" in sys.argv:
-    title()
+    prompt_arg = sys.argv[sys.argv.index("--system-prompt") + 1]
+    polish() if "speech-to-text" in prompt_arg else title()
     sys.exit(0)
 
 SESSION_ID, SESSION_FILE = session()

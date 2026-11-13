@@ -46,6 +46,7 @@ pub enum Tool {
     SetChatModel,
     ComposerInfo,
     ListSkills,
+    PolishDictation,
 }
 
 impl FromStr for Tool {
@@ -69,6 +70,7 @@ impl FromStr for Tool {
             "set_chat_model" => Self::SetChatModel,
             "composer_info" => Self::ComposerInfo,
             "list_skills" => Self::ListSkills,
+            "polish_dictation" => Self::PolishDictation,
             _ => bail!("no tool {name}"),
         })
     }
@@ -97,6 +99,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::SetChatModel => set_chat_model(engine, parse(args)?).await,
         Tool::ComposerInfo => composer_info(engine, parse(args)?).await,
         Tool::ListSkills => list_skills(engine, parse(args)?).await,
+        Tool::PolishDictation => polish_dictation(engine, parse(args)?).await,
     }
 }
 
@@ -422,6 +425,17 @@ async fn list_skills(engine: &Engine, args: ListSkillsArgs) -> Result<Value> {
         })
         .collect();
     Ok(json!({"skills": skills}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolishArgs {
+    text: String,
+}
+
+/// What dictation heard, cleaned up, in the speaker's words.
+async fn polish_dictation(engine: &Engine, args: PolishArgs) -> Result<Value> {
+    Ok(json!({"text": engine.polish(&args.text).await?}))
 }
 
 /// A chat's model settings and context use, as the composer reads them.
