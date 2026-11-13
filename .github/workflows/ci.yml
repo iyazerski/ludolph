@@ -21,6 +21,12 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+      - name: Bundle
+        run: |
+          cargo build --locked
+          scripts/bundle.sh target/debug/ludolph 0.0.0 target
+          plutil -lint target/Ludolph.app/Contents/Info.plist
+          codesign --verify --strict target/Ludolph.app
 
   # The relay ships as a Linux image, so it's tested there too.
   relay:

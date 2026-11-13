@@ -49,10 +49,13 @@ So memory goes on two things: Zeron's engine, which Ludolph removes, and one pi 
 ```
 
 - **Engine** (`ludolph engine`): a launch agent. It starts at login, restarts after a crash, and runs whether a window is open or not. It owns the pi processes, the index, titles, archiving, turn changes, and the relay link. It has no UI.
-  - `ludolph install` writes `~/Library/LaunchAgents/dev.iyazerski.ludolph.engine.plist` for the binary it's run from and loads it. It logs to `~/Library/Logs/Ludolph/engine.log`. `ludolph uninstall` removes it. The signed app will register the same agent itself.
+  - Its agent is `~/Library/LaunchAgents/dev.iyazerski.ludolph.engine.plist`, logging to `~/Library/Logs/Ludolph/engine.log`. Each time `Ludolph.app` starts, it points the agent at its own binary, and starts the engine if it isn't running, so moving or updating the app moves the engine too. `ludolph install` does the same from a binary outside a bundle, and `ludolph uninstall` removes the agent and the app's login item.
   - launchd's environment is bare, so the engine starts by asking your login shell for its own, like VS Code does. It runs `env` through `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would: tools you install later, and the API keys and proxy settings your rc files export.
 - **App** (`Ludolph.app`): one UI process with both windows. It starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
-  - Until the app bundle, `ludolph app` runs it and opens the main window (`--hidden` starts with no window, as at login). It takes `app.lock` in the state folder, so a second copy quits instead of fighting over the shortcut.
+  - `ludolph` with no arguments runs it and opens the main window, which is what opening `Ludolph.app` does. `--hidden` starts it with no window. It takes `app.lock` in the state folder, so a second copy quits instead of fighting over the shortcut.
+  - Its login item is a second launch agent, `dev.iyazerski.ludolph.plist`, which the app writes when it starts from its bundle. It runs `open -g -a Ludolph.app --args --hidden`: through LaunchServices, so opening the app later reaches the running copy, which opens the main window. The agent isn't loaded at once, since that would start the app again. Settings will turn it off.
+  - `LSUIElement` keeps the Dock icon off until the main window shows. A development run (`LUDOLPH_DIR` set, or outside a bundle) leaves both agents alone.
+  - `scripts/bundle.sh` builds the bundle, and `make install` puts it in `/Applications`. It signs with a self-signed identity kept in its own keychain (`scripts/local-identity.sh`), so macOS keeps the microphone and speech grants across installs, as fettle does for `make dev`. Releases, signed with one certificate from CI, come with the first public release.
 - **Relay** (`crates/relay`): a small server you host. It started as zeron-tools' `zeron-relay`.
 
 Why the engine is its own process: agents and the phone keep working when the app is quit, crashes, or updates. That's the reason Zeron's engine was moved to a service in zeron-tools 0.19.
@@ -313,7 +316,7 @@ The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, w
 
 ### Trust
 
-The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac, and keep the Mac's relay token in the Keychain. Until the app is signed, the token is in `relay.json`, readable only by you: the Keychain ties an item to the program's signature, so each unsigned build would ask for access again. End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
+The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac, and keep the Mac's relay token in the Keychain. For now the token is in `relay.json`, readable only by you. The Keychain ties an item to the program's signature, so it moves there with Settings, now that `make install` signs every build with one identity. End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
 
 ## Performance budget
 
@@ -347,7 +350,7 @@ How we check:
 
 ## Repo layout
 
-A Cargo workspace, following fettle where it applies (bundle, signing, release, `make dev`):
+A Cargo workspace, following fettle where it applies (bundle, signing, release):
 
 ```
 crates/
@@ -356,7 +359,9 @@ crates/
   relay/        the relay server and the phone app
   relay-proto/  the Mac ↔ relay messages
   json-file/    atomic JSON files
-src/main.rs     the `ludolph` binary: `engine`, the app, and `install`/`uninstall` for the launch agent
+src/main.rs     the `ludolph` binary: the app, `engine`, and `install`/`uninstall` for the launch agents
+assets/         the app's Info.plist template and icon (drawn by crates/relay/assets/make_icons.py)
+scripts/        bundle.sh and the local signing identity
 ```
 
 ## Existing sessions

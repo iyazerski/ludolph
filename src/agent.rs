@@ -1,14 +1,16 @@
-//! The engine's launch agent, which starts it at login and restarts it
-//! after a crash.
+//! Ludolph's launch agents: the engine's, which starts it at login and
+//! restarts it after a crash, and the app's login item.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const LABEL: &str = "dev.iyazerski.ludolph.engine";
+/// The app's login item, labelled like the app.
+const LOGIN_LABEL: &str = "dev.iyazerski.ludolph";
 
 /// Install the agent to run this binary's engine, replacing an earlier one,
 /// and start it. Returns the log's path.
@@ -16,7 +18,7 @@ const LABEL: &str = "dev.iyazerski.ludolph.engine";
 /// # Errors
 ///
 /// Fails if the plist can't be written, or launchd refuses it.
-pub fn install(home: &std::path::Path) -> Result<PathBuf> {
+pub fn install(home: &Path) -> Result<PathBuf> {
     let exe = std::env::current_exe().context("finding the ludolph binary")?;
     let (plist, log) = (
         plist_path(home),
@@ -42,20 +44,78 @@ pub fn install(home: &std::path::Path) -> Result<PathBuf> {
     Ok(log)
 }
 
-/// Stop and remove the agent. Returns whether one was installed.
+/// Point the engine's agent and the app's login item at `app`, the bundle
+/// this binary runs from. The app does this each time it starts, so moving
+/// or updating it moves both.
 ///
 /// # Errors
 ///
-/// Fails if launchd doesn't let the engine go, or the plist can't be
-/// removed.
-pub fn uninstall(home: &std::path::Path) -> Result<bool> {
-    let plist = plist_path(home);
-    if !plist.exists() {
-        return Ok(false);
+/// Fails if a plist can't be written, or launchd refuses the engine.
+pub fn adopt(home: &Path, app: &Path) -> Result<()> {
+    let exe = std::env::current_exe().context("finding the ludolph binary")?;
+    let installed: Option<Installed> = plist::from_file(plist_path(home)).ok();
+    let ours = installed.is_some_and(|i| i.program_arguments.first().map(Path::new) == Some(&exe));
+    // Starts the engine if it isn't running, as after an update stopped it.
+    if !ours || launchctl(&["kickstart", &format!("{}/{LABEL}", domain())]).is_err() {
+        install(home)?;
     }
-    unload()?;
-    std::fs::remove_file(&plist).with_context(|| format!("removing {}", plist.display()))?;
-    Ok(true)
+    login_item(home, app)
+}
+
+/// Start `app` hidden at every login. It isn't loaded now: that would start
+/// it, and so reopen the copy already running.
+fn login_item(home: &Path, app: &Path) -> Result<()> {
+    let item = LoginItem {
+        label: LOGIN_LABEL,
+        // Through LaunchServices, so opening Ludolph.app later reaches this copy.
+        program_arguments: vec![
+            "/usr/bin/open".into(),
+            "-g".into(),
+            "-a".into(),
+            app.to_string_lossy().into_owned(),
+            "--args".into(),
+            "--hidden".into(),
+        ],
+        run_at_load: true,
+        process_type: "Interactive",
+    };
+    let path = login_path(home);
+    let mut xml = Vec::new();
+    plist::to_writer_xml(&mut xml, &item).context("writing the login item")?;
+    // Unchanged files stay as they are, so macOS doesn't announce a new background item.
+    if std::fs::read(&path).is_ok_and(|old| old == xml) {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(&path, xml).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Stop and remove the engine's agent and the app's login item. Returns
+/// whether either was installed.
+///
+/// # Errors
+///
+/// Fails if launchd doesn't let the engine go, or a plist can't be removed.
+pub fn uninstall(home: &Path) -> Result<bool> {
+    let plist = plist_path(home);
+    let engine = plist.exists();
+    if engine {
+        unload()?;
+        std::fs::remove_file(&plist).with_context(|| format!("removing {}", plist.display()))?;
+    }
+    let login = login_path(home);
+    let app = login.exists();
+    if app {
+        // Loaded since the last login, though its `open` is long done.
+        drop(launchctl(&[
+            "bootout",
+            &format!("{}/{LOGIN_LABEL}", domain()),
+        ]));
+        std::fs::remove_file(&login).with_context(|| format!("removing {}", login.display()))?;
+    }
+    Ok(engine || app)
 }
 
 /// Restart the installed engine, so it reads its files again. Returns
@@ -64,7 +124,7 @@ pub fn uninstall(home: &std::path::Path) -> Result<bool> {
 /// # Errors
 ///
 /// Fails if launchd can't restart it.
-pub fn restart(home: &std::path::Path) -> Result<bool> {
+pub fn restart(home: &Path) -> Result<bool> {
     if !plist_path(home).exists() {
         return Ok(false);
     }
@@ -87,8 +147,30 @@ fn unload() -> Result<()> {
     bail!("launchd didn't stop {target} in 10 s")
 }
 
-fn plist_path(home: &std::path::Path) -> PathBuf {
+fn plist_path(home: &Path) -> PathBuf {
     home.join(format!("Library/LaunchAgents/{LABEL}.plist"))
+}
+
+fn login_path(home: &Path) -> PathBuf {
+    home.join(format!("Library/LaunchAgents/{LOGIN_LABEL}.plist"))
+}
+
+/// What `adopt` reads back from the engine's installed plist.
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Installed {
+    program_arguments: Vec<String>,
+}
+
+/// The app's login item, as launchd reads it.
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct LoginItem {
+    label: &'static str,
+    program_arguments: Vec<String>,
+    run_at_load: bool,
+    /// An app the user sees, not a background job launchd may hold back.
+    process_type: &'static str,
 }
 
 /// The job, as launchd reads it from the plist.

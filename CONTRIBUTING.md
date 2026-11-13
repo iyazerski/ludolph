@@ -8,12 +8,16 @@ Thanks for helping with Ludolph. Bug reports, ideas and pull requests are all we
 
 ## Make a change
 
-You need macOS on Apple silicon and [Rust](https://rustup.rs). Ludolph is early: the engine is being built first, and [docs/design.md](docs/design.md) describes the plan.
+You need macOS on Apple silicon and [Rust](https://rustup.rs). Ludolph is early, and [docs/design.md](docs/design.md) describes the plan.
 
 ```sh
 make test
-make engine   # run a development engine, with its own files in target/dev
+make engine    # run a development engine, with its own files in target/dev
+make app       # run the windows on it, beside your installed Ludolph
+make install   # build Ludolph.app and put it in /Applications
 ```
+
+The development engine and app don't touch the installed ones, but the installed app keeps the ⌃⌥Space shortcut. `make install` signs with a local identity it makes on first use, so macOS keeps the microphone grant across installs.
 
 Before you open a pull request:
 

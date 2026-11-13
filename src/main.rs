@@ -1,6 +1,7 @@
-//! The `ludolph` binary. `ludolph engine` runs the engine, `ludolph app`
-//! runs the windows, `ludolph install` runs the engine in the background from
-//! now on, and `ludolph link` links this Mac to a relay for the phone.
+//! The `ludolph` binary. `ludolph` runs the windows, as Ludolph.app does,
+//! `ludolph engine` runs the engine, `ludolph install` runs the engine in the
+//! background from now on, and `ludolph link` links this Mac to a relay for
+//! the phone.
 
 mod agent;
 mod shell;
@@ -29,15 +30,15 @@ fn main() -> ExitCode {
             unsafe { shell::adopt_login_env() };
             engine()
         }
-        ["app"] => app(false),
-        ["app", "--hidden"] => app(true),
+        [] => app(false),
+        ["--hidden"] => app(true),
         ["install"] => install(),
         ["uninstall"] => uninstall(),
         ["link", code] => link(code),
         ["unlink"] => unlink(),
         _ => {
             eprintln!(
-                "usage: ludolph engine\n       ludolph app [--hidden]\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
+                "usage: ludolph [--hidden]\n       ludolph engine\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
             );
             return ExitCode::from(2);
         }
@@ -92,7 +93,19 @@ async fn engine() -> Result<()> {
 /// Run the windows until the app quits. It opens the main window, unless
 /// `hidden` keeps it closed until the app is opened again, as at login.
 fn app(hidden: bool) -> Result<()> {
-    let state_dir = state_dir(&home()?);
+    let home = home()?;
+    let state_dir = state_dir(&home);
+    // A development folder has its own engine, so the installed one is left alone.
+    let exe = std::env::current_exe().context("finding the ludolph binary")?;
+    if let Some(bundle) = bundle_of(&exe).filter(|_| std::env::var_os("LUDOLPH_DIR").is_none()) {
+        let bundle = bundle.to_owned();
+        // launchd may take seconds to let an old engine go; the windows don't wait.
+        std::thread::spawn(move || {
+            if let Err(e) = agent::adopt(&home, &bundle) {
+                eprintln!("ludolph: {e:#}");
+            }
+        });
+    }
     println!(
         "Ludolph is running; {} shows the quick window.",
         ludolph_ui::SHORTCUT
@@ -113,7 +126,7 @@ fn install() -> Result<()> {
 /// Stop the background engine and remove its launch agent.
 fn uninstall() -> Result<()> {
     if agent::uninstall(&home()?)? {
-        println!("The engine stopped, and won't start at login.");
+        println!("The engine stopped. Neither it nor the app starts at login now.");
     } else {
         println!("The engine isn't installed.");
     }
@@ -158,6 +171,14 @@ fn unlink() -> Result<()> {
         Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
     }
     Ok(())
+}
+
+/// The `.app` bundle `exe` runs from, if it runs from one, as in
+/// `Ludolph.app/Contents/MacOS/ludolph`.
+fn bundle_of(exe: &Path) -> Option<&Path> {
+    exe.ancestors()
+        .nth(3)
+        .filter(|app| app.extension().is_some_and(|e| e == "app"))
 }
 
 fn home() -> Result<PathBuf> {
