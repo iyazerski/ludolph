@@ -1,0 +1,104 @@
+name: Deploy relay
+
+# Deploys the maintainer's relay. It runs only where the RELAY_PUBLIC_HOST
+# variable and the KUBE_CONFIG_B64 secret are set, so forks skip it.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/relay/**"
+      - "crates/relay-proto/**"
+      - "crates/json-file/**"
+      - "Cargo.lock"
+      - "scripts/release_guard.sh"
+      - ".github/workflows/deploy-relay.yml"
+  workflow_dispatch:
+    inputs:
+      confirm_deployment:
+        description: 'Type "deploy" to confirm deployment'
+        required: true
+        default: ""
+
+concurrency:
+  group: ludolph-relay-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    if: >-
+      vars.RELAY_PUBLIC_HOST != '' &&
+      (github.event_name != 'workflow_dispatch' || inputs.confirm_deployment == 'deploy')
+    runs-on: ubuntu-latest
+    env:
+      APP_IMAGE: ghcr.io/${{ github.repository }}/relay:${{ github.sha }}
+      NAMESPACE: ${{ vars.KUBE_NAMESPACE || 'default' }}
+      PUBLIC_HOST: ${{ vars.RELAY_PUBLIC_HOST }}
+      # The cluster's secret for pulling from ghcr.io, if the image is private.
+      PULL_SECRET: ${{ vars.KUBE_PULL_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: crates/relay/Dockerfile
+          platforms: linux/amd64
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ env.APP_IMAGE }}
+            ghcr.io/${{ github.repository }}/relay:latest
+
+      - uses: azure/setup-kubectl@v5
+        with:
+          version: v1.37.1
+
+      - name: Configure kubeconfig
+        env:
+          KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+        run: |
+          mkdir -p ~/.kube
+          echo "${KUBE_CONFIG_B64}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      # The cluster already has cert-manager's letsencrypt-prod ClusterIssuer.
+      # The setup token secret is made once by hand (see crates/relay/README.md).
+      - name: Record running release
+        # Remember the live revision, so a failed deploy or smoke check can restore it.
+        run: scripts/release_guard.sh record deployment/ludolph-relay
+
+      - name: Deploy
+        run: |
+          k8s=crates/relay/k8s
+          host() { sed -e "s|__PUBLIC_HOST__|${PUBLIC_HOST}|g" -e "s|__APP_IMAGE__|${APP_IMAGE}|g" "$k8s/$1.yaml"; }
+          kubectl -n "${NAMESPACE}" apply -f $k8s/storage.yaml -f $k8s/service.yaml -f $k8s/traefik.yaml
+          host certificate | kubectl -n "${NAMESPACE}" apply -f -
+          host ingressroute | kubectl -n "${NAMESPACE}" apply -f -
+          if [ -n "${PULL_SECRET}" ]; then
+            host deployment | yq ".spec.template.spec.imagePullSecrets = [{\"name\": \"${PULL_SECRET}\"}]"
+          else
+            host deployment
+          fi | kubectl -n "${NAMESPACE}" apply -f -
+          kubectl -n "${NAMESPACE}" rollout status deployment/ludolph-relay --timeout=180s
+
+      - name: Smoke check public site
+        run: scripts/release_guard.sh smoke 200 "https://${PUBLIC_HOST}/healthz"
+
+      - name: Restore previous release
+        if: failure()
+        run: scripts/release_guard.sh restore
