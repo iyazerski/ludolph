@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::Path;
 
 use ludolph_engine::transcript::{
-    Message, MessageStatus, Page, Part, Role, Tail, Transcripts, Window,
+    Image, Message, MessageStatus, Page, Part, Role, Tail, ToolState, Transcripts, Window,
 };
 use serde_json::{Value, json};
 
@@ -40,9 +40,12 @@ fn text(text: &str) -> Part {
     Part::Text { text: text.into() }
 }
 
-fn tools(lines: &[&str]) -> Part {
-    Part::Tools {
-        tools: lines.iter().map(|l| (*l).to_owned()).collect(),
+fn tool(id: &str, name: &str, subject: &str, state: ToolState) -> Part {
+    Part::Tool {
+        id: id.into(),
+        name: name.into(),
+        subject: Some(subject.into()),
+        state,
     }
 }
 
@@ -85,7 +88,7 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
             message(
                 "r1",
                 Some("a1"),
-                json!({"role": "toolResult", "toolCallId": "c1", "isError": true, "content": [], "timestamp": 4}),
+                json!({"role": "toolResult", "toolCallId": "c1", "toolName": "bash", "isError": true, "content": [{"type": "text", "text": "1 failed"}], "timestamp": 4}),
             ),
             message(
                 "r2",
@@ -143,8 +146,11 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
                 Role::Assistant,
                 MessageStatus::Complete,
                 vec![
+                    Part::Thinking { text: "hmm".into() },
                     text("Looking."),
-                    tools(&["exec: cargo test (error)", "exec: ls", "read: src/a.rs"]),
+                    tool("c1", "bash", "cargo test", ToolState::Failed),
+                    tool("c2", "bash", "ls", ToolState::Done),
+                    tool("c3", "read", "src/a.rs", ToolState::Done),
                     Part::Error {
                         error: "overloaded".into()
                     },
@@ -158,12 +164,12 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
             (
                 Role::User,
                 MessageStatus::Complete,
-                vec![tools(&["exec: make (error)"])]
+                vec![tool("b1", "bash", "make", ToolState::Failed)]
             ),
             (
                 Role::User,
                 MessageStatus::Complete,
-                vec![text("see"), tools(&["image"])]
+                vec![text("see"), Part::Image { index: 0 }]
             ),
             (
                 Role::Assistant,
@@ -175,6 +181,25 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
     assert_eq!(page.messages[1].id, "a1");
     assert_eq!(page.messages[1].created_at, 3);
     assert_eq!(page.leaf.as_deref(), Some("a3"));
+
+    // A call's details load on request: its arguments and output, and a
+    // command you ran yourself.
+    let failed = transcripts.tool(&path, "c1").unwrap().unwrap();
+    assert_eq!(failed.name, "bash");
+    assert_eq!(failed.args, json!({"command": "cargo test"}));
+    assert_eq!(
+        (failed.text.as_str(), failed.failed, failed.running),
+        ("1 failed", true, false)
+    );
+    let make = transcripts.tool(&path, "b1").unwrap().unwrap();
+    assert_eq!((make.args, make.failed), (json!({"command": "make"}), true));
+    assert_eq!(transcripts.tool(&path, "c3").unwrap(), None);
+    let image = Image {
+        mime_type: "image/png".into(),
+        data: "AAAA".into(),
+    };
+    assert_eq!(transcripts.image(&path, "u2", 0).unwrap(), Some(image));
+    assert_eq!(transcripts.image(&path, "u2", 1).unwrap(), None);
 
     // A page has the last messages, and what pi appends shows next time.
     append(&path, &[message("u3", Some("a3"), user("next", 11))]);
@@ -241,7 +266,11 @@ fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
             (
                 Role::Assistant,
                 MessageStatus::Streaming,
-                vec![tools(&["exec: ls", "exec: make (running)"]), text("Buil")]
+                vec![
+                    tool("c1", "bash", "ls", ToolState::Done),
+                    tool("c2", "bash", "make", ToolState::Running),
+                    text("Buil"),
+                ]
             ),
         ]
     );

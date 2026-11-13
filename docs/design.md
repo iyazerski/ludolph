@@ -136,6 +136,8 @@ The tail keeps finished messages without tool output or image data, which no vie
 
 A message's id is its first entry's id. A turn that's only in the tail has a `live-<n>` id until pi writes its first entry.
 
+A message is a list of parts, in order: text, thinking, tool calls, images and errors. A tool call carries pi's tool name, its subject (a command, a path or a pattern), its id and its state: running, done or failed. A `!command` you ran is a `bash` call, by its entry's id. An image carries its index in its message. Their details load on request, so a page stays small: `tool_output` has a call's whole arguments, its output up to 1 MiB, its images and the tool's own `details`, like an edit's diff, and `chat_image` has an image's data. A running call's output comes from the live tail, and a finished one's from the file. Views group consecutive calls under one summary, and the phone leaves thinking out.
+
 `chat_view` returns the latest 40 messages. Once you load earlier ones, it returns every message from the first one shown (`from`) to the end, with `earlier` more before it. The anchor keeps loaded messages in place as new ones come, which a count from the end can't, so there's no limit on how far back you can go. If the anchor is gone, as when the session moved to another branch, it's the latest 40 again.
 
 Every change bumps the chat's revision, and subscribers get a notice with it. The notices coalesce: a client that falls behind sees only the latest, and then reads the view again, so a reconnect needs nothing special. The view is cheap to read again, since each open file is scanned once, then only for what pi appended, and only the lines of the page asked for are parsed.
@@ -237,14 +239,16 @@ The app and the relay link use the same tool layer, as `connect` and the Compani
 
 ### Tools
 
-The phone's tools keep their names and answer shapes, so the phone app needs only small changes:
+The app and the phone call the same tools:
 
 | Tool | In Ludolph |
 |---|---|
 | `list_chats` | From the index |
 | `list_chat_groups` | From the index, by project |
 | `list_projects` | The distinct cwds in the index |
-| `chat_view` | The [transcript](#live-view-and-the-file)'s latest messages, a page at a time. Long tool output and images load on request. |
+| `chat_view` | The [transcript](#live-view-and-the-file)'s latest messages, a page at a time |
+| `tool_output` | A tool call's arguments and output |
+| `chat_image` | An image in a message |
 | `send_message` | `prompt`, or a steering `prompt` |
 | `create_chat` | Start pi in the project's folder or a scratch folder, set the picked model, then `prompt` |
 | `interrupt_chat` | `clear_queue` and `abort`. A send that hasn't reached pi yet is cancelled. |
@@ -261,7 +265,7 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 
 The socket also has `get_settings` and `set_settings`, which the relay refuses: a relay mustn't change settings.
 
-In the phone app, a Mac whose engine isn't running is offline, and the agent picker hides itself, since pi is the only harness. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 2, which drops the `Engine` message: a linked Mac is a running engine.
+In the phone app, a Mac whose engine isn't running is offline, and the agent picker hides itself, since pi is the only harness. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 3. Version 2 dropped the `Engine` message, since a linked Mac is a running engine, and version 3 changed messages' parts.
 
 ## App
 
@@ -296,7 +300,7 @@ The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, w
 
 - **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. The code is the relay's address and the Mac's token, as URL-safe base64 JSON (`relay-proto`'s `LinkCode`). Until there are settings, the phone shows `ludolph link <code>`, which checks the token with the relay, saves the link in `relay.json`, and restarts the installed engine so it connects.
 - **Battery:** the phone shows the Mac's battery. The engine reads it from IOKit when it connects, and again on each `com.apple.system.powersources` notification, about once a minute while charging or on battery. It sends it only when it changed, so nothing polls.
-- **Protocol 2:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
+- **Protocol 3:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
 - **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Runs by another pi aren't watched, so they don't notify.
 - **Self-hosting:** `crates/relay/README.md` explains how to run the relay (container image and manifests) and how to create the setup link.
 

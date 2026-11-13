@@ -1,5 +1,6 @@
-//! Chat transcripts from pi's session files, as the phone app and the
-//! Companion show them (`chat_view`).
+//! Chat transcripts from pi's session files, as the app and the phone show
+//! them (`chat_view`), and the details a view loads on request: a tool
+//! call's arguments and output, and a sent image.
 //!
 //! A transcript is the path from the session's leaf back to its start
 //! (`docs/session-format.md`, "Tree Structure"), so entries on abandoned
@@ -34,7 +35,7 @@ const MAX_FILES: usize = 8;
 /// The most characters of a tool call's subject, like a command, shown.
 const TOOL_CHARS: usize = 160;
 
-/// One message, as the phone app reads it.
+/// One message, as a view shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -66,15 +67,73 @@ pub enum MessageStatus {
     Aborted,
 }
 
-/// One run of a message, in order. Consecutive tool calls share a group
-/// until prose or an error ends it; thinking isn't shown and doesn't end one.
+/// One piece of a message, in order.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Part {
-    Text { text: String },
-    Tools { tools: Vec<String> },
-    Error { error: String },
+    Text {
+        text: String,
+    },
+    /// The model's reasoning, which a view can fold away.
+    Thinking {
+        text: String,
+    },
+    /// A tool call: pi's name for the tool, what it works on, like a
+    /// command or a path, and how it went. [`Transcripts::tool`] has its
+    /// arguments and output, by `id`.
+    Tool {
+        id: String,
+        name: String,
+        subject: Option<String>,
+        state: ToolState,
+    },
+    /// The message's `index`th image, which [`Transcripts::image`] has.
+    Image {
+        index: usize,
+    },
+    Error {
+        error: String,
+    },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolState {
+    Running,
+    Done,
+    Failed,
+}
+
+/// A tool call's details, which a view loads when it's opened.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOutput {
+    pub name: String,
+    /// What the model called it with, whole.
+    pub args: Value,
+    /// The output's text, or what it printed so far while it runs.
+    pub text: String,
+    pub images: Vec<Image>,
+    /// The tool's own extras, like an edit's diff.
+    pub details: Value,
+    pub failed: bool,
+    pub running: bool,
+    /// The text was cut at [`MAX_OUTPUT`] bytes.
+    pub truncated: bool,
+}
+
+/// An image, as pi keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Image {
+    pub mime_type: String,
+    /// Base64.
+    pub data: String,
+}
+
+/// The most output text [`ToolOutput`] carries. pi already cuts a
+/// command's output to its last 50 KB, so this is for other tools.
+pub const MAX_OUTPUT: usize = 1 << 20;
 
 /// What the running turn added, from pi's events.
 #[derive(Debug, Clone, Copy, Default)]
@@ -142,6 +201,96 @@ impl Transcripts {
             Some(path) => self.scan(path)?.page(path, tail, window),
             None => Scan::default().page(Path::new(""), tail, window),
         }
+    }
+
+    /// The details of tool call `call` in the transcript in `path`, once its
+    /// result is written; `None` before. A `!command` you ran is a call too,
+    /// by its entry's id.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file can't be read.
+    pub fn tool(&mut self, path: &Path, call: &str) -> Result<Option<ToolOutput>> {
+        let scan = self.scan(path)?;
+        if let Some(&i) = scan.by_id.get(call) {
+            let entry: FullEntry = scan.parse(path, i)?;
+            return Ok(entry
+                .message
+                .filter(|m| m.role == "bashExecution")
+                .map(|m| {
+                    let (text, truncated) = capped(m.output.unwrap_or_default());
+                    ToolOutput {
+                        name: "bash".to_owned(),
+                        args: serde_json::json!({"command": m.command}),
+                        text,
+                        images: Vec::new(),
+                        details: Value::Null,
+                        failed: m.cancelled || m.exit_code.is_some_and(|code| code != 0),
+                        running: false,
+                        truncated,
+                    }
+                }));
+        }
+        let is_result = |meta: &Meta| {
+            meta.stamp
+                .as_ref()
+                .is_some_and(|s| &*s.role == "toolResult" && s.call.as_deref() == Some(call))
+        };
+        let Some(result) = scan.entries.iter().rposition(is_result) else {
+            return Ok(None);
+        };
+        let message = scan
+            .parse::<FullEntry>(path, result)?
+            .message
+            .unwrap_or_default();
+        // The call is in the assistant message the result follows.
+        let mut args = Value::Null;
+        let mut at = scan.entries[result].parent;
+        while let Some(i) = at {
+            if scan.entries[i]
+                .stamp
+                .as_ref()
+                .is_some_and(|s| &*s.role == "assistant")
+            {
+                let reply = scan
+                    .parse::<FullEntry>(path, i)?
+                    .message
+                    .unwrap_or_default();
+                let blocks = reply.content.as_array().into_iter().flatten();
+                if let Some(block) = blocks.into_iter().find(|b| b["id"] == call) {
+                    args = block["arguments"].clone();
+                }
+                break;
+            }
+            at = scan.entries[i].parent;
+        }
+        let (text, images) = output(&message.content);
+        let (text, truncated) = capped(text);
+        Ok(Some(ToolOutput {
+            name: message.tool_name.unwrap_or_default(),
+            args,
+            text,
+            images,
+            details: message.details,
+            failed: message.is_error,
+            running: false,
+            truncated,
+        }))
+    }
+
+    /// The `index`th image of entry `entry` in the transcript in `path`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file can't be read.
+    pub fn image(&mut self, path: &Path, entry: &str, index: usize) -> Result<Option<Image>> {
+        let scan = self.scan(path)?;
+        let Some(&i) = scan.by_id.get(entry) else {
+            return Ok(None);
+        };
+        let entry: FullEntry = scan.parse(path, i)?;
+        let content = entry.message.map_or(entry.content, |m| m.content);
+        Ok(output(&content).1.into_iter().nth(index))
     }
 
     /// `path`'s scan, brought up to date.
@@ -235,6 +384,19 @@ enum Item {
 }
 
 impl Scan {
+    /// Entry `i`, read from `path` and parsed whole.
+    fn parse<T: serde::de::DeserializeOwned>(&self, path: &Path, i: usize) -> Result<T> {
+        let meta = &self.entries[i];
+        let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        file.seek(SeekFrom::Start(meta.start))?;
+        let mut buf = vec![0; usize::try_from(meta.len).context("a line longer than memory")?];
+        file.read_exact(&mut buf)
+            .with_context(|| format!("reading {}", path.display()))?;
+        fix_surrogates(&mut buf);
+        serde_json::from_slice(&buf)
+            .with_context(|| format!("{}: parsing entry {}", path.display(), meta.id))
+    }
+
     /// Scan `path` from the start. A file without a complete header yet has
     /// no entries.
     fn read(path: &Path) -> Result<Self> {
@@ -561,6 +723,9 @@ struct MessageView {
     tool_call_id: Option<String>,
     #[serde(default)]
     is_error: bool,
+    /// A `bashExecution` you stopped.
+    #[serde(default)]
+    cancelled: bool,
 }
 
 /// A message's content: a string, as one text block, or blocks.
@@ -573,7 +738,8 @@ struct Block {
     #[serde(rename = "type", default)]
     kind: String,
     text: Option<String>,
-    /// A tool call's id, name and the arguments its line names.
+    thinking: Option<String>,
+    /// A tool call's id, name and the arguments its subject comes from.
     id: Option<String>,
     name: Option<String>,
     arguments: Option<Arguments>,
@@ -601,6 +767,7 @@ impl<'de> Deserialize<'de> for Content {
                 Ok(Content(vec![Block {
                     kind: "text".to_owned(),
                     text: Some(text.to_owned()),
+                    thinking: None,
                     id: None,
                     name: None,
                     arguments: None,
@@ -621,6 +788,86 @@ impl<'de> Deserialize<'de> for Content {
         }
         deserializer.deserialize_any(ContentVisitor)
     }
+}
+
+/// An entry with everything a tool call's or an image's details need.
+#[derive(Debug, Default, Deserialize)]
+struct FullEntry {
+    message: Option<FullMessage>,
+    /// A `custom_message`'s.
+    #[serde(default)]
+    content: Value,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FullMessage {
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    content: Value,
+    tool_name: Option<String>,
+    #[serde(default)]
+    is_error: bool,
+    #[serde(default)]
+    details: Value,
+    /// A `bashExecution`'s.
+    command: Option<String>,
+    output: Option<String>,
+    exit_code: Option<i64>,
+    #[serde(default)]
+    cancelled: bool,
+}
+
+/// The details of a tool that's running, from the live tail's
+/// `{toolName, args, partialResult}`.
+pub fn running_tool(tool: &Value) -> ToolOutput {
+    let partial = &tool["partialResult"];
+    let (text, images) = output(&partial["content"]);
+    let (text, truncated) = capped(text);
+    ToolOutput {
+        name: tool["toolName"].as_str().unwrap_or_default().to_owned(),
+        args: tool["args"].clone(),
+        text,
+        images,
+        details: partial["details"].clone(),
+        failed: false,
+        running: true,
+        truncated,
+    }
+}
+
+/// The text and images of a message's content: a string, or blocks.
+fn output(content: &Value) -> (String, Vec<Image>) {
+    if let Some(text) = content.as_str() {
+        return (text.to_owned(), Vec::new());
+    }
+    let blocks = content.as_array().map_or(&[][..], Vec::as_slice);
+    let texts: Vec<&str> = blocks
+        .iter()
+        .filter(|b| b["type"] == "text")
+        .filter_map(|b| b["text"].as_str())
+        .collect();
+    let images = blocks
+        .iter()
+        .filter(|b| b["type"] == "image")
+        .filter_map(|b| Image::deserialize(b).ok())
+        .collect();
+    (texts.join("\n"), images)
+}
+
+/// `text` cut to [`MAX_OUTPUT`] bytes at a character's end, and whether it
+/// was cut.
+fn capped(mut text: String) -> (String, bool) {
+    if text.len() <= MAX_OUTPUT {
+        return (text, false);
+    }
+    let mut end = MAX_OUTPUT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    (text, true)
 }
 
 /// One entry or live message being rendered.
@@ -692,11 +939,17 @@ fn render(pieces: &[Piece]) -> Option<Message> {
         }
         ("message", Some("bashExecution"), Some(m)) => {
             message.role = Role::User;
-            let mut line = tool_subject("exec", m.command.as_deref().unwrap_or_default());
-            if m.exit_code.is_some_and(|code| code != 0) {
-                line.push_str(" (error)");
-            }
-            message.parts = vec![Part::Tools { tools: vec![line] }];
+            let failed = m.cancelled || m.exit_code.is_some_and(|code| code != 0);
+            message.parts = vec![Part::Tool {
+                id: first.id.clone(),
+                name: "bash".to_owned(),
+                subject: one_line(m.command.as_deref().unwrap_or_default(), TOOL_CHARS),
+                state: if failed {
+                    ToolState::Failed
+                } else {
+                    ToolState::Done
+                },
+            }];
         }
         ("message", Some("custom"), Some(m)) => message.parts = content_parts(&m.content),
         ("custom_message", ..) => message.parts = content_parts(&entry.content),
@@ -719,16 +972,14 @@ fn render(pieces: &[Piece]) -> Option<Message> {
     Some(message)
 }
 
-/// Fill in an assistant turn: its prose, tool calls and errors in order.
+/// Fill in an assistant turn: its prose, thinking, tool calls and errors in
+/// order.
 fn render_turn(pieces: &[Piece], message: &mut Message) {
-    enum Raw<'a> {
-        Part(Part),
-        /// A tool call's line, its id, and whether it's live.
-        Call(String, Option<&'a str>, bool),
-    }
-    // Tool results come after their calls, so lines are finished at the end.
+    // Tool results come after their calls, so states are settled at the end.
     let mut failed: HashMap<&str, bool> = HashMap::new();
-    let mut raw = Vec::new();
+    // Each call's part, and whether it's from the live tail.
+    let mut calls: Vec<(usize, bool)> = Vec::new();
+    let mut parts = Vec::new();
     for piece in pieces {
         let Some(m) = &piece.entry.message else {
             continue;
@@ -741,13 +992,17 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
             }
             "assistant" => {
                 for block in &m.content.0 {
-                    match (block.kind.as_str(), &block.text) {
-                        ("text", Some(text)) if !text.trim().is_empty() => {
-                            raw.push(Raw::Part(Part::Text { text: text.clone() }));
+                    let shown =
+                        |text: &Option<String>| text.clone().filter(|t| !t.trim().is_empty());
+                    match block.kind.as_str() {
+                        "text" => parts.extend(shown(&block.text).map(|text| Part::Text { text })),
+                        "thinking" => {
+                            parts
+                                .extend(shown(&block.thinking).map(|text| Part::Thinking { text }));
                         }
-                        ("toolCall", _) => {
-                            let line = tool_line(block);
-                            raw.push(Raw::Call(line, block.id.as_deref(), piece.live));
+                        "toolCall" => {
+                            calls.push((parts.len(), piece.live));
+                            parts.push(tool_part(block));
                         }
                         _ => {}
                     }
@@ -756,13 +1011,13 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
                 match m.stop_reason.as_deref() {
                     Some("error") => {
                         let error = m.error_message.as_deref().unwrap_or("The model failed.");
-                        raw.push(Raw::Part(Part::Error {
+                        parts.push(Part::Error {
                             error: error.to_owned(),
-                        }));
+                        });
                     }
-                    Some("length") => raw.push(Raw::Part(Part::Error {
+                    Some("length") => parts.push(Part::Error {
                         error: "The reply hit the model's length limit.".to_owned(),
-                    })),
+                    }),
                     Some("aborted") => message.status = MessageStatus::Aborted,
                     _ => {}
                 }
@@ -773,73 +1028,54 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
             _ => {}
         }
     }
-    let parts = raw.into_iter().map(|raw| match raw {
-        Raw::Part(part) => part,
-        Raw::Call(line, id, live) => {
-            let line = match id.and_then(|id| failed.get(id)) {
-                Some(true) => format!("{line} (error)"),
-                None if live => format!("{line} (running)"),
-                _ => line,
+    for (at, live) in calls {
+        if let Part::Tool { id, state, .. } = &mut parts[at] {
+            *state = match failed.get(id.as_str()) {
+                Some(true) => ToolState::Failed,
+                None if live => ToolState::Running,
+                _ => ToolState::Done,
             };
-            Part::Tools { tools: vec![line] }
-        }
-    });
-    message.parts = merge_tools(parts);
-}
-
-/// Join consecutive tool groups into one.
-fn merge_tools(parts: impl IntoIterator<Item = Part>) -> Vec<Part> {
-    let mut merged: Vec<Part> = Vec::new();
-    for part in parts {
-        match (merged.last_mut(), part) {
-            (Some(Part::Tools { tools }), Part::Tools { tools: more }) => tools.extend(more),
-            (_, part) => merged.push(part),
         }
     }
-    merged
+    message.parts = parts;
 }
 
 /// The text and images of a user or custom message's content.
 fn content_parts(content: &Content) -> Vec<Part> {
-    let parts = content
+    let mut images = 0..;
+    content
         .0
         .iter()
         .filter_map(|block| match block.kind.as_str() {
             "text" => Some(Part::Text {
                 text: block.text.clone()?,
             }),
-            "image" => Some(Part::Tools {
-                tools: vec!["image".to_owned()],
+            "image" => Some(Part::Image {
+                index: images.next()?,
             }),
             _ => None,
-        });
-    merge_tools(parts)
+        })
+        .collect()
 }
 
-/// A tool call's line, `kind: subject`, named like the Companion's activity
-/// rows. pi's built-in tools are in its `docs/tools.md`.
-fn tool_line(call: &Block) -> String {
+/// A tool call's part, done until its result says otherwise. The subject is
+/// what pi's built-in tools (its `docs/tools.md`) work on.
+fn tool_part(call: &Block) -> Part {
     let name = call.name.as_deref().unwrap_or("tool");
     let args = call.arguments.as_ref();
     let arg = |field: fn(&Arguments) -> &Option<String>| args.and_then(|a| field(a).as_deref());
-    let path = arg(|a| &a.path);
-    let pattern = arg(|a| &a.pattern).unwrap_or_default();
-    match (name, path) {
-        ("bash", _) => tool_subject("exec", arg(|a| &a.command).unwrap_or_default()),
-        ("read", Some(path)) => tool_subject("read", path),
-        ("write", Some(path)) => tool_subject("write", path),
-        ("edit", Some(path)) => tool_subject("edit", path),
-        ("ls", Some(path)) => tool_subject("ls", path),
-        ("grep", Some(path)) => tool_subject("search", &format!("{pattern} in {path}")),
-        ("grep", None) => tool_subject("search", pattern),
-        ("find", _) => tool_subject("glob", pattern),
-        _ => name.to_owned(),
-    }
-}
-
-fn tool_subject(kind: &str, subject: &str) -> String {
-    match one_line(subject, TOOL_CHARS) {
-        Some(subject) => format!("{kind}: {subject}"),
-        None => kind.to_owned(),
+    let (path, pattern) = (arg(|a| &a.path), arg(|a| &a.pattern));
+    let subject = match (name, path, pattern) {
+        ("bash", ..) => arg(|a| &a.command).map(Cow::Borrowed),
+        ("read" | "write" | "edit" | "ls", Some(path), _) => Some(Cow::Borrowed(path)),
+        ("grep", Some(path), Some(pattern)) => Some(Cow::Owned(format!("{pattern} in {path}"))),
+        ("grep" | "find", _, Some(pattern)) => Some(Cow::Borrowed(pattern)),
+        _ => None,
+    };
+    Part::Tool {
+        id: call.id.clone().unwrap_or_default(),
+        name: name.to_owned(),
+        subject: subject.and_then(|s| one_line(&s, TOOL_CHARS)),
+        state: ToolState::Done,
     }
 }
