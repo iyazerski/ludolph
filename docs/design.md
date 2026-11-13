@@ -52,7 +52,7 @@ So memory goes on two things: Zeron's engine, which Ludolph removes, and one pi 
   - `ludolph install` writes `~/Library/LaunchAgents/dev.iyazerski.ludolph.engine.plist` for the binary it's run from and loads it. It logs to `~/Library/Logs/Ludolph/engine.log`. `ludolph uninstall` removes it. The signed app will register the same agent itself.
   - launchd's `PATH` is short, so the engine starts by asking your login shell for its own, like VS Code does. It runs `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's `PATH` if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would, including tools you install later.
 - **App** (`Ludolph.app`): one UI process with both windows. It starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
-- **Relay**: a small server you host. It's today's `zeron-relay`, moved into this repo.
+- **Relay** (`crates/relay`): a small server you host. It started as zeron-tools' `zeron-relay`.
 
 Why the engine is its own process: agents and the phone keep working when the app is quit, crashes, or updates. That's the reason Zeron's engine was moved to a service in zeron-tools 0.19.
 
@@ -286,13 +286,13 @@ The engine keeps them, since it's the one using them and it runs while the app i
 
 ## Phone and relay
 
-The relay, its Kubernetes manifests, and the phone app (`relay/assets`) move into this repo. The phone app keeps its look and flows.
+The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, with the app in `assets`. The phone app keeps its look and flows.
 
 - **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. Until there are settings, `ludolph link --relay <address> --token <token>` checks the token with the relay and saves the link in `relay.json`, and the engine connects when it starts.
 - **Battery:** the phone shows the Mac's battery. The engine reads it from IOKit when it connects, and again on each `com.apple.system.powersources` notification, about once a minute while charging or on battery. It sends it only when it changed, so nothing polls.
-- **Until the relay moves:** the engine speaks protocol 1, so it works with Zeron's relay as deployed. It reports itself as running, and serves calls with its own tools, so the phone's "open Zeron" is gone. Version 2 comes with moving the relay.
+- **Protocol 1 for now:** the engine and relay speak it, so the engine also works with Zeron's relay as deployed. The engine reports itself as running, and serves calls with its own tools, so the phone's "open Zeron" is never offered. Version 2 comes with the phone app's changes.
 - **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Protocol 1 has no interrupted kind, so that one goes as failed. Runs by another pi aren't watched, so they don't notify.
-- **Self-hosting:** the README explains how to run the relay (container image and manifests) and how to create the setup link.
+- **Self-hosting:** `crates/relay/README.md` explains how to run the relay (container image and manifests) and how to create the setup link.
 
 ### Trust
 

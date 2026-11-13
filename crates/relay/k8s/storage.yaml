@@ -1,0 +1,15 @@
+# state.json (passkeys, sessions, Mac tokens), the VAPID key, and push
+# subscriptions: a few KB.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ludolph-relay-data
+  labels:
+    app.kubernetes.io/part-of: ludolph
+    app: ludolph-relay
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
