@@ -897,7 +897,8 @@ function chatView(machine, id, fromList) {
       : started ? null
       : [h("div", { class: "skeleton", style: { margin: "0", alignSelf: "flex-end", width: "60%" } }), h("div", { class: "skeleton", style: { margin: "0", height: "120px" } })]);
   const secs = h("span", { class: "secs" });
-  const working = h("div", { class: "working hide" }, glyph("trail"), h("span", { class: "shimmer" }, "Working"), secs);
+  const workLabel = h("span", { class: "shimmer" }, "Working");
+  const working = h("div", { class: "working hide" }, glyph("trail"), workLabel, secs);
   const questionSlot = h("div");
   msgs.append(working, questionSlot);
   const scroll = h("div", { class: "scroll" }, msgs);
@@ -924,7 +925,14 @@ function chatView(machine, id, fromList) {
   const footer = h("div", { class: "composer-foot hide" }, meta, ctxSlot);
   // The desktop's `$` menu: the agent's skills, filtered by what follows the `$`.
   const skillMenu = h("div", { class: "skill-menu glass hide", role: "listbox" });
-  const composerBox = h("div", { class: "composer glass" }, textarea, recorder, h("div", { class: "composer-tools" }, modelChip, h("span", { class: "spacer" }), micBtn, sendBtn));
+  // Images to send with the message, already sized for a model.
+  let attached = [];
+  const attachments = h("div", { class: "attachments hide" });
+  const picker = h("input", { type: "file", accept: "image/*", multiple: true, hidden: true });
+  picker.addEventListener("change", () => attach([...picker.files]));
+  const attachBtn = h("button", { class: "attach", "aria-label": "Add images", onclick: () => { picker.value = ""; picker.click(); } }, icon("plus"));
+  const composerBox = h("div", { class: "composer glass" }, attachments, textarea, recorder, picker,
+    h("div", { class: "composer-tools" }, attachBtn, modelChip, h("span", { class: "spacer" }), micBtn, sendBtn));
   const dock = h("div", { class: "dock" }, jump, skillMenu, h("div", { class: "dock-base" },
     composerBox,
     footer));
@@ -963,7 +971,7 @@ function chatView(machine, id, fromList) {
   // The first message is creating the chat; typing must not re-enable Send meanwhile.
   let creating = false;
   function updateComposer() {
-    const text = textarea.value.trim();
+    const text = textarea.value.trim() || attached.length;
     const stop = !text && isWorking();
     sendBtn.classList.toggle("stop", stop);
     sendBtn.replaceChildren(icon(stop ? "stop" : "send"));
@@ -1160,24 +1168,56 @@ function chatView(machine, id, fromList) {
   textarea.value = drafts[draftKey] || "";
   sendBtn.addEventListener("click", () => (sendBtn.classList.contains("stop") ? stop() : send()));
 
+  async function attach(files) {
+    const room = MAX_IMAGES - attached.length;
+    if (files.length > room) toast({ title: `A message takes up to ${MAX_IMAGES} images`, kind: "input", timeout: 2400 });
+    for (const file of files.slice(0, Math.max(0, room))) {
+      try { attached.push(await imageFor(file)); }
+      catch (e) { toast({ title: "Couldn't add the image", body: e.message, kind: "error" }); }
+      drawAttachments();
+    }
+  }
+
+  function drawAttachments() {
+    attachments.classList.toggle("hide", !attached.length);
+    attachments.replaceChildren(...attached.map(image => h("div", { class: "thumb" },
+      h("img", { src: image.url, alt: "" }),
+      h("button", { "aria-label": "Remove", onclick: () => { attached = attached.filter(a => a !== image); URL.revokeObjectURL(image.url); drawAttachments(); } }, icon("close")))));
+    updateComposer();
+  }
+
+  /** Take the attached images for sending; `restore` puts them back if it fails. */
+  function takeImages() {
+    const taken = attached;
+    attached = [];
+    drawAttachments();
+    return {
+      images: taken.map(({ mimeType, data }) => ({ mimeType, data })),
+      parts: taken.map((_, index) => ({ kind: "image", index })),
+      restore: () => { if (!attached.length) { attached = taken; drawAttachments(); } },
+      done: () => taken.forEach(image => URL.revokeObjectURL(image.url)),
+    };
+  }
+
   async function send() {
     stopDictation();
     if (isDraft) return create();
     const typed = textarea.value.trim();
-    if (!typed) return;
+    if (!typed && !attached.length) return;
     const text = withSkillRefs(typed);
     haptic(10);
     textarea.value = "";
     delete drafts[id];
     textarea.style.height = "auto";
-    updateComposer();
+    const images = takeImages();
     drawSkills();
-    const bubble = userBubble({ parts: [{ kind: "text", text }] }, true);
+    const bubble = userBubble({ parts: [...(text ? [{ kind: "text", text }] : []), ...images.parts] }, true);
     pending.push({ text, el: bubble });
     msgs.insertBefore(bubble, working);
     toBottom(true);
     try {
-      await api("send_message", { text });
+      await api("send_message", images.images.length ? { text, images: images.images } : { text });
+      images.done();
       version = "";
       poll.now();
     } catch (e) {
@@ -1188,6 +1228,7 @@ function chatView(machine, id, fromList) {
         textarea.value = typed;
         updateComposer();
       }
+      images.restore();
       toast({ title: "Not sent", body: e.message, kind: "error" });
     }
   }
@@ -1309,7 +1350,7 @@ function chatView(machine, id, fromList) {
     return h("div", { class: `msg user${isPending ? " pending new" : ""}` },
       ...tools.map(g => toolsBlock(m, g)),
       textOf(m) || images.length ? h("div", { class: "bubble" }, textOf(m),
-        images.length ? h("div", { class: "shots" }, images.map(p => h("button", { class: "chip", onclick: () => openImage(m, p.index) }, icon("image"), `Image ${p.index + 1}`))) : null) : null);
+        images.length ? h("div", { class: "shots" }, images.map(p => h("button", { class: "chip", onclick: () => !isPending && openImage(m, p.index) }, icon("image"), `Image ${p.index + 1}`))) : null) : null);
   }
 
   // Prose, tool groups, and errors in transcript order, as on the desktop.
@@ -1359,7 +1400,12 @@ function chatView(machine, id, fromList) {
       if (landed) p.el.remove();
       return !landed;
     });
-    reconcile(msgs, [older, ...nodes, ...pending.map(p => p.el), working, questionSlot]);
+    // What pi holds for the agent, from here or elsewhere, shows as queued.
+    const queue = [...(read.run?.steering || []), ...(read.run?.followUp || [])];
+    for (const p of pending) p.el.classList.toggle("queued", queue.includes(p.text));
+    const others = queue.filter(text => !pending.some(p => p.text === text)).map(queuedBubble);
+    for (const text of queuedBubbles.keys()) if (!queue.includes(text)) queuedBubbles.delete(text);
+    reconcile(msgs, [older, ...nodes, ...pending.map(p => p.el), ...others, working, questionSlot]);
     older.classList.toggle("hide", !read.olderRemaining);
     drawWorking();
     drawQuestion(read.pendingInput);
@@ -1367,12 +1413,33 @@ function chatView(machine, id, fromList) {
     else if (stick) toBottom(!firstPaint);
   }
 
-  // "Working 38s" until the agent shows text or a running tool.
+  const queuedBubbles = new Map();
+  function queuedBubble(text) {
+    if (!queuedBubbles.has(text)) {
+      const el = userBubble({ parts: [{ kind: "text", text }] }, true);
+      el.classList.add("queued");
+      queuedBubbles.set(text, el);
+    }
+    return queuedBubbles.get(text);
+  }
+
+  // "Working 38s" until the agent shows text or a running tool; what pi waits
+  // on, a retry or compaction, shows whatever the agent showed.
   function drawWorking() {
     const last = read?.messages[read.messages.length - 1];
     const quiet = !last || last.role === "user"
       || !last.parts.some(p => p.kind === "text" || (p.kind === "tool" && p.state === "running"));
-    working.classList.toggle("hide", !(isWorking() && quiet));
+    const { retry, compacting } = read?.run || {};
+    working.classList.toggle("hide", !(isWorking() && (quiet || retry || compacting)));
+    if (retry) {
+      const left = retry.at ? Math.max(0, Math.round((Date.parse(retry.at) - Date.now()) / 1000)) : 0;
+      workLabel.textContent = `Retry ${retry.attempt} of ${retry.maxAttempts}${left ? ` in ${left}s` : ""}`;
+      working.title = retry.error || "";
+      secs.textContent = "";
+      return;
+    }
+    workLabel.textContent = compacting ? "Compacting context" : "Working";
+    working.title = "";
     const lastUser = [...(read?.messages || [])].reverse().find(m => m.role === "user");
     // Epoch milliseconds.
     const since = lastUser?.createdAt;
@@ -1600,7 +1667,7 @@ function chatView(machine, id, fromList) {
   /** Create the chat with the first message, then show it in place of this screen. */
   async function create() {
     const typed = textarea.value.trim();
-    if (creating || !typed || !machine) return;
+    if (creating || (!typed && !attached.length) || !machine) return;
     const text = withSkillRefs(typed);
     haptic(12);
     creating = true;
@@ -1608,12 +1675,15 @@ function chatView(machine, id, fromList) {
     // The picks may change while the chat is created; use the ones sent.
     const target = machine;
     const picks = { machine: target, project: draft.project, model: draft.model, reasoning: draft.reasoning };
+    const images = takeImages();
     const args = { prompt: text };
+    if (images.images.length) args.images = images.images;
     if (draft.project) args.project = draft.project;
     if (draft.model) args.model = draft.model;
     if (draft.reasoning) args.reasoning = draft.reasoning;
     try {
       const made = await call(target, "create_chat", args);
+      images.done();
       prefs.set(picks);
       delete drafts[draftKey];
       if (made.sendError) {
@@ -1626,6 +1696,7 @@ function chatView(machine, id, fromList) {
       location.replace(chatHash(target, made.chatId));
     } catch (e) {
       toast({ title: "Couldn't start the chat", body: e.message, kind: "error" });
+      images.restore();
       creating = false;
       updateComposer();
     }
@@ -1798,6 +1869,42 @@ function newDraft() {
   const saved = prefs.get();
   const machine = (online.find(m => m.id === selectedMac()?.id) || online.find(m => m.id === saved.machine) || online[0])?.id || null;
   return { machine, project: saved.project ?? null, model: saved.model || "", reasoning: saved.reasoning || "", projects: [] };
+}
+
+/** The most images a message takes, as the engine allows. */
+const MAX_IMAGES = 8;
+/** A picked image's longest side, past which it's scaled down: models scale
+ * bigger ones down anyway, so the extra pixels only cost upload time. */
+const MAX_EDGE = 1600;
+/** Up to this size, an image a model takes as it is isn't re-encoded. */
+const KEEP_BYTES = 1 << 20;
+const MODEL_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** A picked image as a model takes it, sized down and as JPEG if it must be,
+ * with an object URL for its thumbnail. */
+async function imageFor(file) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  let blob = file;
+  if (scale < 1 || file.size > KEEP_BYTES || !MODEL_TYPES.includes(file.type)) {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const ctx = canvas.getContext("2d");
+    // JPEG has no transparency; white is what a screenshot's clear parts look like.
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    blob = await new Promise((resolve, reject) => canvas.toBlob(b => (b ? resolve(b) : reject(new Error("the image couldn't be encoded"))), "image/jpeg", 0.85));
+  }
+  bitmap.close();
+  const url = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+  return { mimeType: blob.type, data: url.slice(url.indexOf(",") + 1), url: URL.createObjectURL(blob) };
 }
 
 /** The reasoning levels for `model`: its own, else pi's. */

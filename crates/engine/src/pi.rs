@@ -124,13 +124,17 @@ pub enum Event {
     AutoRetryStart {
         attempt: u32,
         max_attempts: u32,
+        delay_ms: Option<u64>,
         error_message: Option<String>,
     },
     AutoRetryEnd {
         success: bool,
         final_error: Option<String>,
     },
-    CompactionStart,
+    CompactionStart {
+        /// `manual`, `threshold` or `overflow`.
+        reason: Option<String>,
+    },
     CompactionEnd,
     /// An extension asking something, or telling something (`notify` and
     /// the other fire-and-forget methods).

@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, Request, State, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Path, Request, State, WebSocketUpgrade};
 use axum::http::{Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -38,6 +38,11 @@ use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 use auth::Auth;
 use hub::Hub;
 use push::{Kind, Payload, Push, Subscription};
+
+/// The largest tool call the phone sends, which leaves room for a message's
+/// photos. It goes to the Mac as one websocket frame, and the engine reads
+/// frames of up to 16 MiB.
+const MAX_CALL: usize = 12 << 20;
 use store::{Machine, Store};
 
 /// The app's files: plain HTML, CSS, and JS, no build step.
@@ -175,7 +180,10 @@ async fn main() -> Result<()> {
         .route("/api/machines", post(machines))
         .route("/api/machines/add", post(add_machine))
         .route("/api/machines/remove", post(remove_machine))
-        .route("/api/call/{machine}/{tool}", post(call_tool))
+        .route(
+            "/api/call/{machine}/{tool}",
+            post(call_tool).layer(DefaultBodyLimit::max(MAX_CALL)),
+        )
         .route("/push/key", post(push_key))
         .route("/push/subscribe", post(push_subscribe))
         .route("/push/unsubscribe", post(push_unsubscribe))

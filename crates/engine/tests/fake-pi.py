@@ -172,7 +172,10 @@ def expand(text):
 
 def prompt(command):
     respond(command, {"disposition": "started"})
-    user = {"role": "user", "content": expand(command["message"]), "timestamp": now()}
+    content = expand(command["message"])
+    if command.get("images"):
+        content = [{"type": "text", "text": content}] + command["images"]
+    user = {"role": "user", "content": content, "timestamp": now()}
     # Written before it's reported, the harder order for telling whose it is.
     write(user)
     emit({"type": "agent_start"})

@@ -150,6 +150,53 @@ fn the_live_tail_keeps_a_failure_and_drops_bulky_output() {
     assert_eq!(live.failure(), None);
 }
 
+#[test]
+fn the_live_tail_says_what_a_run_waits_on() {
+    let mut live = Live::new();
+    let apply = |live: &mut Live, event: Value| {
+        live.apply(&serde_json::from_value::<Event>(event).unwrap())
+    };
+    assert_eq!(live.run(), None, "no run, nothing to wait on");
+    apply(&mut live, json!({"type": "agent_start"}));
+    apply(
+        &mut live,
+        json!({"type": "queue_update", "steering": ["use the other file"], "followUp": []}),
+    );
+    apply(
+        &mut live,
+        json!({"type": "auto_retry_start", "attempt": 1, "maxAttempts": 3, "delayMs": 2000, "errorMessage": "overloaded"}),
+    );
+    apply(
+        &mut live,
+        json!({"type": "compaction_start", "reason": "overflow"}),
+    );
+    let run = live.run().unwrap();
+    assert_eq!(run.steering, ["use the other file"]);
+    assert_eq!(run.compacting.as_deref(), Some("overflow"));
+    let retry = run.retry.unwrap();
+    assert_eq!(
+        (retry.attempt, retry.max_attempts, retry.error.as_deref()),
+        (1, 3, Some("overloaded"))
+    );
+    let wait = retry.at.unwrap() - chrono::Utc::now();
+    assert!(
+        wait.num_milliseconds() > 1000 && wait.num_milliseconds() <= 2000,
+        "{wait}"
+    );
+
+    apply(&mut live, json!({"type": "compaction_end"}));
+    apply(
+        &mut live,
+        json!({"type": "auto_retry_end", "success": true, "attempt": 2}),
+    );
+    let run = live.run().unwrap();
+    assert_eq!((run.retry, run.compacting), (None, None));
+    // An abort drops the queue without a `queue_update`.
+    apply(&mut live, json!({"type": "agent_settled", "aborted": true}));
+    apply(&mut live, json!({"type": "agent_start"}));
+    assert!(live.run().unwrap().steering.is_empty());
+}
+
 #[tokio::test]
 async fn stop_kills_a_pi_that_wont_exit_with_its_tools() {
     let dir = tempfile::tempdir().unwrap();

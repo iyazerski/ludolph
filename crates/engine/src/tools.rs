@@ -15,7 +15,7 @@ use crate::engine::{
 };
 use crate::models::Model;
 use crate::repo;
-use crate::transcript::{LATEST, Message, Part, Role, Window};
+use crate::transcript::{Image, LATEST, Message, Part, Role, Window};
 use crate::turns::Counts;
 
 /// Chats `list_chats` returns without a `limit`, and at most.
@@ -26,6 +26,10 @@ const DEFAULT_GROUP_CHATS: usize = 10;
 /// The most messages `chat_view` returns from the end, or adds before its
 /// anchor, in one call.
 const MAX_MESSAGES: usize = 500;
+/// The most images one message carries.
+const MAX_IMAGES: usize = 8;
+/// The image types models take.
+const IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// A tool, by its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,6 +309,7 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
             "total": view.page.total,
             "olderRemaining": view.page.older(),
             "pendingInput": view.question.as_ref().map(pending_input),
+            "run": view.run,
             "messages": view.page.messages,
             "turnChanges": runs,
         }))
@@ -498,17 +503,22 @@ fn settings(composer: &Composer) -> Value {
 #[serde(deny_unknown_fields)]
 struct SendArgs {
     chat: String,
+    #[serde(default)]
     text: String,
+    #[serde(default)]
+    images: Vec<Image>,
 }
 
-/// Send `text` to a chat: start a run, or steer the one that's going.
+/// Send text, images or both to a chat: start a run, or steer the one
+/// that's going.
 async fn send_message(engine: &Engine, args: SendArgs) -> Result<Value> {
     let text = args.text.trim();
-    if text.is_empty() {
-        bail!("text is empty");
+    let images = checked(args.images)?;
+    if text.is_empty() && images.is_empty() {
+        bail!("the message is empty");
     }
     find(engine, &args.chat)?;
-    let delivery = engine.send(&args.chat, text, Vec::new()).await?;
+    let delivery = engine.send(&args.chat, text, images).await?;
     Ok(json!({"chatId": args.chat, "delivery": delivery_name(delivery)}))
 }
 
@@ -518,6 +528,9 @@ struct CreateChatArgs {
     /// The project's folder; without one, the chat gets a scratch folder.
     project: Option<PathBuf>,
     prompt: Option<String>,
+    /// Sent with the prompt.
+    #[serde(default)]
+    images: Vec<Image>,
     /// `provider/model`; without one, pi's default.
     model: Option<String>,
     reasoning: Option<String>,
@@ -527,6 +540,7 @@ struct CreateChatArgs {
 /// prompt. If the chat was created but the prompt didn't go, `sendError`
 /// says why: retrying the whole call would create a second chat.
 async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
+    let images = checked(args.images)?;
     let cwd = match &args.project {
         Some(project) => project.clone(),
         None => {
@@ -550,13 +564,9 @@ async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
             return Ok(answer);
         }
     }
-    if let Some(prompt) = args
-        .prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-    {
-        match engine.send(&id, prompt, Vec::new()).await {
+    let prompt = args.prompt.as_deref().map_or("", str::trim);
+    if !prompt.is_empty() || !images.is_empty() {
+        match engine.send(&id, prompt, images).await {
             Ok(delivery) => answer["delivery"] = json!(delivery_name(delivery)),
             Err(e) => answer["sendError"] = json!(format!("{e:#}")),
         }
@@ -693,6 +703,20 @@ fn project(path: &Path) -> Value {
         |name| name.to_string_lossy().into_owned(),
     );
     json!({"id": path, "name": name, "path": path})
+}
+
+/// `images`, if a model can take them.
+fn checked(images: Vec<Image>) -> Result<Vec<Image>> {
+    if images.len() > MAX_IMAGES {
+        bail!("a message takes at most {MAX_IMAGES} images");
+    }
+    if let Some(image) = images
+        .iter()
+        .find(|image| !IMAGE_TYPES.contains(&image.mime_type.as_str()))
+    {
+        bail!("models don't take {} images", image.mime_type);
+    }
+    Ok(images)
 }
 
 /// How a message went: it started a run, steers the one going, or was a

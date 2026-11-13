@@ -651,6 +651,46 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_message_can_carry_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let png = json!({"mimeType": "image/png", "data": "iVBORw0KGgo="});
+    let made = tool(
+        &engine,
+        "create_chat",
+        json!({"project": dir.path(), "images": [png]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["delivery"], "run", "{made}");
+    let id = made["chatId"].as_str().unwrap().to_owned();
+    until(&engine, |c| {
+        c[0].status == Status::Idle && c[0].summary.is_some()
+    })
+    .await;
+    let view = tool(&engine, "chat_view", json!({"chat": id}))
+        .await
+        .unwrap();
+    let first = &view["read"]["messages"][0];
+    assert_eq!(
+        first["parts"],
+        json!([{"kind": "image", "index": 0}]),
+        "{first}"
+    );
+    let image = json!({"chat": id, "message": first["id"], "index": 0});
+    assert_eq!(tool(&engine, "chat_image", image).await.unwrap(), png);
+    // An image alone gives a title nothing to go on.
+    assert_eq!(engine.chats()[0].title, None);
+
+    let tiff = json!({"chat": id, "text": "and this", "images": [{"mimeType": "image/tiff", "data": "AA=="}]});
+    let refused = tool(&engine, "send_message", tiff).await.unwrap_err();
+    assert!(refused.to_string().contains("image/tiff"), "{refused:#}");
+    let empty = json!({"chat": id, "text": " "});
+    assert!(tool(&engine, "send_message", empty).await.is_err());
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_skill_runs_from_wherever_it_was_typed() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;

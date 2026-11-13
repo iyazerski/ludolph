@@ -138,6 +138,10 @@ A message's id is its first entry's id. A turn that's only in the tail has a `li
 
 A message is a list of parts, in order: text, thinking, tool calls, images and errors. A tool call carries pi's tool name, its subject (a command, a path or a pattern), its id and its state: running, done or failed. A `!command` you ran is a `bash` call, by its entry's id. An image carries its index in its message. Their details load on request, so a page stays small: `tool_output` has a call's whole arguments, its output up to 1 MiB, its images and the tool's own `details`, like an edit's diff, and `chat_image` has an image's data. A running call's output comes from the live tail, and a finished one's from the file. Views group consecutive calls under one summary, and the phone leaves thinking out.
 
+While a chat works, `chat_view` also has its `run`: the messages pi holds for the agent (`steering`, given after its current step, and `followUp`), the automatic retry it waits on with the time the attempt starts, and why it's compacting the context (`threshold`, `overflow` or `manual`). They come from pi's `queue_update`, `auto_retry_start` and `compaction_start` events. An abort drops the queue without a `queue_update`, so the queue empties when the run settles.
+
+The phone sizes a picked image down to 1600 pixels on its longest side, as JPEG, unless it's already a small image of a type models take. Models scale bigger images down anyway. The relay takes phone calls of up to 12 MiB, under the 16 MiB websocket frames the engine reads. An image sent alone gets no title from it: the next message with text gives one.
+
 `chat_view` returns the latest 40 messages. Once you load earlier ones, it returns every message from the first one shown (`from`) to the end, with `earlier` more before it. The anchor keeps loaded messages in place as new ones come, which a count from the end can't, so there's no limit on how far back you can go. If the anchor is gone, as when the session moved to another branch, it's the latest 40 again.
 
 Every change bumps the chat's revision, and subscribers get a notice with it. The notices coalesce: a client that falls behind sees only the latest, and then reads the view again, so a reconnect needs nothing special. The view is cheap to read again, since each open file is scanned once, then only for what pi appended, and only the lines of the page asked for are parsed.
@@ -249,7 +253,7 @@ The app and the phone call the same tools:
 | `chat_view` | The [transcript](#live-view-and-the-file)'s latest messages, a page at a time |
 | `tool_output` | A tool call's arguments and output |
 | `chat_image` | An image in a message |
-| `send_message` | `prompt`, or a steering `prompt` |
+| `send_message` | `prompt`, or a steering `prompt`, with up to 8 PNG, JPEG, GIF or WebP images |
 | `create_chat` | Start pi in the project's folder or a scratch folder, set the picked model, then `prompt` |
 | `interrupt_chat` | `clear_queue` and `abort`. A send that hasn't reached pi yet is cancelled. |
 | `respond_to_input` | Answers the [open question](#questions-from-the-agent) with that id, as an `extension_ui_response` |
