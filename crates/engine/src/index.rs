@@ -16,7 +16,8 @@ use crate::session::{Freshness, Summary};
 /// index is built again from the session files.
 const FORMAT: u32 = 4;
 
-/// Every session file pi has written, by path, and the chats you archived.
+/// Every session file pi has written, by path, the chats you archived, and
+/// titles imported from Zeron.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Index {
     sessions: BTreeMap<PathBuf, Summary>,
@@ -26,6 +27,11 @@ pub struct Index {
     /// changes.
     #[serde(default)]
     archived: BTreeMap<String, DateTime<Utc>>,
+    /// Titles imported for chats whose files have no name, by session id.
+    /// Each is dropped once the file has a name, which the chat's next run
+    /// writes. Like `archived`, it's kept when the format changes.
+    #[serde(default)]
+    titles: BTreeMap<String, String>,
     /// Each session id's file. A session can have copies under other
     /// folders, as Zeron left when it moved a chat; the most recently
     /// written one is the chat.
@@ -46,10 +52,13 @@ impl Index {
         };
         let parsing = || format!("parsing {}", path.display());
         if saved["format"] != FORMAT {
-            let archived = saved.get("archived").cloned().unwrap_or_default();
-            let archived: Option<_> = serde_json::from_value(archived).with_context(parsing)?;
+            let kept = |key: &str| saved.get(key).cloned().unwrap_or_default();
+            let archived: Option<_> =
+                serde_json::from_value(kept("archived")).with_context(parsing)?;
+            let titles: Option<_> = serde_json::from_value(kept("titles")).with_context(parsing)?;
             return Ok(Self {
                 archived: archived.unwrap_or_default(),
+                titles: titles.unwrap_or_default(),
                 ..Self::default()
             });
         }
@@ -171,8 +180,12 @@ impl Index {
         let Some((path, summary)) = best else {
             self.ids.remove(id);
             self.archived.remove(id);
+            self.titles.remove(id);
             return;
         };
+        if summary.title.is_some() {
+            self.titles.remove(id);
+        }
         if self
             .archived
             .get(id)
@@ -224,6 +237,26 @@ impl Index {
         };
         let at = summary.activity();
         self.archived.insert(id.to_owned(), at) != Some(at)
+    }
+
+    /// The title imported for chat `id`, while its file has no name.
+    pub fn imported_title(&self, id: &str) -> Option<&str> {
+        self.titles.get(id).map(String::as_str)
+    }
+
+    /// Take chat `id`'s title and archive state from another app, and
+    /// return whether it's a chat here. A name in the file wins over
+    /// `title`, and archiving holds until the chat's next activity, as when
+    /// you archive it.
+    pub fn import(&mut self, id: &str, title: &str, archived: bool) -> bool {
+        let Some((_, summary)) = self.find(id) else {
+            return false;
+        };
+        if summary.title.is_none() && !title.trim().is_empty() {
+            self.titles.insert(id.to_owned(), title.trim().to_owned());
+        }
+        self.set_archived(id, archived);
+        true
     }
 
     /// The number of session files.

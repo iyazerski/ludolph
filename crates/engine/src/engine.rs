@@ -70,9 +70,12 @@ impl Config {
     }
 
     /// Whether chats in `cwd` belong to a project, rather than to "No
-    /// project" with the home and scratch folders.
+    /// project" with the home and scratch folders. Zeron's scratch folders
+    /// count too: chats it started without a project ran there.
     pub fn is_project(&self, cwd: &Path) -> bool {
-        cwd != self.home && !cwd.starts_with(self.scratch_dir())
+        cwd != self.home
+            && !cwd.starts_with(self.scratch_dir())
+            && !cwd.starts_with(self.home.join(".zeron/scratch"))
     }
 }
 
@@ -676,10 +679,11 @@ impl Engine {
         tokio::task::spawn_blocking(move || turns.load(&id, key)).await?
     }
 
-    /// Ask for a title in the background if the chat has none, from its
-    /// first prompt or else from `text`, the message just sent.
+    /// Give the chat a title in the background if its file has none: an
+    /// imported one, or one asked for from its first prompt or else from
+    /// `text`, the message just sent.
     fn title_soon(&self, id: &str, text: &str) {
-        let prompt = {
+        let (prompt, imported) = {
             let mut state = self.state();
             let summary = state.index.find(id).map(|(_, s)| s);
             if summary.is_some_and(|s| s.title.is_some()) {
@@ -687,6 +691,7 @@ impl Engine {
             }
             let prompt = summary.and_then(|s| s.first_prompt.clone());
             let prompt = prompt.unwrap_or_else(|| text.to_owned());
+            let imported = state.index.imported_title(id).map(str::to_owned);
             let Some(chat) = state.chats.get_mut(id) else {
                 return;
             };
@@ -694,14 +699,18 @@ impl Engine {
                 return;
             }
             chat.titling = true;
-            prompt
+            (prompt, imported)
         };
         let engine = Arc::downgrade(&self.0);
         let titler = self.0.titler.clone();
         let model = self.settings().sidecar_model;
         let id = id.to_owned();
         tokio::spawn(async move {
-            let title = titler.title(&prompt, model.as_deref()).await;
+            // An imported title needs no model, only writing to the file.
+            let title = match imported {
+                Some(title) => Ok(title),
+                None => titler.title(&prompt, model.as_deref()).await,
+            };
             let Some(engine) = engine.upgrade().map(Engine) else {
                 return;
             };
@@ -771,6 +780,26 @@ impl Engine {
         self.save_index()?;
         self.changed();
         Ok(())
+    }
+
+    /// Take titles and archive state from another app, as `(chat id, title,
+    /// archived)`, and return how many were chats here.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the index can't be saved.
+    pub fn import(&self, chats: &[(String, String, bool)]) -> Result<usize> {
+        let found = {
+            let mut state = self.state();
+            let index = &mut state.index;
+            let found = chats
+                .iter()
+                .filter(|(id, title, archived)| index.import(id, title, *archived));
+            found.count()
+        };
+        self.save_index()?;
+        self.changed();
+        Ok(found)
     }
 
     /// Turn sending back on for a chat another pi wrote to. The next message
@@ -1340,12 +1369,17 @@ impl Engine {
         if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
             index.refresh_file(&path)?;
         }
+        // A draft pi never wrote, whose pi stopped idle, has nothing to show
+        // or resume. One cut off mid-run stays, so its message can be sent
+        // again.
+        let unwritten = |draft: &Draft| draft.path.as_deref().and_then(|p| index.get(p)).is_none();
+        let dropped = !running.live.working() && chat.draft.take_if(|d| unwritten(d)).is_some();
         // An idle pi leaves nothing a viewer sees but its questions; a
         // working one leaves the chat interrupted.
         if running.live.working() {
             chat.interrupted = true;
         }
-        if running.live.working() || !running.questions.is_empty() {
+        if dropped || running.live.working() || !running.questions.is_empty() {
             chat.changed();
         }
         let interrupted = running.live.working();
@@ -1571,7 +1605,8 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
         title: summary
             .title
             .clone()
-            .or_else(|| chat.and_then(|chat| chat.named.clone())),
+            .or_else(|| chat.and_then(|chat| chat.named.clone()))
+            .or_else(|| state.index.imported_title(&summary.id).map(str::to_owned)),
         summary: Some(summary.clone()),
         elsewhere: chat.is_some_and(|chat| chat.elsewhere),
         archived: state.index.is_archived(&summary.id),

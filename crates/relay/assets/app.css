@@ -657,6 +657,7 @@ a { color: inherit; text-decoration: none; }
   font-size: 13.5px; color: var(--secondary); white-space: nowrap;
 }
 .offline .i { width: 16px; height: 16px; color: var(--warning); }
+.offline .open { margin-left: 4px; height: 26px; padding: 0 12px; border-radius: 13px; background: var(--solid); color: var(--on-solid); font-size: 13px; font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

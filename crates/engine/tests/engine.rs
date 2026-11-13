@@ -148,6 +148,11 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
         "{}",
         log[2]
     );
+
+    // A draft left empty is gone once its idle pi stops.
+    let empty = engine.create(&project).await.unwrap();
+    assert!(engine.chats().iter().any(|c| c.id == empty));
+    until(&engine, |c| !c.iter().any(|c| c.id == empty)).await;
     engine.shutdown().await.unwrap();
 }
 
@@ -309,7 +314,14 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
         json!({"type": "message", "id": format!("m{at}"), "parentId": null, "timestamp": "2026-05-01T10:00:00.000Z", "message": message})
     };
     let home = dir.path().display().to_string();
+    // Zeron ran chats without a project in folders of their own.
+    let zeron = dir
+        .path()
+        .join(".zeron/scratch/2026-05-01-x")
+        .display()
+        .to_string();
     for (id, at, cwd) in [
+        ("e", 500, zeron.as_str()),
         ("a", 1_000, "/work/app"),
         ("b", 2_000, "/work/app"),
         ("c", 3_000, "/work/app"),
@@ -327,7 +339,7 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
     assert_eq!(
         groups(&engine, json!({"limit": 2})).await,
         [
-            (Value::Null, 1, vec!["d".into()]),
+            (Value::Null, 2, vec!["d".into(), "e".into()]),
             (app.clone(), 3, vec!["c".into(), "b".into()])
         ]
     );
@@ -340,7 +352,7 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
     tool(&engine, "archive_chat", json!({"chat": "a"}))
         .await
         .unwrap();
-    assert_eq!(listed(&engine, json!({})).await, ["d", "c"]);
+    assert_eq!(listed(&engine, json!({})).await, ["d", "c", "e"]);
     assert_eq!(listed(&engine, json!({"archived": true})).await, ["b", "a"]);
     assert_eq!(groups(&engine, json!({})).await[1].1, 1);
     tool(
@@ -350,7 +362,7 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
     )
     .await
     .unwrap();
-    assert_eq!(listed(&engine, json!({})).await, ["d", "c", "a"]);
+    assert_eq!(listed(&engine, json!({})).await, ["d", "c", "a", "e"]);
 
     // A chat used again comes back, and the rest stay archived after a restart.
     tool(&engine, "archive_chat", json!({"chat": "c"}))
@@ -361,7 +373,7 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
     engine.shutdown().await.unwrap();
     drop(engine);
     let engine = self::engine(dir.path(), Duration::from_secs(60)).await;
-    assert_eq!(listed(&engine, json!({})).await, ["b", "d", "a"]);
+    assert_eq!(listed(&engine, json!({})).await, ["b", "d", "a", "e"]);
     assert_eq!(listed(&engine, json!({"archived": true})).await, ["c"]);
     engine.shutdown().await.unwrap();
 }
@@ -486,6 +498,9 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let message = json!({"role": "user", "content": "rename the old module", "timestamp": 1_000});
     let first = json!({"type": "message", "id": "m1", "parentId": null, "timestamp": "2026-05-01T10:00:00.000Z", "message": message});
     std::fs::write(&old, format!("{header}\n{first}\n")).unwrap();
+    let zeron = old.with_file_name("zeron.jsonl");
+    let header = json!({"type": "session", "version": 3, "id": "zeron", "timestamp": "2026-05-01T10:00:00.000Z", "cwd": dir.path()});
+    std::fs::write(&zeron, format!("{header}\n{first}\n")).unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
     let title = |chat: &ChatInfo| chat.title.clone();
     let saved = |chat: &ChatInfo| chat.summary.as_ref().and_then(|s| s.title.clone());
@@ -512,6 +527,28 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let chats = until(&engine, old).await;
     let chat = chats.iter().find(|c| c.id == "old").unwrap();
     assert_eq!(saved(chat).as_deref(), Some("Rename The Old"));
+
+    // A title imported from Zeron shows at once, and its next run writes it
+    // to the file without asking the model.
+    let import = json!({"chats": [
+        {"chat": "zeron", "title": "From Zeron", "archived": true},
+        {"chat": "gone", "title": "Deleted", "archived": false},
+    ]});
+    let imported = tool(&engine, "import_chats", import).await.unwrap();
+    assert_eq!(imported, json!({"imported": 1, "unknown": 1}));
+    let chats = engine.chats();
+    let chat = chats.iter().find(|c| c.id == "zeron").unwrap();
+    assert_eq!(
+        (title(chat).as_deref(), chat.archived),
+        (Some("From Zeron"), true)
+    );
+    engine.send("zeron", "more", Vec::new()).await.unwrap();
+    let named = |c: &[ChatInfo]| {
+        c.iter()
+            .any(|c| c.id == "zeron" && saved(c).as_deref() == Some("From Zeron"))
+    };
+    let chats = until(&engine, named).await;
+    assert!(!chats.iter().find(|c| c.id == "zeron").unwrap().archived);
     let asked = std::fs::read_to_string(dir.path().join("pi.log-titles")).unwrap();
     assert_eq!(asked, "fix the build\nrename the old\n");
 
@@ -707,7 +744,7 @@ async fn read_until(
 async fn the_socket_answers_calls_and_pushes_list_changes() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_millis(200)).await;
-    let socket = dir.path().join("state/engine.sock");
+    let socket = server::path(&dir.path().join("state"));
     let listener = server::bind(&socket).unwrap();
     assert!(
         server::bind(&socket).is_err(),
@@ -718,6 +755,14 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
         0o600
     );
     tokio::spawn(server::serve(engine.clone(), listener));
+
+    // The CLI's one-call client.
+    let listed = server::request(&socket, "list_chats", json!({})).await;
+    assert_eq!(listed.unwrap(), json!({"total": 0, "chats": []}));
+    let refused = server::request(&socket, "nope", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(format!("{refused:#}"), "nope: no tool nope");
 
     let (read, mut write) = UnixStream::connect(&socket).await.unwrap().into_split();
     let mut reader = BufReader::new(read);

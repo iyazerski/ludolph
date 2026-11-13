@@ -75,6 +75,11 @@ function glyph(kind, color) {
 }
 
 /** Build an element: `h("div", { class: "x", onclick }, child, "text")`. */
+/** A chat's name: its title, or until it has one, its first prompt's first line. */
+function chatTitle(c) {
+  return c.title || c.firstPrompt?.trim().split("\n")[0] || "Untitled chat";
+}
+
 function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs || {})) {
@@ -695,7 +700,7 @@ function listView() {
   // results also name the project.
   function row(c, withProject) {
     const s = statusOf(c), unseen = s === "idle" && seen.unseen(c);
-    const sig = JSON.stringify([c.title, s, isStale(c), unseen, ago(c.lastMessageAt || c.createdAt), c.harness, c.project?.id, withProject]);
+    const sig = JSON.stringify([chatTitle(c), s, isStale(c), unseen, ago(c.lastMessageAt || c.createdAt), c.harness, c.project?.id, withProject]);
     const old = known.get(c.machine + c.id);
     if (old?.sig === sig) return old.el;
     const corner = s === "working" ? [glyph("spin"), h("span", { style: { color: "var(--tone-working)" } }, isStale(c) ? "Offline?" : "Working")]
@@ -706,7 +711,7 @@ function listView() {
       : [ago(c.lastMessageAt || c.createdAt)];
     const el = h("a", { class: `row${unseen ? " unseen" : ""}${s !== "idle" ? " live" : ""}${old || !painted ? "" : " new"}`, href: chatHash(c.machine, c.id) },
       h("span", { class: "mark" }, mark(c.harness)),
-      h("span", { class: "title" }, c.title || "Untitled chat"),
+      h("span", { class: "title" }, chatTitle(c)),
       h("span", { class: "corner" }, corner),
       withProject && h("span", { class: "meta" }, h("span", {}, tile(c.project), c.project?.name || "No project")));
     el.addEventListener("click", () => haptic(5));
@@ -769,7 +774,7 @@ function listView() {
     if (note) nodes.push(note);
     const q = listState.query.trim().toLowerCase();
     if (q) {
-      const hits = chats.filter(c => `${c.title} ${c.project?.name || ""} ${c.lastMessagePreview || ""}`.toLowerCase().includes(q));
+      const hits = chats.filter(c => `${chatTitle(c)} ${c.project?.name || ""} ${c.lastMessagePreview || ""}`.toLowerCase().includes(q));
       nodes.push(...hits.map(c => row(c, true)));
       if (!hits.length) nodes.push(h("div", { class: "empty" }, "No chats match your search"));
     } else {
@@ -906,7 +911,7 @@ function chatView(machine, id, fromList) {
   const draft = isDraft ? newDraft() : null;
   if (isDraft) machine = draft.machine;
   const cached = store.chats?.find(c => c.id === id && c.machine === machine);
-  const titleEl = h("div", { class: "t" }, isDraft ? "New chat" : cached?.title || " ");
+  const titleEl = h("div", { class: "t" }, isDraft ? "New chat" : cached ? chatTitle(cached) : " ");
   const subEl = h("div", { class: "s" }, " ");
   const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card glass" },
     h("button", { class: "circle", "aria-label": "Back", onclick: () => { haptic(5); fromList ? history.back() : go("#/"); } }, icon("back")),
@@ -953,7 +958,10 @@ function chatView(machine, id, fromList) {
     footer));
   const offline = offlineBanner();
   const macOffline = h("div", { class: "offline glass hide" });
-  const el = h("div", { class: "view" }, scroll, bar, offline.el, macOffline, dock);
+  // A pi in a terminal has the chat: the Mac won't send to it until it's taken over.
+  const elsewhere = h("div", { class: "offline glass hide" }, icon("alert"), "Open in a terminal",
+    h("button", { class: "open", onclick: () => takeOver() }, "Take over"));
+  const el = h("div", { class: "view" }, scroll, bar, offline.el, macOffline, elsewhere, dock);
   // The transcript scrolls under the floating composer; keep room for it.
   const dockSize = new ResizeObserver(() => el.style.setProperty("--dock", `${dock.offsetHeight}px`));
   dockSize.observe(dock);
@@ -1210,6 +1218,19 @@ function chatView(machine, id, fromList) {
     }
   }
 
+  async function takeOver() {
+    if (!confirm("Take over this chat? Quit pi in the terminal first, or both will write to it.")) return;
+    haptic(10);
+    try {
+      await api("take_over_chat", {});
+      elsewhere.classList.add("hide");
+      version = "";
+      poll.now();
+    } catch (e) {
+      toast({ title: "Not taken over", body: e.message, kind: "error" });
+    }
+  }
+
   async function stop() {
     haptic([10, 30, 10]);
     sendBtn.disabled = true;
@@ -1224,7 +1245,7 @@ function chatView(machine, id, fromList) {
   function menu() {
     haptic(5);
     sheet(close => [
-      h("h2", {}, chat?.title || "Chat"),
+      h("h2", {}, chat ? chatTitle(chat) : "Chat"),
       chat && h("div", { class: "note", style: { marginTop: "-8px" } },
         [harnessName(chat.harness), shortModel(chat.model), chat.reasoning, chat.project?.name, chat.branch, severalMacs() && machineName(machine)].filter(Boolean).join(" · ")),
       h("div", { class: "group" },
@@ -1603,7 +1624,7 @@ function chatView(machine, id, fromList) {
       const project = draft.projects.find(p => p.id === draft.project);
       subEl.textContent = machine ? [project?.name, severalMacs() && machineName(machine)].filter(Boolean).join(" · ") || " " : " ";
     } else {
-      titleEl.textContent = chat.title || "Untitled chat";
+      titleEl.textContent = chatTitle(chat);
       subEl.textContent = chat.project?.name || " ";
     }
     updateComposer();
@@ -1626,6 +1647,7 @@ function chatView(machine, id, fromList) {
     }
     macOffline.classList.add("hide");
     chat = view.chat;
+    elsewhere.classList.toggle("hide", !chat.openElsewhere);
     seen.mark(chat);
     drawHeader();
     if (view.version !== infoFor && Date.now() - infoAt > 8000) { infoFor = view.version; loadInfo(); }
