@@ -29,7 +29,7 @@ use axum_extra::extract::cookie::CookieJar;
 use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
 use clap::Parser;
-use ludolph_relay_proto::{CONNECT_PATH, Notice};
+use ludolph_relay_proto::{CONNECT_PATH, LinkCode, Notice};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use url::Url;
@@ -339,7 +339,8 @@ struct AddMachine {
     name: String,
 }
 
-/// Add a Mac and return the command that connects it (its token is shown once).
+/// Add a Mac and return the link code that connects it (its token is shown
+/// once).
 async fn add_machine(State(app): State<App>, Json(body): Json<AddMachine>) -> Response {
     let name = body.name.trim();
     if name.is_empty() || name.chars().count() > MAX_MACHINE_NAME {
@@ -348,7 +349,7 @@ async fn add_machine(State(app): State<App>, Json(body): Json<AddMachine>) -> Re
     match app.store.add_machine(name) {
         Ok((machine, token)) => Json(json!({
             "machine": machine,
-            "command": format!("ludolph link --relay {} --token {token}", app.origin),
+            "code": LinkCode { relay: app.origin.clone(), token }.encode(),
         }))
         .into_response(),
         Err(e) => failure(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),

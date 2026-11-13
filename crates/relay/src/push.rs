@@ -68,6 +68,7 @@ pub enum Kind {
     Finished,
     Input,
     Failed,
+    Interrupted,
     /// Sent from the app's settings to try notifications.
     Test,
 }
@@ -78,6 +79,7 @@ impl From<NoticeKind> for Kind {
             NoticeKind::Finished => Self::Finished,
             NoticeKind::Input => Self::Input,
             NoticeKind::Failed => Self::Failed,
+            NoticeKind::Interrupted => Self::Interrupted,
         }
     }
 }

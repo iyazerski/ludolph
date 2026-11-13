@@ -893,8 +893,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         .await
         .unwrap();
     assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
-    assert_eq!(from_mac(&mut socket).await["protocol"], 1);
-    assert_eq!(from_mac(&mut socket).await["state"], "running");
+    assert_eq!(from_mac(&mut socket).await["protocol"], 2);
     // A Mac without a battery, like a CI machine, reports none.
     let power = from_mac(&mut socket).await;
     let battery = &power["battery"];
@@ -962,7 +961,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     let cut = until_from_mac(&mut socket, |m| m["type"] == "notify").await;
     assert_eq!(
         (&cut["kind"], &cut["body"]),
-        (&json!("failed"), &json!("The run stopped: pi exited."))
+        (&json!("interrupted"), &json!("The run stopped: pi exited."))
     );
     engine.shutdown().await.unwrap();
 }

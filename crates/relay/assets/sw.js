@@ -1,7 +1,7 @@
 // Service worker: push notifications, and the app shell for when the relay is away.
 "use strict";
 
-const SHELL = "zeron-shell-v4";
+const SHELL = "ludolph-shell-v1";
 const FILES = ["/", "/app.css", "/app.js", "/hljs.js", "/file-icons.js", "/icon.svg", "/icon-192.png", "/badge.png"];
 
 self.addEventListener("install", event => {
@@ -35,7 +35,7 @@ self.addEventListener("fetch", event => {
 });
 
 self.addEventListener("push", event => {
-  const notice = event.data ? event.data.json() : { title: "Zeron", body: "" };
+  const notice = event.data ? event.data.json() : { title: "Ludolph", body: "" };
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const visible = windows.filter(w => w.visibilityState === "visible");

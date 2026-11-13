@@ -58,6 +58,20 @@ pub fn uninstall(home: &std::path::Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Restart the installed engine, so it reads its files again. Returns
+/// whether one is installed.
+///
+/// # Errors
+///
+/// Fails if launchd can't restart it.
+pub fn restart(home: &std::path::Path) -> Result<bool> {
+    if !plist_path(home).exists() {
+        return Ok(false);
+    }
+    launchctl(&["kickstart", "-k", &format!("{}/{LABEL}", domain())])?;
+    Ok(true)
+}
+
 /// Stop the agent's job and wait until launchd lets it go: `bootout`
 /// returns before that, and `bootstrap` fails while the label is loaded.
 fn unload() -> Result<()> {

@@ -1,7 +1,7 @@
-// Zeron Remote: use the Zeron apps on your Macs from a phone.
+// Ludolph on the phone: your Macs' pi chats, from anywhere.
 // Plain JS, no build. The relay routes /api/call/<mac>/<tool> to a Mac's
-// Zeron tools (list_chats, chat_view, send_message, ...). The look follows
-// Zeron's own mobile app (apps/ios/Zeron), which follows the desktop.
+// engine tools (list_chats, chat_view, send_message, ...). The look started
+// from Zeron's mobile app (apps/ios/Zeron), which follows its desktop.
 "use strict";
 
 // Zeron desktop icons (crates/ui/assets/icons, MIT): [viewBox, svg attributes, body].
@@ -92,7 +92,8 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-/** Zeron composer references (`[$commit](zeron-invoke:…)`, files, chats) as their labels. */
+/** Zeron composer references (`[$commit](zeron-invoke:…)`, files, chats) as their labels: chats
+ * started in Zeron keep them in their pi sessions. */
 const ZERON_REF = /\[([^\]]+)\]\(zeron-[a-z-]+:[^)\s]*\)/g;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const haptic = (ms = 8) => navigator.vibrate?.(ms);
@@ -109,7 +110,7 @@ function ago(when) {
   return `${Math.floor(s / 604800)}w`;
 }
 
-/** The chat status as one word: working, awaitingInput, errored, or idle. */
+/** The chat status as one word: working, awaitingInput, errored, interrupted, or idle. */
 const statusOf = chat => (chat?.status || "idle").split(" ")[0];
 const isStale = chat => /stale/.test(chat?.status || "");
 
@@ -202,7 +203,7 @@ async function post(path, body = {}) {
   if (data == null) throw new Error("Can't reach the relay");
   return data;
 }
-/** Run a Zeron tool on one Mac. */
+/** Run an engine tool on one Mac. */
 const call = (machine, tool, args = {}) => post(`/api/call/${encodeURIComponent(machine)}/${tool}`, args);
 
 /** Run `fn` now and then every `interval()` ms while the page is visible.
@@ -239,16 +240,11 @@ const store = { machines: null, chats: null, loaded: new Set() };
 const machineName = id => store.machines?.find(m => m.id === id)?.name || "Mac";
 const severalMacs = () => (store.machines?.length || 0) > 1;
 
-/** A Mac's state: offline (no link), closed (Zeron isn't open), outdated (zeron-tools needs an update), or ready. */
-function macState(m) {
-  if (!m.status.online) return "offline";
-  const engine = m.status.engine?.state;
-  return engine === "closed" || engine === "outdated" ? engine : "ready";
-}
+/** A Mac's state: offline (its engine isn't linked right now) or ready. */
+const macState = m => m.status.online ? "ready" : "offline";
 const ready = () => (store.machines || []).filter(m => macState(m) === "ready");
-/** The Zeron and zeron-tools versions a ready Mac runs. */
-const versions = m => [m.status.engine?.running && `Zeron ${m.status.engine.running}`, `zeron-tools ${m.status.version}`]
-  .filter(Boolean).join(" · ");
+/** The Ludolph version a ready Mac runs. */
+const versions = m => `Ludolph ${m.status.version}`;
 /** A Mac's battery, like "Battery 85%, charging", if it reported one. */
 function batteryText(m) {
   const b = m.status.battery;
@@ -262,32 +258,14 @@ const withBattery = (m, text) => [text, batteryText(m)].filter(Boolean).join(" �
 /** The Mac the list shows: the one picked last, else the first ready one. */
 function selectedMac() {
   const machines = store.machines || [];
-  return machines.find(m => m.id === localStorage.getItem("zeron.mac")) || ready()[0] || machines[0] || null;
-}
-
-/** Start Zeron on a Mac where it's closed; it shows up within seconds. */
-async function openZeron(machine) {
-  haptic(8);
-  try {
-    await call(machine, "open_zeron");
-    toast({ title: `Opening Zeron on ${machineName(machine)}`, kind: "info", timeout: 2600 });
-  } catch (e) { toast({ title: "Couldn't open Zeron", body: e.message, kind: "error" }); }
+  return machines.find(m => m.id === localStorage.getItem("ludolph.mac")) || ready()[0] || machines[0] || null;
 }
 
 /** The note for a Mac that can't show chats, if it can't. */
 function macNote(m) {
-  const state = macState(m);
-  if (state === "closed") {
-    return h("div", { class: "offline-note" }, h("span", {}, h("b", {}, `Zeron is closed on ${m.name}.`)),
-      h("button", { class: "btn", onclick: () => openZeron(m.id) }, "Open"));
-  }
-  if (state === "outdated") {
-    return h("div", { class: "offline-note" }, h("span", {}, h("b", {}, `Update zeron-tools on ${m.name}.`),
-      ` It runs Zeron ${m.status.engine.running}.`));
-  }
-  if (state === "offline") {
+  if (macState(m) === "offline") {
     return h("div", { class: "offline-note" }, h("span", {}, h("b", {}, `${m.name} is offline.`),
-      " Run zeron-tools install on it."));
+      " It may be asleep, or its engine isn't running: run ludolph install on it."));
   }
   return null;
 }
@@ -311,8 +289,8 @@ async function loadChats() {
 
 /** Which finished turns this phone has seen, so new ones read "Done". */
 const seen = {
-  map: JSON.parse(localStorage.getItem("zeron.seen") || "null"),
-  save() { localStorage.setItem("zeron.seen", JSON.stringify(this.map)); },
+  map: JSON.parse(localStorage.getItem("ludolph.seen") || "null"),
+  save() { localStorage.setItem("ludolph.seen", JSON.stringify(this.map)); },
   /** Count chats this phone hasn't met yet as seen, so only later turns read "Done". */
   prime(chats) {
     this.map ||= {};
@@ -524,7 +502,7 @@ const POLISH_TIMEOUT = 20000;
 
 const TOAST_GLYPH = {
   done: ["check", "var(--tone-done)"], finished: ["check", "var(--tone-done)"], input: ["dot", "var(--tone-input)"],
-  error: ["dot", "var(--tone-failed)"], failed: ["dot", "var(--tone-failed)"], info: ["dot", "var(--tertiary)"], test: ["dot", "var(--accent)"],
+  error: ["dot", "var(--tone-failed)"], failed: ["dot", "var(--tone-failed)"], interrupted: ["dot", "var(--tone-failed)"], info: ["dot", "var(--tertiary)"], test: ["dot", "var(--accent)"],
 };
 
 function toast({ title, body = "", kind = "info", onclick, timeout = 3800 }) {
@@ -655,10 +633,10 @@ function signInView(setupToken) {
   const btn = h("button", { class: "btn solid" }, icon("key"), setup ? "Create a passkey" : "Sign in with passkey");
   const el = h("div", { class: "view" }, h("div", { class: "signin" },
     h("img", { src: "/icon-192.png", alt: "" }),
-    h("h1", {}, "Zeron Remote"),
+    h("h1", {}, "Ludolph"),
     h("p", {}, setup
       ? "Create a passkey for this relay. Your password manager or phone saves it, and you sign in with it from then on."
-      : "Your Zeron chats, from anywhere."),
+      : "Your pi chats, from anywhere."),
     btn));
   btn.addEventListener("click", async () => {
     btn.disabled = true;
@@ -688,7 +666,7 @@ const FILTERS = [
   { id: "recent", label: "Recent", keeps: c => Date.now() - Date.parse(c.lastMessageAt || c.createdAt) <= RECENT_MS,
     empty: "No chats active in the last 15 minutes" },
 ];
-const collapsed = new Set(JSON.parse(localStorage.getItem("zeron.collapsed") || "[]"));
+const collapsed = new Set(JSON.parse(localStorage.getItem("ludolph.collapsed") || "[]"));
 
 function listView() {
   const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card" },
@@ -723,6 +701,7 @@ function listView() {
     const corner = s === "working" ? [glyph("spin"), h("span", { style: { color: "var(--tone-working)" } }, isStale(c) ? "Offline?" : "Working")]
       : s === "awaitingInput" ? [glyph("dot", "var(--tone-input)"), h("span", { style: { color: "var(--tone-input)" } }, "Input")]
       : s === "errored" ? [glyph("dot", "var(--tone-failed)"), h("span", { style: { color: "var(--tone-failed)" } }, "Failed")]
+      : s === "interrupted" ? [glyph("dot", "var(--tone-failed)"), h("span", { style: { color: "var(--tone-failed)" } }, "Interrupted")]
       : unseen ? [glyph("check", "var(--tone-done)"), h("span", { style: { color: "var(--tone-done)" } }, "Done")]
       : [ago(c.lastMessageAt || c.createdAt)];
     const el = h("a", { class: `row${unseen ? " unseen" : ""}${s !== "idle" ? " live" : ""}${old || !painted ? "" : " new"}`, href: chatHash(c.machine, c.id) },
@@ -739,7 +718,7 @@ function listView() {
     const live = items.some(c => statusOf(c) === "working");
     return h("button", { class: `section${collapsed.has(key) ? " collapsed" : ""}`, onclick: () => {
       collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key);
-      localStorage.setItem("zeron.collapsed", JSON.stringify([...collapsed]));
+      localStorage.setItem("ludolph.collapsed", JSON.stringify([...collapsed]));
       haptic(4);
       draw();
     } }, tile(project), h("span", { class: "name" }, project?.name || "No project"),
@@ -751,7 +730,7 @@ function listView() {
   function pick(id) {
     if (id === selectedMac()?.id) return;
     haptic(5);
-    localStorage.setItem("zeron.mac", id);
+    localStorage.setItem("ludolph.mac", id);
     painted = store.loaded.has(id);
     known.clear();
     draw();
@@ -910,7 +889,7 @@ function toolGroup(lines, open, onToggle) {
 /** A message's prose: its text parts, joined as read_chat joins them. */
 const textOf = m => m.parts.filter(p => p.kind === "text").map(p => p.text).join("\n\n");
 
-/** Messages from another Zeron chat carry a routing header; show it as a label. */
+/** Messages from another Zeron chat carry a routing header; show it as a label (chats from Zeron keep it). */
 function splitFrom(text) {
   const m = text.match(/^\[Message from Zeron chat (.+?)\. Reply to it with the Zeron `send_message` tool, chat [^\]]+\]\n\n/);
   return m ? [m[1], text.slice(m[0].length)] : [null, text];
@@ -1640,9 +1619,7 @@ function chatView(machine, id, fromList) {
     } catch (e) {
       // Show why the Mac can't answer instead of a stale page.
       const name = machineName(machine);
-      const why = /isn't open/.test(e.message) ? [`Zeron is closed on ${name}`, h("button", { class: "open", onclick: () => openZeron(machine) }, "Open")]
-        : /update zeron-tools/.test(e.message) ? [`Update zeron-tools on ${name}`]
-        : /offline|didn't answer/.test(e.message) ? [`${name} is offline`] : null;
+      const why = /offline|didn't answer/.test(e.message) ? [`${name} is offline`] : null;
       if (why) macOffline.replaceChildren(icon("alert"), ...why);
       macOffline.classList.toggle("hide", !why);
       throw e;
@@ -1776,8 +1753,8 @@ function reconcile(parent, nodes) {
 // ---- new chat -----------------------------------------------------------------
 
 const prefs = {
-  get: () => { try { return JSON.parse(localStorage.getItem("zeron.new") || "{}"); } catch { return {}; } },
-  set: value => localStorage.setItem("zeron.new", JSON.stringify(value)),
+  get: () => { try { return JSON.parse(localStorage.getItem("ludolph.new") || "{}"); } catch { return {}; } },
+  set: value => localStorage.setItem("ludolph.new", JSON.stringify(value)),
 };
 
 /** A new chat's picks: last time's, on the selected Mac when it's ready. */
@@ -1864,9 +1841,8 @@ function settingsSheet() {
 
     const macRows = (store.machines || []).map(m => itemRow({
       iconName: "laptop", label: m.name,
-      sub: withBattery(m, { offline: "Offline", closed: "Zeron is closed", outdated: `Runs Zeron ${m.status.engine?.running}: update zeron-tools`,
-        ready: versions(m) }[macState(m)]),
-      value: glyph("dot", { ready: "var(--tone-done)", offline: "var(--tertiary)" }[macState(m)] || "var(--tone-input)"),
+      sub: withBattery(m, macState(m) === "ready" ? versions(m) : "Offline"),
+      value: glyph("dot", macState(m) === "ready" ? "var(--tone-done)" : "var(--tertiary)"),
       extra: icon("chevRight", "chev"),
       onclick: () => fill(macPage(m, close)),
     }));
@@ -1884,17 +1860,12 @@ function settingsSheet() {
   });
 }
 
-/** One Mac's page: start its Zeron, or remove it. */
+/** One Mac's page: its state, and removing it. */
 function macPage(m, close) {
-  const state = macState(m);
-  const sub = { offline: "Offline. Run zeron-tools install on it.", closed: "Zeron is closed.",
-    outdated: `Runs Zeron ${m.status.engine?.running}. Update zeron-tools on it.`,
-    ready: versions(m) }[state];
+  const sub = macState(m) === "ready" ? versions(m) : "Offline. Run ludolph install on it.";
   return [
     h("h2", {}, m.name),
     h("div", { class: "note", style: { marginTop: "-8px" } }, withBattery(m, sub)),
-    state === "closed" && h("div", { class: "group" },
-      itemRow({ iconName: "laptop", label: "Open Zeron", onclick: () => { close(); openZeron(m.id); } })),
     h("div", { class: "group" }, itemRow({ iconName: "trash", label: "Remove this Mac", cls: "danger", onclick: async () => {
       if (!confirm(`Remove ${m.name}? It disconnects now, and needs a new token to connect again.`)) return;
       try { await post("/api/machines/remove", { id: m.id }); close(); toast({ title: `${m.name} removed`, kind: "done" }); }
@@ -1903,7 +1874,7 @@ function macPage(m, close) {
   ];
 }
 
-/** The "Add a Mac" step: name it, then show the command that connects it. */
+/** The "Add a Mac" step: name it, then show the command that links it. */
 function addMac(close) {
   const name = h("input", { class: "field", placeholder: "Name, like Work MacBook", maxlength: 60, autocomplete: "off" });
   const create = h("button", { class: "btn solid full" }, "Create");
@@ -1912,10 +1883,11 @@ function addMac(close) {
     if (!name.value.trim()) return;
     create.disabled = true;
     try {
-      const { command } = await post("/api/machines/add", { name: name.value.trim() });
+      const { code } = await post("/api/machines/add", { name: name.value.trim() });
+      const command = `ludolph link ${code}`;
       body.replaceChildren(
         h("h2", {}, "Connect the Mac"),
-        h("div", { class: "note", style: { margin: "-6px 4px 12px" } }, "Run this on the Mac. It keeps the Mac connected in the background from then on, even while Zeron is closed. The token is shown only once."),
+        h("div", { class: "note", style: { margin: "-6px 4px 12px" } }, "Run this on the Mac, after ludolph install. Its engine stays connected in the background from then on. The code is shown only once."),
         h("div", { class: "command" }, command),
         h("button", { class: "btn full", style: { marginBottom: "8px" }, onclick: () => { copyText(command); toast({ title: "Command copied", kind: "done", timeout: 1600 }); } }, icon("copy"), "Copy command"),
         // Not `onclick: close`: the click event would count as `fromHistory`.

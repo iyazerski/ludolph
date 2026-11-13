@@ -44,4 +44,4 @@ In a fork, `.github/workflows/deploy-relay.yml` does the same on each push to `m
 ## First use
 
 1. Open `https://<host>/#/setup/<SETUP_TOKEN>` on your phone and create a passkey. Then you can remove `SETUP_TOKEN`.
-2. In the app, tap **Add a Mac**. It shows a `ludolph link …` command. Run it on the Mac, then `ludolph install` so the engine connects.
+2. In the app, tap **Add a Mac**. It shows a `ludolph link <code>` command. Run it on a Mac where `ludolph install` has run, and its engine connects.

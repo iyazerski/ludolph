@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use ludolph_relay_proto::{CONNECT_PATH, Call, Engine as State, Notice, NoticeKind, PROTOCOL, Up};
+use ludolph_relay_proto::{CONNECT_PATH, Call, Notice, NoticeKind, PROTOCOL, Up};
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -174,10 +174,6 @@ async fn serve(
     let mut alerts = engine.alerts();
     let (mut sink, mut stream) = socket.split();
     sink.send(encode(&hello())?).await?;
-    let running = State::Running {
-        running: Some(env!("CARGO_PKG_VERSION").to_owned()),
-    };
-    sink.send(encode(&Up::Engine(running))?).await?;
     let mut battery = power::battery();
     sink.send(encode(&Up::Power { battery })?).await?;
     // Calls and notices being built. Dropping the set when the connection
@@ -302,7 +298,10 @@ async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
                 error.unwrap_or_else(|| "The run failed.".into()),
             )
         }
-        AlertKind::Interrupted => (NoticeKind::Failed, "The run stopped: pi exited.".into()),
+        AlertKind::Interrupted => (
+            NoticeKind::Interrupted,
+            "The run stopped: pi exited.".into(),
+        ),
         AlertKind::Input => {
             let Some(question) = view.question else {
                 return Ok(None);

@@ -14,6 +14,7 @@ workspace = true
 anyhow.workspace = true
 libc.workspace = true
 ludolph-engine = { path = "crates/engine" }
+ludolph-relay-proto.workspace = true
 plist = { version = "1", default-features = false, features = ["serde"] }
 serde.workspace = true
 tokio.workspace = true

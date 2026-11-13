@@ -229,7 +229,7 @@ Folders that aren't git repos get no run changes. Two chats working in the same 
 The app and the relay link use the same tool layer, as `connect` and the Companion do now.
 
 - **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push a notice when something changes: the chat list, one chat's view, and later the engine's state. The client then reads what changed with a call, like `chat_view`, which can answer "unchanged" for the version the client already shows. Pushing instead of polling means no 1-second timer while a window is hidden. Notices that wait merge into one, so a slow client gets no backlog.
-- **Relay ↔ engine:** the relay protocol as it is now (`relay-proto`). Only the phone's tools are allowed, and they're checked in the engine, not on the relay.
+- **Relay ↔ engine:** the relay protocol (`relay-proto`). Only the phone's tools are allowed, and they're checked in the engine, not on the relay.
 
 ### Tools
 
@@ -255,7 +255,7 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | `list_harnesses` | pi alone, since the phone's picker still asks |
 | `open_zeron` | Removed. If the engine isn't running, the Mac is offline. |
 
-Changes to the phone app: remove the "start Zeron" action (the agent picker already hides itself with one harness), and replace Zeron's name in its text. The relay protocol goes to version 2, and the `Engine` message gets simpler.
+Changes to the phone app: remove the "start Zeron" action (the agent picker already hides itself with one harness), and replace Zeron's name in its text. It still shows Zeron's composer references and chat-to-chat headers, since chats started in Zeron keep them. The relay protocol is at version 2, which drops the `Engine` message: a linked Mac is a running engine.
 
 ## App
 
@@ -288,10 +288,10 @@ The engine keeps them, since it's the one using them and it runs while the app i
 
 The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, with the app in `assets`. The phone app keeps its look and flows.
 
-- **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. Until there are settings, `ludolph link --relay <address> --token <token>` checks the token with the relay and saves the link in `relay.json`, and the engine connects when it starts.
+- **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. The code is the relay's address and the Mac's token, as URL-safe base64 JSON (`relay-proto`'s `LinkCode`). Until there are settings, the phone shows `ludolph link <code>`, which checks the token with the relay, saves the link in `relay.json`, and restarts the installed engine so it connects.
 - **Battery:** the phone shows the Mac's battery. The engine reads it from IOKit when it connects, and again on each `com.apple.system.powersources` notification, about once a minute while charging or on battery. It sends it only when it changed, so nothing polls.
-- **Protocol 1 for now:** the engine and relay speak it, so the engine also works with Zeron's relay as deployed. The engine reports itself as running, and serves calls with its own tools, so the phone's "open Zeron" is never offered. Version 2 comes with the phone app's changes.
-- **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Protocol 1 has no interrupted kind, so that one goes as failed. Runs by another pi aren't watched, so they don't notify.
+- **Protocol 2:** the relay refuses other versions, so Zeron's Macs (protocol 1) stay on Zeron's relay, and Ludolph's engines on Ludolph's. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`, beside Zeron's until Zeron is removed.
+- **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Runs by another pi aren't watched, so they don't notify.
 - **Self-hosting:** `crates/relay/README.md` explains how to run the relay (container image and manifests) and how to create the setup link.
 
 ### Trust

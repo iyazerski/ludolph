@@ -1,4 +1,4 @@
-/* Zeron Remote. Colors, sizes and glyphs follow Zeron's own mobile app
+/* Ludolph on the phone. Colors, sizes and glyphs follow Zeron's own mobile app
    (apps/ios/Zeron/Design), which takes them from the desktop theme. */
 
 :root {
@@ -657,7 +657,6 @@ a { color: inherit; text-decoration: none; }
   font-size: 13.5px; color: var(--secondary); white-space: nowrap;
 }
 .offline .i { width: 16px; height: 16px; color: var(--warning); }
-.offline .open { margin-left: 4px; font-weight: 600; color: var(--accent); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
