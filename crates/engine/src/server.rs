@@ -5,20 +5,25 @@
 //! `{"id": …, "ok": …}` or `{"id": …, "error": "…"}`. Calls on one connection
 //! run at the same time, so their answers can come in any order.
 //!
-//! A subscription is answered the same way, and then pushes notices:
+//! A subscription is answered the same way, and then pushes:
 //!
 //! - `{"id": …, "subscribe": "chats"}` pushes `{"event": "chats",
 //!   "revision": n}` when the chat list changes.
-//! - `{"id": …, "subscribe": "chat", "args": {"chat": …}}` pushes
-//!   `{"event": "chat", "chat": …, "revision": n}` when the chat's view does.
+//! - `{"id": …, "subscribe": "chat", "args": {"chat": …, "thinking"?: bool}}`
+//!   pushes the chat's [`Feed`] frames as `{"event": "chat", "chatId": …, …}`:
+//!   its latest messages, then those that change, at most one frame per
+//!   [`FRAME`]. A chat that can't be read any more pushes
+//!   `{"event": "chat", "chatId": …, "error": …}` and ends the subscription.
 //!
-//! Changes that come faster than the client reads merge into one notice.
+//! Changes that come faster than the client reads merge into one push.
 //! `{"id": …, "unsubscribe": <the subscription's id>}` ends one.
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::pin::Pin;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -29,7 +34,12 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::engine::Engine;
+use crate::feed::Feed;
 use crate::tools::{self, Tool};
+
+/// The shortest time between two frames of a chat's feed: a streaming
+/// reply changes the chat with each token, and a window redraws no faster.
+pub const FRAME: Duration = Duration::from_millis(50);
 
 /// Records waiting to be written to one client.
 const OUT_QUEUE: usize = 64;
@@ -134,9 +144,9 @@ async fn connection(engine: Engine, stream: UnixStream) {
                 subscribe: Some(topic),
                 args,
                 unsubscribe: None,
-            }) => match subscription(&engine, &topic, args) {
-                Ok((changes, event)) => {
-                    let handle = subscriptions.spawn(push(changes, event, out.clone()));
+            }) => match subscription(&engine, &topic, args, out.clone()) {
+                Ok(pushing) => {
+                    let handle = subscriptions.spawn(pushing);
                     if let Some(old) = handles.insert(id.to_string(), handle) {
                         old.abort();
                     }
@@ -188,25 +198,69 @@ async fn call(engine: Engine, id: Value, name: String, args: Value, out: mpsc::S
     let _ = out.send(record).await;
 }
 
-/// The changes `topic` follows, and the notice that tells of them.
+/// A task pushing what a subscription to `topic` follows to `out`.
+type Pushing = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// The task that pushes what `topic` follows to `out`.
 fn subscription(
     engine: &Engine,
     topic: &str,
     args: Value,
-) -> Result<(watch::Receiver<u64>, Value)> {
+    out: mpsc::Sender<Value>,
+) -> Result<Pushing> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct ChatArgs {
         chat: String,
+        #[serde(default)]
+        thinking: bool,
     }
     match topic {
-        "chats" => Ok((engine.subscribe(), json!({"event": "chats"}))),
+        "chats" => Ok(Box::pin(push(
+            engine.subscribe(),
+            json!({"event": "chats"}),
+            out,
+        ))),
         "chat" => {
             let args: ChatArgs = serde_json::from_value(args).context("invalid arguments")?;
             let changes = engine.subscribe_chat(&args.chat)?;
-            Ok((changes, json!({"event": "chat", "chat": args.chat})))
+            let feed = Feed::new(engine.clone(), args.chat.clone(), args.thinking);
+            Ok(Box::pin(follow(changes, feed, args.chat, out)))
         }
         _ => bail!("no subscription {topic}"),
+    }
+}
+
+/// Push `feed`'s frames for chat `chat`: one now, then one whenever the
+/// chat changes, at most one per [`FRAME`], until the client leaves.
+async fn follow(
+    mut changes: watch::Receiver<u64>,
+    mut feed: Feed,
+    chat: String,
+    out: mpsc::Sender<Value>,
+) {
+    loop {
+        changes.mark_unchanged();
+        let record = match feed.frame().await {
+            Ok(mut frame) => {
+                frame["event"] = json!("chat");
+                frame["chatId"] = json!(chat);
+                frame
+            }
+            Err(e) => {
+                let _ = out
+                    .send(json!({"event": "chat", "chatId": chat, "error": format!("{e:#}")}))
+                    .await;
+                return;
+            }
+        };
+        if out.send(record).await.is_err() {
+            return;
+        }
+        tokio::time::sleep(FRAME).await;
+        if changes.changed().await.is_err() {
+            return;
+        }
     }
 }
 

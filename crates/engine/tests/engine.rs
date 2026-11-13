@@ -842,7 +842,7 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     assert_eq!(listed["total"], 1);
     assert_eq!(listed["chats"][0]["id"], created["ok"]["chatId"]);
 
-    // A chat's subscriber hears of its run, and reads it with chat_view.
+    // A chat's subscriber gets its page, then what changes as it runs.
     let chat = &created["ok"]["chatId"];
     let requests = [
         json!({"id": 6, "subscribe": "chat", "args": {"chat": chat}}),
@@ -859,6 +859,8 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     })
     .await;
     assert!(seen.contains(&json!({"id": 6, "ok": null})));
+    let mut frames: Vec<Value> = seen.into_iter().filter(|r| r["event"] == "chat").collect();
+    assert_eq!(frames[0]["reset"], true, "{}", frames[0]);
     // Once pi is gone after the run, nothing changes the view.
     until(&engine, |c| last_prompt(&c[0]) == Some("more")).await;
     all_exited(dir.path()).await;
@@ -868,6 +870,7 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
         .await
         .unwrap();
     let seen = read_until(&mut reader, |seen| seen.iter().any(|r| r["id"] == 8)).await;
+    frames.extend(seen.iter().filter(|r| r["event"] == "chat").cloned());
     let view = &seen.iter().find(|r| r["id"] == 8).unwrap()["ok"];
     assert_eq!(view["read"]["total"], 4, "{view}");
     assert_eq!(view["read"]["olderRemaining"], 1, "{view}");
@@ -887,6 +890,29 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     let seen = read_until(&mut reader, |seen| seen.iter().any(|r| r["id"] == 9)).await;
     let unchanged = seen.iter().find(|r| r["id"] == 9).unwrap();
     assert_eq!(unchanged["ok"]["read"], Value::Null, "{unchanged}");
+    frames.extend(seen.into_iter().filter(|r| r["event"] == "chat"));
+
+    // Played back, the frames show what chat_view reads, though most of them
+    // left out the messages that hadn't changed.
+    let page = tool(&engine, "chat_view", json!({"chat": chat}))
+        .await
+        .unwrap();
+    let page = page["read"]["messages"].as_array().unwrap().clone();
+    let seen = read_until(&mut reader, |seen| {
+        replay(frames.iter().chain(seen)) == page
+    })
+    .await;
+    frames.extend(seen);
+    assert!(
+        frames.iter().any(|f| f["reset"] == false
+            && f["messages"].as_array().unwrap().len() < f["ids"].as_array().unwrap().len()),
+        "{frames:#?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|f| f["chatId"] == *chat && f["error"].is_null())
+    );
 
     // A client that closes its side after sending still gets the answer.
     let (read, mut write) = UnixStream::connect(&socket).await.unwrap().into_split();
@@ -899,6 +925,24 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     let seen = read_until(&mut BufReader::new(read), |seen| !seen.is_empty()).await;
     assert_eq!(seen[0]["ok"]["projects"].as_array().unwrap().len(), 1);
     engine.shutdown().await.unwrap();
+}
+
+/// The messages a subscriber to a chat's feed shows after `frames`.
+fn replay<'a>(frames: impl IntoIterator<Item = &'a Value>) -> Vec<Value> {
+    let mut have = std::collections::HashMap::new();
+    let mut ids = Vec::new();
+    for frame in frames.into_iter().filter(|r| r["event"] == "chat") {
+        if frame["reset"] == true {
+            have.clear();
+        }
+        for message in frame["messages"].as_array().unwrap() {
+            have.insert(message["id"].as_str().unwrap().to_owned(), message.clone());
+        }
+        ids = frame["ids"].as_array().unwrap().clone();
+    }
+    ids.iter()
+        .map(|id| have[id.as_str().unwrap()].clone())
+        .collect()
 }
 
 /// Keeps the `Authorization` header of the Mac's handshake.

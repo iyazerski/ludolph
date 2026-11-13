@@ -326,7 +326,7 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
 /// `turn_changes`, and `after` is its last message, which the button
 /// follows. A run lasts until the next one starts, so steering messages
 /// stay in it.
-fn turn_changes_of(messages: &[Message], runs: &BTreeMap<i64, Counts>) -> Vec<Value> {
+pub(crate) fn turn_changes_of(messages: &[Message], runs: &BTreeMap<i64, Counts>) -> Vec<Value> {
     let starts = |m: &Message| m.role == Role::User && runs.contains_key(&m.created_at);
     let mut out = Vec::new();
     for (i, message) in messages.iter().enumerate() {
@@ -587,7 +587,7 @@ async fn interrupt_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
 }
 
 /// An extension's open dialog, as pi asks it (`docs/rpc-extension-ui.md`).
-fn pending_input(question: &Question) -> Value {
+pub(crate) fn pending_input(question: &Question) -> Value {
     let dialog = match question.dialog {
         Dialog::Select => "select",
         Dialog::Confirm => "confirm",
@@ -677,7 +677,7 @@ fn find(engine: &Engine, id: &str) -> Result<ChatInfo> {
 }
 
 /// A chat as `list_chats` describes it.
-fn summary(chat: &ChatInfo, config: &Config) -> Value {
+pub(crate) fn summary(chat: &ChatInfo, config: &Config) -> Value {
     let summary = chat.summary.as_ref();
     json!({
         "id": chat.id,
