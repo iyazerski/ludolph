@@ -2,7 +2,7 @@
 //! responses, matched by id, and the events it streams.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,6 +20,10 @@ use crate::jsonl::fix_surrogates;
 /// How many events wait for the engine before pi has to wait. pi honors
 /// stdout backpressure, so a slow reader slows pi rather than growing memory.
 const EVENT_QUEUE: usize = 256;
+
+/// How long [`Pi::ask`] waits for its answer. pi loads its extensions
+/// first, and one could hang.
+const ASK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Which session a process opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +194,30 @@ impl Pi {
             exit,
         };
         Ok((pi, receiver))
+    }
+
+    /// Start pi without a session in `cwd`, send it one command, stop it,
+    /// and return the command's answer. It's for questions that need no chat,
+    /// like which models or skills there are.
+    ///
+    /// # Errors
+    ///
+    /// Fails if pi can't be started, refuses the command, or doesn't answer
+    /// in time.
+    pub async fn ask(program: &Path, cwd: &Path, grace: Duration, command: Value) -> Result<Value> {
+        let options = Options {
+            program: program.to_owned(),
+            cwd: cwd.to_owned(),
+            session: Session::None,
+            extensions: Vec::new(),
+            env: Vec::new(),
+        };
+        let (pi, _events) = Self::start(&options)?;
+        let answer = tokio::time::timeout(ASK_TIMEOUT, pi.call(command)).await;
+        if let Err(e) = pi.stop(grace).await {
+            eprintln!("stopping a pi that answered a question: {e:#}");
+        }
+        answer.map_err(|_| anyhow!("pi didn't answer in {ASK_TIMEOUT:?}"))?
     }
 
     /// The process id, which is also its process group id.

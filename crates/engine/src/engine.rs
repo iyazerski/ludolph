@@ -23,6 +23,7 @@ use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
+use crate::skills::{self, Skill};
 use crate::title::Titler;
 use crate::transcript::{Page, Tail, Transcripts};
 use crate::turns::{Counts, Diff, Snapshot, Turns};
@@ -547,7 +548,7 @@ impl Engine {
                 });
             }
         }
-        let delivery = self.prompt(&pi, text, images).await;
+        let delivery = self.prompt(&pi, &skills::to_front(text), images).await;
         if snapshotted
             && !matches!(delivery, Ok(Delivery::Started))
             && let Some(chat) = self.state().chats.get_mut(id)
@@ -820,6 +821,51 @@ impl Engine {
             composer.context_window = found.and_then(|model| model.context_window);
         }
         Ok(composer)
+    }
+
+    /// The skills chat `id` can run: its pi's if it's running, otherwise
+    /// those a pi in its folder would load.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat, or pi can't list them.
+    pub async fn skills(&self, id: &str) -> Result<Vec<Skill>> {
+        let (pi, cwd) = {
+            let state = self.state();
+            known(&state, id)?;
+            let running = state.chats.get(id).and_then(|chat| chat.process.as_ref());
+            (
+                running.map(|running| running.pi.clone()),
+                cwd_of(&state, id),
+            )
+        };
+        if let Some(pi) = pi {
+            match pi.call(json!({"type": "get_commands"})).await {
+                Ok(answer) => return Ok(skills::from_commands(&answer)),
+                // It may be stopping for being idle.
+                Err(e) => eprintln!("chat {id}: asking pi for its skills: {e:#}"),
+            }
+        }
+        let cwd = cwd.with_context(|| format!("no chat {id}"))?;
+        self.skills_in(Some(&cwd)).await
+    }
+
+    /// The skills a new chat in `cwd` could run, or in a scratch folder
+    /// without one.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `cwd` isn't a folder, or pi can't list them.
+    pub async fn skills_in(&self, cwd: Option<&Path>) -> Result<Vec<Skill>> {
+        // A scratch folder has no skills of its own, like the engine's.
+        let cwd = cwd.unwrap_or(&self.0.config.state_dir);
+        if !cwd.is_dir() {
+            bail!("{} isn't a folder", cwd.display());
+        }
+        let command = json!({"type": "get_commands"});
+        let config = &self.0.config;
+        let answer = Pi::ask(&config.pi, cwd, config.grace, command).await?;
+        Ok(skills::from_commands(&answer))
     }
 
     /// The oldest dialog chat `id`'s pi waits on.

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use crate::jsonl::{self, Mark, Reopen, fix_surrogates, open, read_header, read_line};
+use crate::skills;
 use crate::text::one_line;
 
 /// The most characters of a message kept as a preview.
@@ -375,8 +376,9 @@ enum StopReason {
     Other,
 }
 
-/// A message's text on one line and cut to [`PREVIEW_CHARS`]; `None` if it
-/// has none, like a message that's only an image.
+/// A user message's text as typed, on one line and cut to
+/// [`PREVIEW_CHARS`]; `None` if it has none, like a message that's only an
+/// image.
 fn preview(content: &str) -> Option<String> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -404,5 +406,5 @@ fn preview(content: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" "),
     };
-    one_line(&text, PREVIEW_CHARS)
+    one_line(&skills::as_typed(&text), PREVIEW_CHARS)
 }

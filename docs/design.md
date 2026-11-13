@@ -112,7 +112,9 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 - **Stop:** `clear_queue`, then `abort`.
 - **Model and thinking level:** `set_model` and `set_thinking_level` on the chat's process. pi records both in the session file (`model_change`, `thinking_level_change`), and keeps the level within what the model supports. The model list comes from `get_available_models` on a short-lived `pi --mode rpc --no-session` in the engine's folder, cached for 10 minutes: no chat's process has to be running, and a picker that opens often doesn't start pi each time. It's one list for all projects. A provider that a project-local extension adds isn't listed, but `set_model` still takes it. Each model's thinking levels are worked out from its model object, the way pi's `getSupportedThinkingLevels` does: only `off` without `reasoning`, and `xhigh` and `max` only when its `thinkingLevelMap` names them.
 - **Composer:** the model, thinking level and context use come from the chat's process (`get_state`, `get_session_stats`) while it runs. Otherwise they come from the index, which keeps the latest model and level from the file, and the context size from the last answer's usage, as pi estimates it. The context window then comes from the model list. The phone asks every few seconds, so asking never starts pi.
-- **Skills** (the `$` menu): `get_commands`, keeping those with `source: "skill"`.
+- **Skills** (the `$` menu): `get_commands`, keeping those with `source: "skill"`. It asks the chat's process if it's running. Otherwise, and for a new chat, it asks a short-lived `pi --mode rpc --no-session` in the chat's or project's folder, since project skills depend on it. The list isn't cached: the composer asks once, on the first `$`.
+  - A skill's ref is pi's own `/skill:name`. The composer puts it where `$name` was typed, but pi runs a skill only from the start of a prompt, so the engine moves the first one there. Later ones stay as text.
+  - pi saves a run skill as a `<skill>` block with the whole `SKILL.md`, then the request. The transcript and the list show it as `/skill:name` and the request, as pi's own view does (`parseSkillBlock`).
 - **Images:** sent in the `prompt` command as base64. There's no upload store.
 - **Live view:** see [live view and the file](#live-view-and-the-file).
 - **Stopping idle processes:** once a chat settles (`agent_settled`) and has no open question, the engine closes its process's stdin after a few idle minutes (a setting, default 5). pi then shuts down cleanly, and the next message starts it again with `--session <file>`. A restart costs about 270 ms even for a large session, while a loaded process holds up to ~300 MB, so stopping idle processes is the biggest memory saving.
@@ -246,7 +248,7 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | `composer_info` | Branch (`git`), then the model, thinking level and context use (see [pi processes](#pi-processes)) |
 | `set_chat_model` | `set_model`, `set_thinking_level` |
 | `list_models` | Cached `get_available_models` |
-| `list_skills` | `get_commands` |
+| `list_skills` | `get_commands` (see [pi processes](#pi-processes)) |
 | `polish_dictation` | The title model through `pi -p` |
 | `list_harnesses` | pi alone, since the phone's picker still asks |
 | `open_zeron` | Removed. If the engine isn't running, the Mac is offline. |

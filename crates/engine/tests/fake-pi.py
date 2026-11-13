@@ -150,9 +150,19 @@ def now():
     return time.time_ns() // 1_000_000
 
 
+def expand(text):
+    """Expand a skill command at the start, as pi does."""
+    if not text.startswith("/skill:review"):
+        return text
+    block = ('<skill name="review" location="/skills/review/SKILL.md">\n'
+             "References are relative to /skills/review.\n\nRead the diff.\n</skill>")
+    request = text[len("/skill:review"):].strip()
+    return f"{block}\n\n{request}" if request else block
+
+
 def prompt(command):
     respond(command, {"disposition": "started"})
-    user = {"role": "user", "content": command["message"], "timestamp": now()}
+    user = {"role": "user", "content": expand(command["message"]), "timestamp": now()}
     # Written before it's reported, the harder order for telling whose it is.
     write(user)
     emit({"type": "agent_start"})
@@ -240,6 +250,11 @@ def main():
                   "data": {"args": sys.argv[1:], "cwd": os.getcwd(), "sessionId": SESSION_ID,
                            "sessionFile": SESSION_FILE, "sessionName": NAME,
                            "model": MODEL, "thinkingLevel": THINKING}}, end="\r\n")
+        elif kind == "get_commands":
+            respond(command, {"commands": [
+                {"name": "skill:review", "description": "Review the diff", "source": "skill"},
+                {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt"},
+            ]})
         elif kind == "get_available_models":
             respond(command, {"models": MODELS})
         elif kind == "set_model":

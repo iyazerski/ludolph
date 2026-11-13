@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::pi::{Options, Pi, Session};
+use crate::pi::Pi;
 
 /// How long a fetched list is used before pi is asked again.
 const FRESH: Duration = Duration::from_mins(10);
@@ -118,19 +118,10 @@ impl Catalog {
 
     /// Ask a new pi for its models.
     async fn fetch(&self) -> Result<Vec<Model>> {
-        let options = Options {
-            program: self.program.clone(),
-            cwd: self.cwd.clone(),
-            session: Session::None,
-            extensions: Vec::new(),
-            env: Vec::new(),
-        };
-        let (pi, _events) = Pi::start(&options)?;
-        let answer = pi.call(json!({"type": "get_available_models"})).await;
-        if let Err(e) = pi.stop(self.grace).await {
-            eprintln!("stopping the pi that listed models: {e:#}");
-        }
-        let answer = answer.context("listing pi's models")?;
+        let command = json!({"type": "get_available_models"});
+        let answer = Pi::ask(&self.program, &self.cwd, self.grace, command)
+            .await
+            .context("listing pi's models")?;
         let models = answer["models"].as_array().context("pi listed no models")?;
         Ok(models.iter().filter_map(Model::from_pi).collect())
     }

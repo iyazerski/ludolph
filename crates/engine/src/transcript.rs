@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::jsonl::{self, Mark, Reopen, fix_surrogates, read_header, read_line};
+use crate::skills;
 use crate::text::one_line;
 
 /// How many files keep their scan.
@@ -659,6 +660,13 @@ fn render(pieces: &[Piece]) -> Option<Message> {
         ("message", Some("user"), Some(m)) => {
             message.role = Role::User;
             message.parts = content_parts(&m.content);
+            for part in &mut message.parts {
+                if let Part::Text { text } = part
+                    && let Cow::Owned(typed) = skills::as_typed(text)
+                {
+                    *text = typed;
+                }
+            }
         }
         ("message", Some("bashExecution"), Some(m)) => {
             message.role = Role::User;
