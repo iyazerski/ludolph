@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use tokio::sync::{OwnedMutexGuard, mpsc, watch};
+use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
@@ -41,6 +41,9 @@ const REPORT_WAIT: Duration = Duration::from_secs(1);
 /// How many of its own prompts a chat remembers. Only the newest in the file
 /// is ever looked up.
 const SENT_KEPT: usize = 64;
+/// Alerts waiting for a slow listener. Each is a moment that's passed, so
+/// losing old ones is fine.
+const ALERTS: usize = 64;
 
 /// Where the engine keeps its files and finds pi's, and how it runs pi.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +89,7 @@ struct Inner {
     state: Mutex<State>,
     /// Bumped whenever the chat list changes.
     list: watch::Sender<u64>,
+    alerts: broadcast::Sender<Alert>,
     /// Its own lock, since reading a transcript can take a while.
     transcripts: Arc<Mutex<Transcripts>>,
     /// The task that follows the sessions folder.
@@ -279,6 +283,26 @@ pub enum Status {
     Interrupted,
 }
 
+/// A moment in a chat worth telling you about while you're away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert {
+    pub chat: String,
+    pub kind: AlertKind,
+}
+
+/// What happened in the chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertKind {
+    /// A run ended well. One you stopped yourself doesn't count.
+    Finished,
+    /// A run ended on an error.
+    Failed,
+    /// pi exited during a run.
+    Interrupted,
+    /// An extension's dialog waits for an answer.
+    Input,
+}
+
 /// What pi did with a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivery {
@@ -358,6 +382,7 @@ impl Engine {
             catalog,
             state: Mutex::new(state),
             list: watch::channel(0).0,
+            alerts: broadcast::channel(ALERTS).0,
             transcripts: Arc::default(),
             watching: tokio::spawn(follow(inner.clone(), watcher)).abort_handle(),
             titler: Arc::new(Titler::new(
@@ -392,6 +417,12 @@ impl Engine {
     /// A counter that changes whenever [`Engine::chats`] would.
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.0.list.subscribe()
+    }
+
+    /// The chats' alerts from now on. A receiver that falls far behind
+    /// loses the oldest ones.
+    pub fn alerts(&self) -> broadcast::Receiver<Alert> {
+        self.0.alerts.subscribe()
     }
 
     /// A chat with the last `limit` messages of its transcript.
@@ -1105,13 +1136,22 @@ impl Engine {
             }
         }
         let mut finish = false;
+        let mut alert = None;
         let running = chat.process.as_mut().expect("checked above");
         let working = running.live.working();
         let mut view_changed = running.live.apply(event);
         let mut list_changed = running.live.working() != working;
         match event {
             Event::AgentStart => runtime.set_running(id, true)?,
-            Event::AgentSettled { .. } => {
+            Event::AgentSettled { aborted } => {
+                if !aborted {
+                    let failed = running.live.failure().is_some();
+                    alert = Some(if failed {
+                        AlertKind::Failed
+                    } else {
+                        AlertKind::Finished
+                    });
+                }
                 runtime.set_running(id, false)?;
                 if let Some(run) = chat.run.as_mut() {
                     run.settled = true;
@@ -1145,6 +1185,9 @@ impl Engine {
                     // `notify` and the like expect no answer.
                     _ => return Ok(()),
                 };
+                if running.questions.is_empty() {
+                    alert = Some(AlertKind::Input);
+                }
                 running.questions.push(Question {
                     id: question.clone(),
                     dialog,
@@ -1177,6 +1220,9 @@ impl Engine {
         }
         let settled = matches!(event, Event::AgentSettled { .. });
         drop(state);
+        if let Some(kind) = alert {
+            self.alert(id, kind);
+        }
         if finish {
             let (engine, id) = (self.clone(), id.to_owned());
             tokio::spawn(async move {
@@ -1255,7 +1301,21 @@ impl Engine {
         if running.live.working() || !running.questions.is_empty() {
             chat.changed();
         }
+        let interrupted = running.live.working();
+        drop(state);
+        if interrupted {
+            self.alert(id, AlertKind::Interrupted);
+        }
         Ok(())
+    }
+
+    fn alert(&self, id: &str, kind: AlertKind) {
+        let alert = Alert {
+            chat: id.to_owned(),
+            kind,
+        };
+        // With nobody listening, there's no one to tell.
+        drop(self.0.alerts.send(alert));
     }
 
     /// Bring the index up to date with what the sessions folder reported,

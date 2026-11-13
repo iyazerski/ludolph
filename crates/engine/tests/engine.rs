@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use ludolph_engine::engine::{ChatInfo, Config, Delivery, Engine, Status};
-use ludolph_engine::relay::{self, Link};
+use ludolph_engine::relay::{self, Link, NotifyWhen};
 use ludolph_engine::server;
 use ludolph_engine::transcript::{Part, Role};
 use serde_json::{Value, json};
@@ -386,6 +386,10 @@ fn git(repo: &Path, args: &[&str]) -> String {
 /// The `turnChanges` of the chat's view, once it has `runs` saved runs.
 async fn turn_changes(engine: &Engine, id: &str, runs: usize) -> (Vec<Value>, Vec<Value>) {
     for _ in 0..250 {
+        // A run's store goes before its diff is saved, so both are waited for,
+        // before the view: one taken earlier may miss a run saved since.
+        let saved = engine.run_counts(id).await.unwrap().len() == runs;
+        let stored = saved && std::fs::read_dir(state_runs(engine)).map_or(0, Iterator::count) == 0;
         let view = tool(engine, "chat_view", json!({"chat": id}))
             .await
             .unwrap();
@@ -394,14 +398,7 @@ async fn turn_changes(engine: &Engine, id: &str, runs: usize) -> (Vec<Value>, Ve
         let settled = view["chat"]["status"] == "idle";
         let changes = read["turnChanges"].as_array().unwrap().clone();
         let users = messages.iter().filter(|m| m["role"] == "user").count();
-        // A run's store goes before its diff is saved, so both are waited for.
-        let saved = engine.config().state_dir.join("turns").join(id);
-        if settled
-            && users == runs
-            && std::fs::read_dir(state_runs(engine)).map_or(0, Iterator::count) == 0
-            && std::fs::read_dir(saved).map_or(0, Iterator::count) == runs
-            && !changes.is_empty()
-        {
+        if stored && settled && users == runs && !changes.is_empty() {
             return (changes, messages);
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -815,8 +812,26 @@ async fn from_mac(socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::Tc
     }
 }
 
+/// The first message from the Mac that `wanted` picks; it skips the rest.
+async fn until_from_mac(
+    socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    wanted: impl Fn(&Value) -> bool,
+) -> Value {
+    let wait = async {
+        loop {
+            let message = from_mac(socket).await;
+            if wanted(&message) {
+                return message;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn the_relay_link_answers_the_phones_calls() {
+async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
 
@@ -841,7 +856,8 @@ async fn the_relay_link_answers_the_phones_calls() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(relay::run(engine.clone(), Link { relay, token }));
+    let link = Link { relay, token };
+    tokio::spawn(relay::run(engine.clone(), link, NotifyWhen::Always));
     let (tcp, _) = listener.accept().await.unwrap();
     let mut bearer = None;
     let mut socket = tokio_tungstenite::accept_hdr_async(tcp, Bearer(&mut bearer))
@@ -869,5 +885,42 @@ async fn the_relay_link_answers_the_phones_calls() {
     }
     assert_eq!(replies[&7], json!({"Ok": {"total": 0, "chats": []}}));
     assert_eq!(replies[&8], json!({"Err": "no tool open_terminal"}));
+
+    // Each moment worth telling reaches the phone as a notice.
+    let create =
+        json!({"id": 9, "tool": "create_chat", "args": {"project": dir.path(), "prompt": "ask"}});
+    socket
+        .send(Message::Text(create.to_string().into()))
+        .await
+        .unwrap();
+    let made = until_from_mac(&mut socket, |m| m["id"] == 9).await;
+    let chat = made["result"]["Ok"]["chatId"].as_str().unwrap().to_owned();
+    let asked = until_from_mac(&mut socket, |m| m["type"] == "notify").await;
+    assert_eq!(
+        (&asked["kind"], &asked["chat"]),
+        (&json!("input"), &json!(chat))
+    );
+    assert_eq!(asked["body"], "Needs your answer: Pick one");
+    let answer = json!({"id": 10, "tool": "respond_to_input", "args": {"chat": chat,
+                        "answers": [{"question_id": "answer", "labels": ["red"]}]}});
+    socket
+        .send(Message::Text(answer.to_string().into()))
+        .await
+        .unwrap();
+    let finished = until_from_mac(&mut socket, |m| m["type"] == "notify").await;
+    assert_eq!(
+        (&finished["kind"], &finished["body"]),
+        (&json!("finished"), &json!("You picked red."))
+    );
+    let crash = json!({"id": 11, "tool": "send_message", "args": {"chat": chat, "text": "crash"}});
+    socket
+        .send(Message::Text(crash.to_string().into()))
+        .await
+        .unwrap();
+    let cut = until_from_mac(&mut socket, |m| m["type"] == "notify").await;
+    assert_eq!(
+        (&cut["kind"], &cut["body"]),
+        (&json!("failed"), &json!("The run stopped: pi exited."))
+    );
     engine.shutdown().await.unwrap();
 }

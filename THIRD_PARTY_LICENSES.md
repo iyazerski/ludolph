@@ -2613,6 +2613,7 @@ Used by:
 - itoa 1.0.19
 - libc 0.2.191
 - objc2-core-foundation 0.3.2
+- objc2-core-graphics 0.3.2
 - objc2-core-services 0.3.2
 - pin-project-lite 0.2.17
 - proc-macro2 1.0.107

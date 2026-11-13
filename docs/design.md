@@ -286,7 +286,7 @@ The relay, its Kubernetes manifests, and the phone app (`relay/assets`) move int
 
 - **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. Until there are settings, `ludolph link --relay <address> --token <token>` checks the token with the relay and saves the link in `relay.json`, and the engine connects when it starts.
 - **Until the relay moves:** the engine speaks protocol 1, so it works with Zeron's relay as deployed. It reports itself as running, and serves calls with its own tools, so the phone's "open Zeron" is gone. Version 2 comes with moving the relay.
-- **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later.
+- **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Protocol 1 has no interrupted kind, so that one goes as failed. Until there are settings, `LUDOLPH_NOTIFY=always` turns on always notify. Runs by another pi aren't watched, so they don't notify.
 - **Self-hosting:** the README explains how to run the relay (container image and manifests) and how to create the setup link.
 
 ### Trust
