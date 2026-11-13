@@ -36,6 +36,8 @@ def log(line):
 def session():
     """The session's id and file, from the arguments."""
     args = sys.argv[1:]
+    if "--no-session" in args:
+        return None, None
     if "--session" in args:
         path = args[args.index("--session") + 1]
         with open(path) as f:
@@ -62,6 +64,57 @@ if "-p" in sys.argv:
 SESSION_ID, SESSION_FILE = session()
 NAME = None
 
+# pi's model objects: one that reasons, with a level map that adds xhigh and
+# drops minimal, and one that doesn't.
+MODELS = [
+    {"provider": "fake", "id": "deep", "name": "Deep", "reasoning": True, "contextWindow": 200000,
+     "thinkingLevelMap": {"minimal": None, "xhigh": "xhigh"}},
+    {"provider": "fake", "id": "quick", "name": "Quick", "reasoning": False, "contextWindow": 100000},
+]
+MODEL = MODELS[0]
+THINKING = "medium"
+TOKENS = None
+# What pi records before the first message, written with the file.
+PENDING = [({"provider": "fake", "modelId": "deep"}, "model_change"),
+           ({"thinkingLevel": THINKING}, "thinking_level_change")]
+
+
+def levels(model):
+    """The model's thinking levels, as pi works them out."""
+    if not model["reasoning"]:
+        return ["off"]
+    mapped = model.get("thinkingLevelMap", {})
+    return [level for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+            if (level in mapped and mapped[level] is not None)
+            or (level not in mapped and level not in ("xhigh", "max"))]
+
+
+def record(entry, kind):
+    """Record a setting: in the file if it exists, else with its first line."""
+    if SESSION_FILE and os.path.exists(SESSION_FILE):
+        write(entry, kind)
+    else:
+        PENDING.append((entry, kind))
+
+
+def set_thinking(level):
+    """Set the thinking level, kept within the model's, as pi clamps it."""
+    global THINKING
+    allowed = levels(MODEL)
+    level = level if level in allowed else allowed[-1] if level != "off" else "off"
+    if level != THINKING:
+        THINKING = level
+        record({"thinkingLevel": level}, "thinking_level_change")
+
+
+def answer(text, stop, tokens):
+    """An assistant message from the current model, with its usage."""
+    global TOKENS
+    TOKENS = tokens
+    return {"role": "assistant", "content": text, "stopReason": stop, "timestamp": now(),
+            "provider": MODEL["provider"], "model": MODEL["id"],
+            "usage": {"input": tokens, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": tokens}}
+
 
 def write(message, kind="message"):
     """Append an entry to the session file, after a header if it's new, as a
@@ -77,6 +130,10 @@ def write(message, kind="message"):
     else:
         lines.append({"type": "session", "version": 3, "id": SESSION_ID,
                       "timestamp": "2026-05-01T10:00:00.000Z", "cwd": os.getcwd()})
+        for pending, pending_kind in PENDING:
+            lines.append({"type": pending_kind, "id": f"e{time.monotonic_ns()}", "parentId": parent,
+                          "timestamp": "2026-05-01T10:00:00.000Z", **pending})
+        PENDING.clear()
     entry = {"type": kind, "id": f"e{time.monotonic_ns()}", "parentId": parent,
              "timestamp": "2026-05-01T10:00:00.000Z"}
     if kind == "message":
@@ -124,8 +181,8 @@ def prompt(command):
     update({"type": "toolcall_start", "contentIndex": 1, "id": "c1", "toolName": "bash"})
     update({"type": "toolcall_delta", "contentIndex": 1, "delta": '{"command":'})
     update({"type": "toolcall_end", "contentIndex": 1, "toolCall": call})
-    assistant = {"role": "assistant", "content": [{"type": "text", "text": "Hello!"}, call],
-                 "stopReason": "toolUse", "timestamp": started}
+    assistant = answer([{"type": "text", "text": "Hello!"}, call], "toolUse", 1000)
+    assistant["timestamp"] = started
     emit({"type": "message_end", "message": assistant})
     write(assistant)
     emit({"type": "tool_execution_start", "toolCallId": "c1", "toolName": "bash", "args": {"command": "ls"}})
@@ -135,8 +192,7 @@ def prompt(command):
               "isError": False, "timestamp": now()}
     emit({"type": "message_end", "message": result})
     write(result)
-    done = {"role": "assistant", "content": [{"type": "text", "text": "Done."}], "stopReason": "stop",
-            "timestamp": now()}
+    done = answer([{"type": "text", "text": "Done."}], "stop", 1500)
     emit({"type": "message_end", "message": done})
     write(done)
     emit({"type": "compaction_start", "reason": "threshold"})
@@ -170,7 +226,7 @@ def ask(briefly):
 
 
 def main():
-    global NAME
+    global NAME, MODEL
     if os.environ.get("FAKE_PI_STUBBORN"):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     log("start " + " ".join(sys.argv[1:]))
@@ -182,7 +238,26 @@ def main():
             # pi accepts CRLF too.
             emit({"id": command["id"], "type": "response", "command": kind, "success": True,
                   "data": {"args": sys.argv[1:], "cwd": os.getcwd(), "sessionId": SESSION_ID,
-                           "sessionFile": SESSION_FILE, "sessionName": NAME}}, end="\r\n")
+                           "sessionFile": SESSION_FILE, "sessionName": NAME,
+                           "model": MODEL, "thinkingLevel": THINKING}}, end="\r\n")
+        elif kind == "get_available_models":
+            respond(command, {"models": MODELS})
+        elif kind == "set_model":
+            found = [m for m in MODELS if (m["provider"], m["id"]) == (command["provider"], command["modelId"])]
+            if not found:
+                emit({"id": command["id"], "type": "response", "command": kind, "success": False,
+                      "error": f"Model not found: {command['provider']}/{command['modelId']}"})
+                continue
+            MODEL = found[0]
+            record({"provider": MODEL["provider"], "modelId": MODEL["id"]}, "model_change")
+            set_thinking(THINKING)
+            respond(command, MODEL)
+        elif kind == "set_thinking_level":
+            set_thinking(command["level"])
+            respond(command)
+        elif kind == "get_session_stats":
+            usage = {"tokens": TOKENS, "contextWindow": MODEL["contextWindow"]}
+            respond(command, {"sessionId": SESSION_ID, "contextUsage": usage})
         elif kind == "set_session_name":
             NAME = command["name"]
             write({"name": NAME}, "session_info")

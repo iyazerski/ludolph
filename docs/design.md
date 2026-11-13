@@ -110,7 +110,8 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 - **Open chat:** reading a transcript needs no process. The engine reads the session file. A process starts only when a chat needs pi: to send a message, change the model, or list skills.
 - **Send:** `prompt`. While the agent works, `prompt` with `streamingBehavior: "steer"`.
 - **Stop:** `clear_queue`, then `abort`.
-- **Model and thinking level:** `get_available_models`, `set_model`, `get_available_thinking_levels`, `set_thinking_level`. Project-local extensions can add providers, so the model list is cached per project and refreshed whenever a process in that project starts. Thinking levels come from the chat's own process, for its current model.
+- **Model and thinking level:** `set_model` and `set_thinking_level` on the chat's process. pi records both in the session file (`model_change`, `thinking_level_change`), and keeps the level within what the model supports. The model list comes from `get_available_models` on a short-lived `pi --mode rpc --no-session` in the engine's folder, cached for 10 minutes: no chat's process has to be running, and a picker that opens often doesn't start pi each time. It's one list for all projects. A provider that a project-local extension adds isn't listed, but `set_model` still takes it. Each model's thinking levels are worked out from its model object, the way pi's `getSupportedThinkingLevels` does: only `off` without `reasoning`, and `xhigh` and `max` only when its `thinkingLevelMap` names them.
+- **Composer:** the model, thinking level and context use come from the chat's process (`get_state`, `get_session_stats`) while it runs. Otherwise they come from the index, which keeps the latest model and level from the file, and the context size from the last answer's usage, as pi estimates it. The context window then comes from the model list. The phone asks every few seconds, so asking never starts pi.
 - **Skills** (the `$` menu): `get_commands`, keeping those with `source: "skill"`.
 - **Images:** sent in the `prompt` command as base64. There's no upload store.
 - **Live view:** see [live view and the file](#live-view-and-the-file).
@@ -237,20 +238,20 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | `list_projects` | The distinct cwds in the index |
 | `chat_view` | The [transcript](#live-view-and-the-file)'s latest messages, a page at a time. Long tool output and images load on request. |
 | `send_message` | `prompt`, or a steering `prompt` |
-| `create_chat` | Start pi in the project's folder or a scratch folder, then `prompt` |
+| `create_chat` | Start pi in the project's folder or a scratch folder, set the picked model, then `prompt` |
 | `interrupt_chat` | `clear_queue` and `abort` |
 | `respond_to_input` | Answers the [open question](#questions-from-the-agent) with that id, as an `extension_ui_response` |
 | `archive_chat` | Index |
 | `turn_changes` | Saved turn changes |
-| `composer_info` | Branch (`git`), context use (`get_session_stats`), model and thinking level |
+| `composer_info` | Branch (`git`), then the model, thinking level and context use (see [pi processes](#pi-processes)) |
 | `set_chat_model` | `set_model`, `set_thinking_level` |
 | `list_models` | Cached `get_available_models` |
 | `list_skills` | `get_commands` |
 | `polish_dictation` | The title model through `pi -p` |
-| `list_harnesses` | Removed. There's only pi. |
+| `list_harnesses` | pi alone, since the phone's picker still asks |
 | `open_zeron` | Removed. If the engine isn't running, the Mac is offline. |
 
-Changes to the phone app: remove the agent picker and the "start Zeron" action, and replace Zeron's name in its text. The relay protocol goes to version 2, and the `Engine` message gets simpler.
+Changes to the phone app: remove the "start Zeron" action (the agent picker already hides itself with one harness), and replace Zeron's name in its text. The relay protocol goes to version 2, and the `Engine` message gets simpler.
 
 ## App
 

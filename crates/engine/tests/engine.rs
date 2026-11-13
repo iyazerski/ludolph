@@ -513,6 +513,81 @@ async fn chats_are_titled_as_soon_as_they_start() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn chats_use_the_model_and_thinking_level_picked_for_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let first = engine(dir.path(), Duration::from_secs(60)).await;
+    let made = tool(
+        &first,
+        "create_chat",
+        json!({"project": repo, "prompt": "hi", "harness": "pi", "model": "fake/deep",
+               "reasoning": "high", "branch": "main"}),
+    )
+    .await
+    .unwrap();
+    let id = made["chatId"].as_str().unwrap().to_owned();
+    until(&first, |c| {
+        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("hi")
+    })
+    .await;
+    let info = json!({"harness": "pi", "checkout": "local", "branch": "main", "model": "fake/deep",
+                      "reasoning": "high", "contextUsage": {"tokens": 1500, "window": 200_000}});
+    let composer = |engine| tool(engine, "composer_info", json!({"chat": id}));
+    assert_eq!(composer(&first).await.unwrap(), info, "as its pi says");
+    first.shutdown().await.unwrap();
+    // Without a pi, the session file says the same, and asking doesn't
+    // start one.
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    assert_eq!(composer(&engine).await.unwrap(), info, "as its file says");
+    all_exited(dir.path()).await;
+
+    let models = tool(&engine, "list_models", json!({"harness": "pi"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        models["models"],
+        json!([
+            {"id": "fake/deep", "label": "Deep", "description": null,
+             "reasoningLevels": ["off", "low", "medium", "high", "xhigh"]},
+            {"id": "fake/quick", "label": "Quick", "description": null, "reasoningLevels": ["off"]},
+        ])
+    );
+    assert!(
+        tool(&engine, "list_models", json!({"harness": "codex"}))
+            .await
+            .is_err()
+    );
+
+    let quick = json!({"chat": id, "model": "fake/quick"});
+    let saved = tool(&engine, "set_chat_model", quick).await.unwrap();
+    assert_eq!(
+        saved,
+        json!({"model": "fake/quick", "reasoning": "off", "contextUsage": {"tokens": null, "window": 100_000}}),
+        "the level fits the model"
+    );
+    let unknown = json!({"chat": id, "model": "nope/x"});
+    let refused = tool(&engine, "set_chat_model", unknown).await.unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("Model not found"),
+        "{refused:#}"
+    );
+
+    let draft = tool(&engine, "composer_info", json!({"project": dir.path()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        draft,
+        json!({"harness": "pi", "checkout": null, "branch": null})
+    );
+    let log = std::fs::read_to_string(dir.path().join("pi.log")).unwrap();
+    let listing = log.lines().filter(|l| l.ends_with("--no-session")).count();
+    assert_eq!(listing, 1, "the models are listed once");
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pi_that_dies_mid_run_leaves_the_chat_interrupted() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;

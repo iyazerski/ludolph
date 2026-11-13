@@ -19,6 +19,7 @@ use tokio::time::Instant;
 
 use crate::index::{self, Index};
 use crate::live::Live;
+use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
@@ -91,6 +92,7 @@ struct Inner {
     /// Shared with titling tasks, which don't keep the engine alive.
     titler: Arc<Titler>,
     turns: Arc<Turns>,
+    catalog: Catalog,
 }
 
 impl Drop for Inner {
@@ -287,6 +289,17 @@ pub enum Delivery {
     Handled,
 }
 
+/// The model settings and context use a chat's composer shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Composer {
+    /// `provider/model`; `None` before pi has picked one.
+    pub model: Option<String>,
+    pub thinking: Option<String>,
+    /// The tokens in the context; `None` right after a compaction.
+    pub context_tokens: Option<u64>,
+    pub context_window: Option<u64>,
+}
+
 impl Engine {
     /// Start the engine: stop the pi processes a previous engine left
     /// running, bring the index up to date, and keep it so as pi writes.
@@ -337,8 +350,11 @@ impl Engine {
             chats,
         };
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
+        // The engine's folder has no `.pi` settings to change the list.
+        let catalog = Catalog::new(config.pi.clone(), config.state_dir.clone(), config.grace);
         Ok(Self(Arc::new_cyclic(|inner| Inner {
             turns,
+            catalog,
             state: Mutex::new(state),
             list: watch::channel(0).0,
             transcripts: Arc::default(),
@@ -497,14 +513,7 @@ impl Engine {
     pub async fn send(&self, id: &str, text: &str, images: Vec<Value>) -> Result<Delivery> {
         let ops = self.ops(id)?;
         let _ops = ops.lock().await;
-        if self
-            .state()
-            .chats
-            .get(id)
-            .is_some_and(|chat| chat.elsewhere)
-        {
-            bail!("this chat is open in another pi; take it over to send from Ludolph");
-        }
+        self.refuse_elsewhere(id)?;
         let pi = self.process(id)?;
         // The last run's changes are taken before anything can change more.
         self.finish_run(id).await;
@@ -734,6 +743,85 @@ impl Engine {
         Ok(())
     }
 
+    /// The models pi can use.
+    ///
+    /// # Errors
+    ///
+    /// Fails if pi can't list them.
+    pub async fn models(&self) -> Result<Arc<Vec<Model>>> {
+        self.0.catalog.models().await
+    }
+
+    /// Switch chat `id` to `model` (`provider/model`) and the thinking level
+    /// `thinking` from its next answer, and return its settings then. pi
+    /// keeps the level within what the model supports, and records both in
+    /// the session file.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat, another pi has it open, or pi refuses.
+    pub async fn set_model(
+        &self,
+        id: &str,
+        model: Option<&str>,
+        thinking: Option<&str>,
+    ) -> Result<Composer> {
+        let ops = self.ops(id)?;
+        let _ops = ops.lock().await;
+        self.refuse_elsewhere(id)?;
+        let pi = self.process(id)?;
+        if let Some(model) = model {
+            let (provider, model) = model
+                .split_once('/')
+                .with_context(|| format!("model {model} isn't provider/model"))?;
+            let command = json!({"type": "set_model", "provider": provider, "modelId": model});
+            pi.call(command).await?;
+        }
+        if let Some(level) = thinking {
+            pi.call(json!({"type": "set_thinking_level", "level": level}))
+                .await?;
+        }
+        live_composer(&pi).await
+    }
+
+    /// Chat `id`'s model, thinking level and context use: its pi's if it's
+    /// running, otherwise what its session file last recorded, so asking
+    /// doesn't start pi.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat.
+    pub async fn composer(&self, id: &str) -> Result<Composer> {
+        let (pi, saved) = {
+            let state = self.state();
+            known(&state, id)?;
+            let running = state.chats.get(id).and_then(|chat| chat.process.as_ref());
+            let saved = state.index.find(id).map(|(_, summary)| Composer {
+                model: summary.model.clone(),
+                thinking: summary.thinking.clone(),
+                context_tokens: summary.context_tokens,
+                context_window: None,
+            });
+            (running.map(|running| running.pi.clone()), saved)
+        };
+        if let Some(pi) = pi {
+            match live_composer(&pi).await {
+                Ok(composer) => return Ok(composer),
+                // It may be stopping for being idle; the file has the same.
+                Err(e) => eprintln!("chat {id}: asking pi for its model: {e:#}"),
+            }
+        }
+        let mut composer = saved.unwrap_or_default();
+        if let Some(model) = &composer.model {
+            let found = self.0.catalog.find(model).await.unwrap_or_else(|e| {
+                eprintln!("chat {id}: finding its context window: {e:#}");
+                None
+            });
+            composer.context_window = found.and_then(|model| model.context_window);
+        }
+        Ok(composer)
+    }
+
     /// The oldest dialog chat `id`'s pi waits on.
     pub fn question(&self, id: &str) -> Option<Question> {
         let state = self.state();
@@ -839,6 +927,16 @@ impl Engine {
 
     fn state(&self) -> MutexGuard<'_, State> {
         self.0.state.lock().expect("lock poisoned")
+    }
+
+    /// Fail if another pi has chat `id` open, since two writers would split
+    /// its session.
+    fn refuse_elsewhere(&self, id: &str) -> Result<()> {
+        let state = self.state();
+        if state.chats.get(id).is_some_and(|chat| chat.elsewhere) {
+            bail!("this chat is open in another pi; take it over to change it from Ludolph");
+        }
+        Ok(())
     }
 
     /// The lock that serializes a chat's commands.
@@ -1260,6 +1358,24 @@ async fn follow(engine: Weak<Inner>, watcher: Watcher) {
 }
 
 /// Fail unless `id` is a chat in the index or a draft.
+/// What a running pi says about its model and context.
+async fn live_composer(pi: &Pi) -> Result<Composer> {
+    let (state, stats) = tokio::try_join!(
+        pi.call(json!({"type": "get_state"})),
+        pi.call(json!({"type": "get_session_stats"})),
+    )?;
+    let model = Model::from_pi(&state["model"]);
+    let usage = &stats["contextUsage"];
+    Ok(Composer {
+        thinking: state["thinkingLevel"].as_str().map(str::to_owned),
+        context_tokens: usage["tokens"].as_u64(),
+        context_window: usage["contextWindow"]
+            .as_u64()
+            .or(model.as_ref().and_then(|model| model.context_window)),
+        model: model.map(|model| model.id),
+    })
+}
+
 fn known(state: &State, id: &str) -> Result<()> {
     if !state.chats.contains_key(id) && state.index.find(id).is_none() {
         bail!("no chat {id}");

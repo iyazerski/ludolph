@@ -28,6 +28,8 @@ pub enum Session {
     New(String),
     /// The session in this file.
     Resume(PathBuf),
+    /// No session file at all, for a pi that only answers questions.
+    None,
 }
 
 /// How to start a pi process.
@@ -158,6 +160,7 @@ impl Pi {
         match &options.session {
             Session::New(id) => command.arg("--session-id").arg(id),
             Session::Resume(file) => command.arg("--session").arg(file),
+            Session::None => command.arg("--no-session"),
         };
         for extension in &options.extensions {
             command.arg("--extension").arg(extension);
