@@ -26,7 +26,7 @@ use crate::session::{Outcome, Summary};
 use crate::settings::Settings;
 use crate::skills::{self, Skill};
 use crate::title::Titler;
-use crate::transcript::{Page, Tail, Transcripts, Window};
+use crate::transcript::{self, Image, Page, Tail, ToolOutput, Transcripts, Window};
 use crate::turns::{Counts, Diff, Snapshot, Turns};
 use crate::watch::{Changes, Watcher};
 
@@ -419,6 +419,59 @@ impl Engine {
     /// loses the oldest ones.
     pub fn alerts(&self) -> broadcast::Receiver<Alert> {
         self.0.alerts.subscribe()
+    }
+
+    /// The details of tool call `call` in chat `id`: what it printed so far
+    /// while it runs, then its whole result.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat or call, or the file can't be read.
+    pub async fn tool_output(&self, id: &str, call: &str) -> Result<ToolOutput> {
+        let path = {
+            let state = self.state();
+            let chat = state.chats.get(id);
+            let running = chat.and_then(|chat| chat.process.as_ref());
+            if let Some(tool) = running.and_then(|r| r.live.tools().get(call)) {
+                return Ok(transcript::running_tool(tool));
+            }
+            file_of(&state.index, id, chat.and_then(|chat| chat.draft.as_ref()))
+        };
+        let path = path.with_context(|| format!("no chat {id}"))?;
+        let transcripts = self.0.transcripts.clone();
+        let call_id = call.to_owned();
+        let found = tokio::task::spawn_blocking(move || {
+            transcripts
+                .lock()
+                .expect("lock poisoned")
+                .tool(&path, &call_id)
+        })
+        .await??;
+        found.with_context(|| format!("no tool call {call} in chat {id}"))
+    }
+
+    /// The `index`th image of message `message` in chat `id`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if there's no such chat or image, or the file can't be read.
+    pub async fn image(&self, id: &str, message: &str, index: usize) -> Result<Image> {
+        let path = {
+            let state = self.state();
+            let draft = state.chats.get(id).and_then(|chat| chat.draft.as_ref());
+            file_of(&state.index, id, draft)
+        };
+        let path = path.with_context(|| format!("no chat {id}"))?;
+        let transcripts = self.0.transcripts.clone();
+        let entry = message.to_owned();
+        let found = tokio::task::spawn_blocking(move || {
+            transcripts
+                .lock()
+                .expect("lock poisoned")
+                .image(&path, &entry, index)
+        })
+        .await??;
+        found.with_context(|| format!("no image {index} in message {message}"))
     }
 
     /// A chat with the `window` of its transcript.

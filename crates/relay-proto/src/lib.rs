@@ -9,8 +9,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Bumped when a message changes shape; the relay refuses other versions.
-pub const PROTOCOL: u32 = 2;
+/// Bumped when a message or a tool's answer changes shape, since the relay
+/// serves the phone app the answers are for; it refuses other versions.
+pub const PROTOCOL: u32 = 3;
 
 /// The path the Mac connects to, with `Authorization: Bearer <token>`.
 pub const CONNECT_PATH: &str = "/connect";

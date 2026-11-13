@@ -15,7 +15,7 @@ use crate::engine::{
     ChatInfo, Composer, Config, Delivery, Dialog, Engine, Question, Reply, Status,
 };
 use crate::repo;
-use crate::transcript::{LATEST, Message, Role, Window};
+use crate::transcript::{LATEST, Message, Part, Role, Window};
 use crate::turns::Counts;
 
 /// Chats `list_chats` returns without a `limit`, and at most.
@@ -34,6 +34,8 @@ pub enum Tool {
     ListChatGroups,
     ListProjects,
     ChatView,
+    ToolOutput,
+    ChatImage,
     SendMessage,
     CreateChat,
     InterruptChat,
@@ -68,6 +70,8 @@ impl FromStr for Tool {
             "list_chat_groups" => Self::ListChatGroups,
             "list_projects" => Self::ListProjects,
             "chat_view" => Self::ChatView,
+            "tool_output" => Self::ToolOutput,
+            "chat_image" => Self::ChatImage,
             "send_message" => Self::SendMessage,
             "create_chat" => Self::CreateChat,
             "interrupt_chat" => Self::InterruptChat,
@@ -99,6 +103,17 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::ListChatGroups => list_chat_groups(engine, parse(args)?),
         Tool::ListProjects => Ok(list_projects(engine)),
         Tool::ChatView => chat_view(engine, parse(args)?).await,
+        Tool::ToolOutput => {
+            let args: ToolArgs = parse(args)?;
+            Ok(serde_json::to_value(
+                engine.tool_output(&args.chat, &args.call).await?,
+            )?)
+        }
+        Tool::ChatImage => {
+            let args: ImageArgs = parse(args)?;
+            let image = engine.image(&args.chat, &args.message, args.index).await?;
+            Ok(serde_json::to_value(image)?)
+        }
         Tool::SendMessage => send_message(engine, parse(args)?).await,
         Tool::CreateChat => create_chat(engine, parse(args)?).await,
         Tool::InterruptChat => interrupt_chat(engine, parse(args)?).await,
@@ -239,6 +254,10 @@ struct ViewArgs {
     /// With `from`, how many more to add before it, to load earlier ones.
     #[serde(default)]
     earlier: usize,
+    /// Include the model's thinking, often most of a page's bytes, which
+    /// the phone doesn't show.
+    #[serde(default)]
+    thinking: bool,
     /// The `version` the caller shows.
     known: Option<String>,
 }
@@ -257,7 +276,14 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
         Window::Latest(n) => format!("latest {n}"),
         Window::From { id, earlier } => format!("from {id} {earlier}"),
     };
-    let view = engine.view(&args.chat, window).await?;
+    let mut view = engine.view(&args.chat, window).await?;
+    if !args.thinking {
+        for message in &mut view.page.messages {
+            message
+                .parts
+                .retain(|part| !matches!(part, Part::Thinking { .. }));
+        }
+    }
     let version = format!(
         "{}|{}|{}|{shape}",
         view.page.leaf.as_deref().unwrap_or_default(),
@@ -318,6 +344,24 @@ fn turn_changes_of(messages: &[Message], runs: &BTreeMap<i64, Counts>) -> Vec<Va
         }));
     }
     out
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolArgs {
+    chat: String,
+    /// A tool part's `id`.
+    call: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageArgs {
+    chat: String,
+    /// The message's `id`.
+    message: String,
+    /// An image part's `index`.
+    index: usize,
 }
 
 #[derive(Deserialize)]

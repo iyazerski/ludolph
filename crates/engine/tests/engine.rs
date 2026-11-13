@@ -7,7 +7,7 @@ use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, Stat
 use ludolph_engine::relay::{self, Link};
 use ludolph_engine::server;
 use ludolph_engine::settings::{Notify, Settings};
-use ludolph_engine::transcript::{Part, Role, Window};
+use ludolph_engine::transcript::{Part, Role, ToolState, Window};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixStream};
@@ -129,13 +129,21 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
                 Role::Assistant,
                 vec![
                     text("Hello!"),
-                    Part::Tools {
-                        tools: vec!["exec: ls".into()]
+                    Part::Tool {
+                        id: "c1".into(),
+                        name: "bash".into(),
+                        subject: Some("ls".into()),
+                        state: ToolState::Done,
                     },
                     text("Done.")
                 ]
             ),
         ]
+    );
+    let output = engine.tool_output(&id, "c1").await.unwrap();
+    assert_eq!(
+        (output.text.as_str(), output.args["command"].as_str()),
+        ("a.txt", Some("ls"))
     );
 
     // The idle pi stops, and the next message resumes the session in a new one.
@@ -940,7 +948,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         .await
         .unwrap();
     assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
-    assert_eq!(from_mac(&mut socket).await["protocol"], 2);
+    assert_eq!(from_mac(&mut socket).await["protocol"], 3);
     // A Mac without a battery, like a CI machine, reports none.
     let power = from_mac(&mut socket).await;
     let battery = &power["battery"];

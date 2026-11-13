@@ -9,6 +9,7 @@ const ICONS = {
   "back": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M14.75 17.5 9.25 12 14.75 6.5\"/>"],
   "chevDown": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M17.5 9.25 12 14.75 6.5 9.25\"/>"],
   "chevRight": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M9.25 6.5 14.75 12 9.25 17.5\"/>"],
+  "image": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<rect x=\"4.75\" y=\"4.75\" width=\"14.5\" height=\"14.5\" rx=\"3\"/><circle cx=\"9.5\" cy=\"9.5\" r=\"1.5\"/><path d=\"m19.25 15.5-4-4-8.5 7.75\"/>"],
   "plus": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M12 5v14M5 12h14\"/>"],
   "diff": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M14.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7.5z\"/><path d=\"M14 3v5h5M12 10.5v5M9.5 13h5M9.5 18h5\"/>"],
   "more": ["0 0 24 24", "fill=\"none\"", "<g fill=\"currentColor\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"3.75\" cy=\"12\" r=\"1\"/><circle cx=\"12\" cy=\"12\" r=\"1\"/><circle cx=\"20.25\" cy=\"12\" r=\"1\"/></g>"],
@@ -532,7 +533,7 @@ function sheet(build) {
     setTimeout(() => { scrim.remove(); panel.remove(); }, 230);
     if (!fromHistory && history.state?.sheet) history.back();
   };
-  const fill = content => panel.replaceChildren(panel.firstChild, ...[content].flat());
+  const fill = content => panel.replaceChildren(panel.firstChild, ...[content].flat().filter(c => c != null && c !== false));
   fill(build(close, fill));
   root.append(scrim, panel);
   history.pushState({ sheet: true }, "");
@@ -804,24 +805,15 @@ function listView() {
 
 // ---- chat ---------------------------------------------------------------------
 
-/** Split a tool line ("exec: cargo test (running)") into its parts. */
-function parseTool(line) {
-  let state = "";
-  let text = line;
-  if (text.endsWith(" (running)")) { state = "run"; text = text.slice(0, -10); }
-  else if (text.endsWith(" (error)")) { state = "err"; text = text.slice(0, -8); }
-  const m = text.match(/^(exec|read|write|edit|patch|search|glob|fetch|web search|todo|mcp)(?::\s?([\s\S]*))?$/);
-  return { kind: m ? m[1] : "tool", arg: m ? m[2] || "" : text, state };
-}
-
-// How the desktop labels each call ("Run cargo test", "Tool codemode").
+// How the desktop labels each of pi's tools ("Run cargo test"); others show as "Tool <name>".
 const TOOL_VIEW = {
-  exec: ["Run", "terminal"], read: ["Read", "read"], write: ["Write", "edit"], edit: ["Edit", "edit"], patch: ["Patch", "edit"],
-  search: ["Search", "search"], glob: ["Glob", "search"], "web search": ["Web", "fetch"], fetch: ["Fetch", "fetch"],
-  todo: ["Todo", "todo"], mcp: ["MCP", "tool"], tool: ["Tool", "tool"],
+  bash: ["Run", "terminal"], read: ["Read", "read"], write: ["Write", "edit"], edit: ["Edit", "edit"],
+  grep: ["Search", "search"], find: ["Glob", "search"], ls: ["List", "read"],
 };
-/** The kinds whose subject is a file, shown by name on a badge. */
-const FILE_KINDS = new Set(["read", "write", "edit", "patch"]);
+/** The tools whose subject is a file, shown by name on a badge. */
+const FILE_TOOLS = new Set(["read", "write", "edit"]);
+/** A tool part's state as its row's class. */
+const STATE_CLASS = { running: "run", failed: "err", done: "" };
 const baseName = path => path.split(/[\\/]/).filter(Boolean).pop() || path;
 
 /** The colour file-type icon for `path`, chosen as rune-theme-opencode's `file_icons::file`. */
@@ -844,13 +836,13 @@ function toolSummary(tools) {
   let commands = 0, reads = 0, searches = 0, fetches = 0, todos = 0, other = 0, failed = 0;
   const edited = new Set();
   for (const t of tools) {
-    if (t.state === "err") failed++;
-    if (t.kind === "exec") commands++;
-    else if (t.kind === "write" || t.kind === "edit" || t.kind === "patch") edited.add(t.arg || "patch");
-    else if (t.kind === "read") reads++;
-    else if (t.kind === "search" || t.kind === "glob" || t.kind === "web search") searches++;
-    else if (t.kind === "fetch") fetches++;
-    else if (t.kind === "todo") todos++;
+    if (t.state === "failed") failed++;
+    if (t.name === "bash") commands++;
+    else if (t.name === "write" || t.name === "edit") edited.add(t.subject || t.id);
+    else if (t.name === "read") reads++;
+    else if (t.name === "grep" || t.name === "find" || t.name === "ls") searches++;
+    else if (/fetch/.test(t.name)) fetches++;
+    else if (/todo/.test(t.name)) todos++;
     else other++;
   }
   const parts = [];
@@ -866,21 +858,20 @@ function toolSummary(tools) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/** A run of consecutive tool calls, folded under the desktop's summary. */
-function toolGroup(lines, open, onToggle) {
-  const tools = lines.map(parseTool);
-  const live = tools.some(t => t.state === "run");
+/** A run of consecutive tool calls, folded under the desktop's summary; `onOpen(tool)` shows one's output. */
+function toolGroup(tools, open, onToggle, onOpen) {
+  const live = tools.some(t => t.state === "running");
   const block = h("div", { class: `tools${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { block.classList.toggle("open"); onToggle(block.classList.contains("open")); haptic(4); } },
     icon("chevDown", "chev"), h("span", { class: `sum${live ? " shimmer" : ""}` }, toolSummary(tools)));
   // One line per call, as the desktop's activity rows: icon, verb, then the
   // subject, or a file call's badge.
   const items = tools.map(t => {
-    const [verb, iconName] = TOOL_VIEW[t.kind] || TOOL_VIEW.tool;
-    const subject = FILE_KINDS.has(t.kind) && t.arg ? fileBadge(t.arg)
-      : h("span", { class: "arg" }, (t.kind === "mcp" ? t.arg.replace("/", " · ") : t.arg).replace(/\s+/g, " "));
-    return h("div", { class: `item ${t.state}` },
-      h("span", { class: "lead" }, t.state === "run" ? glyph("trail") : icon(iconName)),
+    const [verb, iconName] = TOOL_VIEW[t.name] || ["Tool", "tool"];
+    const arg = TOOL_VIEW[t.name] ? t.subject || "" : [t.name, t.subject].filter(Boolean).join(" · ");
+    const subject = FILE_TOOLS.has(t.name) && t.subject ? fileBadge(t.subject) : h("span", { class: "arg" }, arg.replace(/\s+/g, " "));
+    return h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, role: "button", onclick: () => onOpen(t) },
+      h("span", { class: "lead" }, t.state === "running" ? glyph("trail") : icon(iconName)),
       h("span", { class: "verb" }, verb), subject);
   });
   block.append(head, h("div", { class: "rail" }, items));
@@ -1254,23 +1245,69 @@ function chatView(machine, id, fromList) {
     ]);
   }
 
+  // A call's arguments and output, loaded when it's opened.
+  function openTool(t) {
+    haptic(4);
+    const [verb] = TOOL_VIEW[t.name] || ["Tool"];
+    const head = h("h2", {}, `${verb} ${t.subject || t.name}`.trim());
+    sheet((close, fill) => {
+      api("tool_output", { call: t.id }).then(out => {
+        const text = out.text || (out.running ? "No output yet." : "No output.");
+        fill([head, out.failed ? h("div", { class: "note danger" }, "Failed") : null,
+          h("div", { class: "code" }, h("pre", {}, h("code", {}, out.truncated ? `${text}\n…` : text))),
+          ...out.images.map(img => h("img", { class: "shot", src: `data:${img.mimeType};base64,${img.data}` }))]);
+      }, e => fill([head, h("div", { class: "note" }, e.message)]));
+      return [head, h("div", { class: "note" }, "Loading…")];
+    });
+  }
+
+  // A sent image, loaded when its chip is tapped.
+  function openImage(m, index) {
+    haptic(4);
+    const head = h("h2", {}, `Image ${index + 1}`);
+    sheet((close, fill) => {
+      api("chat_image", { message: m.id, index }).then(img => fill([head, h("img", { class: "shot", src: `data:${img.mimeType};base64,${img.data}` })]),
+        e => fill([head, h("div", { class: "note" }, e.message)]));
+      return [head, h("div", { class: "note" }, "Loading…")];
+    });
+  }
+
+  /** `parts` with each run of consecutive tool calls as one `{kind: "tools", tools, at}`, and thinking left out. */
+  function grouped(parts) {
+    const out = [];
+    parts.forEach((p, at) => {
+      if (p.kind === "thinking") return;
+      const last = out[out.length - 1];
+      if (p.kind === "tool" && last?.kind === "tools") last.tools.push(p);
+      else out.push(p.kind === "tool" ? { kind: "tools", tools: [p], at } : p);
+    });
+    return out;
+  }
+
+  function toolsBlock(m, g) {
+    const key = `${m.id}#${g.at}`;
+    return toolGroup(g.tools, openGroups.has(key), on => (on ? openGroups.add(key) : openGroups.delete(key)), openTool);
+  }
+
   function userBubble(m, isPending = false) {
+    const images = m.parts.filter(p => p.kind === "image");
+    const tools = grouped(m.parts).filter(p => p.kind === "tools");
     return h("div", { class: `msg user${isPending ? " pending new" : ""}` },
-      h("div", { class: "bubble" }, textOf(m)));
+      ...tools.map(g => toolsBlock(m, g)),
+      textOf(m) || images.length ? h("div", { class: "bubble" }, textOf(m),
+        images.length ? h("div", { class: "shots" }, images.map(p => h("button", { class: "chip", onclick: () => openImage(m, p.index) }, icon("image"), `Image ${p.index + 1}`))) : null) : null);
   }
 
   // Prose, tool groups, and errors in transcript order, as on the desktop.
   function assistantMessage(m, isLast) {
     const streaming = m.status === "streaming" || (isLast && isWorking());
-    const blocks = m.parts.map((p, i) => {
+    const parts = grouped(m.parts);
+    const blocks = parts.map((p, i) => {
       if (p.kind === "error") return h("div", { class: "errbox" }, p.error);
-      if (p.kind === "tools") {
-        const key = `${m.id}#${i}`;
-        return toolGroup(p.tools, openGroups.has(key), on => (on ? openGroups.add(key) : openGroups.delete(key)));
-      }
+      if (p.kind === "tools") return toolsBlock(m, p);
       const body = h("div", { class: "md", html: markdown(p.text) });
       // The caret trails the reply while it streams, not prose a tool followed.
-      if (streaming && i === m.parts.length - 1) {
+      if (streaming && i === parts.length - 1) {
         const lastBlock = body.lastElementChild;
         (lastBlock && !lastBlock.classList.contains("code") ? lastBlock : body).append(h("span", { class: "caret" }));
       }
@@ -1304,7 +1341,7 @@ function chatView(machine, id, fromList) {
     }
     // Drop optimistic bubbles once the transcript has the real message.
     pending = pending.filter(p => {
-      const landed = read.messages.some(m => m.role === "user" && splitFrom(textOf(m))[1].trim() === p.text);
+      const landed = read.messages.some(m => m.role === "user" && textOf(m).trim() === p.text);
       if (landed) p.el.remove();
       return !landed;
     });
@@ -1320,7 +1357,7 @@ function chatView(machine, id, fromList) {
   function drawWorking() {
     const last = read?.messages[read.messages.length - 1];
     const quiet = !last || last.role === "user"
-      || !last.parts.some(p => p.kind === "text" || (p.kind === "tools" && p.tools.some(t => t.endsWith("(running)"))));
+      || !last.parts.some(p => p.kind === "text" || (p.kind === "tool" && p.state === "running"));
     working.classList.toggle("hide", !(isWorking() && quiet));
     const lastUser = [...(read?.messages || [])].reverse().find(m => m.role === "user");
     // Epoch milliseconds.

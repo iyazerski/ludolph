@@ -306,6 +306,14 @@ a { color: inherit; text-decoration: none; }
 }
 @media (prefers-color-scheme: light) { .msg.user .bubble { box-shadow: 0 0 0 1px var(--hairline); } }
 .msg.user.pending { opacity: .6; }
+.msg.user .shots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.msg.user .shots:first-child { margin-top: 0; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+  border: 0; border-radius: 14px; background: var(--well); color: inherit; font: inherit; font-size: 13.5px;
+}
+.chip .i { width: 15px; height: 15px; }
+.tools .item[role=button] { cursor: pointer; }
 
 .msg.assistant { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .aborted { font-size: 13.5px; color: var(--tertiary); }
@@ -617,6 +625,9 @@ a { color: inherit; text-decoration: none; }
 .item-row.danger > .i { color: var(--danger); }
 .item-row:active { background: var(--control); }
 .note { font-size: 13px; color: var(--tertiary); margin: -6px 6px 14px; }
+.note.danger { color: var(--danger); }
+.sheet .code pre { max-height: 60vh; white-space: pre-wrap; overflow-wrap: anywhere; }
+.shot { display: block; max-width: 100%; border-radius: 12px; margin-top: 10px; }
 .sheet .field { margin-bottom: 12px; background: var(--control); border-color: transparent; }
 .command { font: 12.5px/1.5 var(--mono); background: var(--code-bg); border: 1px solid var(--code-border); border-radius: 12px; padding: 10px 12px; overflow-wrap: anywhere; margin-bottom: 10px; user-select: all; }
 
