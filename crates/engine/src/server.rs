@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -33,39 +33,6 @@ use crate::tools::{self, Tool};
 
 /// Records waiting to be written to one client.
 const OUT_QUEUE: usize = 64;
-
-/// The socket in the engine's folder.
-pub fn path(state_dir: &Path) -> PathBuf {
-    state_dir.join("engine.sock")
-}
-
-/// Call `tool` on the engine listening at `path`, and return its answer.
-/// The connection carries this one call, so the first line back answers it.
-///
-/// # Errors
-///
-/// Fails if no engine listens there, or the tool fails.
-pub async fn request(path: &Path, tool: &str, args: Value) -> Result<Value> {
-    let stream = UnixStream::connect(path).await.with_context(|| {
-        format!(
-            "no engine at {}: start it with ludolph install",
-            path.display()
-        )
-    })?;
-    let (read, mut write) = stream.into_split();
-    let mut line = serde_json::to_vec(&json!({"id": 1, "call": tool, "args": args}))?;
-    line.push(b'\n');
-    write.write_all(&line).await?;
-    let mut answer = Vec::new();
-    if BufReader::new(read).read_until(b'\n', &mut answer).await? == 0 {
-        bail!("the engine closed the connection");
-    }
-    let mut answer: Value = serde_json::from_slice(&answer)?;
-    if let Some(error) = answer["error"].as_str() {
-        bail!("{tool}: {error}");
-    }
-    Ok(answer["ok"].take())
-}
 
 /// Listen on `path`, readable and writable only by the user.
 ///

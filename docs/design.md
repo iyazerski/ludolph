@@ -88,7 +88,7 @@ A fork (`/fork`, `/clone`) copies entries, with their ids, into a new file. So a
 One row per session file, in two parts:
 
 - **Derived from the file**, and rebuilt from it at any time: path, session id, cwd, created time, title, last activity, a preview of the last user message, the last turn's outcome, the current leaf, and the byte offset the row was built up to.
-- **Ludolph's own**, which can't be rebuilt: the archive state (see [the chat list and archiving](#the-chat-list-and-archiving)) and a title imported from Zeron that isn't in pi's file yet.
+- **Ludolph's own**, which can't be rebuilt: the archive state (see [the chat list and archiving](#the-chat-list-and-archiving)).
 
 Since files are append-only, the engine parses only the bytes after the saved offset, and only complete lines. A partial last line waits for the next read. If a file got smaller or its header changed, the engine parses it again from the start. The parse streams line by line and keeps only the index fields, so a 45 MB file never sits in memory whole. On this Mac that's 270 files and 511 MB, so the first build reads everything once, and later builds read only what's new.
 
@@ -96,7 +96,7 @@ The engine watches the sessions folder with FSEvents, so it also sees sessions t
 
 ## Projects
 
-A project is a session's `cwd`, as is. Its name is the folder's name. Chats whose cwd is the home folder, a Ludolph scratch folder, or one of Zeron's (`~/.zeron/scratch`), go under **No project**, which is one group in the list.
+A project is a session's `cwd`, as is. Its name is the folder's name. Chats whose cwd is the home folder, or a Ludolph scratch folder, go under **No project**, which is one group in the list.
 
 A chat started without a project gets its own scratch folder, `~/Library/Application Support/Ludolph/scratch/<date>-<short id>`, the way Zeron does.
 
@@ -184,7 +184,7 @@ Titles and dictation cleanup use the **sidecar model** from Settings, or pi's de
 
 Renaming a chat by hand goes through the same `set_session_name`. The engine never replaces a title that a person or pi set. Calls that change one chat (title, rename, model) go through one queue per chat, so they can't overtake each other.
 
-Only 1 of the 270 sessions on this Mac has a `session_info` entry, because Zeron keeps its titles in its own database. See [migration](#migration-from-zeron).
+A session written without a name, by pi in a terminal or by another tool, gets a title the next time it runs in Ludolph. Until then, the list shows its first prompt.
 
 ## The chat list and archiving
 
@@ -254,11 +254,10 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | `polish_dictation` | The sidecar model through `pi -p` |
 | `list_harnesses` | pi alone, since the phone's picker still asks |
 | `take_over_chat` | Turns sending back on for a chat [another pi](#sessions-open-elsewhere) has open |
-| `open_zeron` | Removed. If the engine isn't running, the Mac is offline. |
 
-The socket also has `get_settings`, `set_settings` and `import_chats`, which the relay refuses: a relay mustn't change settings or rewrite titles.
+The socket also has `get_settings` and `set_settings`, which the relay refuses: a relay mustn't change settings.
 
-Changes to the phone app: remove the "start Zeron" action (the agent picker already hides itself with one harness), and replace Zeron's name in its text. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. It still shows Zeron's composer references and chat-to-chat headers, since chats started in Zeron keep them. The relay protocol is at version 2, which drops the `Engine` message: a linked Mac is a running engine.
+In the phone app, a Mac whose engine isn't running is offline, and the agent picker hides itself, since pi is the only harness. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 2, which drops the `Engine` message: a linked Mac is a running engine.
 
 ## App
 
@@ -293,7 +292,7 @@ The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, w
 
 - **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. The code is the relay's address and the Mac's token, as URL-safe base64 JSON (`relay-proto`'s `LinkCode`). Until there are settings, the phone shows `ludolph link <code>`, which checks the token with the relay, saves the link in `relay.json`, and restarts the installed engine so it connects.
 - **Battery:** the phone shows the Mac's battery. The engine reads it from IOKit when it connects, and again on each `com.apple.system.powersources` notification, about once a minute while charging or on battery. It sends it only when it changed, so nothing polls.
-- **Protocol 2:** the relay refuses other versions, so Zeron's Macs (protocol 1) stay on Zeron's relay, and Ludolph's engines on Ludolph's. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`, beside Zeron's until Zeron is removed.
+- **Protocol 2:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
 - **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Runs by another pi aren't watched, so they don't notify.
 - **Self-hosting:** `crates/relay/README.md` explains how to run the relay (container image and manifests) and how to create the setup link.
 
@@ -339,17 +338,16 @@ crates/
 src/main.rs     the `ludolph` binary: `engine`, the app, and `install`/`uninstall` for the launch agent
 ```
 
-## Migration from Zeron
+## Existing sessions
 
-- **Chats:** nothing to do. Zeron runs pi with session files under `~/.pi/agent/sessions`, so Ludolph's index finds them.
-- **Zeron's scratch folders:** chats Zeron started without a project ran in `~/.zeron/scratch/<date>-<id>`, and their sessions keep that cwd. They go under **No project**, as Ludolph's own scratch folders do.
-- **Moved chats:** when Zeron moved a chat to a project, it left a copy of the session file under the old folder, with the same session id. The index lists a session once, by the copy written last.
-- **Titles and archive state:** these live in Zeron's database. `ludolph import-zeron` runs once, while Zeron and the engine both run. It lists Zeron's chats over Zeron's loopback RPC (`WatchChats` on `ws://127.0.0.1:27654`, with the token in `~/.zeron/ipc-token`) and keeps the pi ones. Each chat's session is the `sessionId` of the `sessionStarted` event in its journal (`~/.zeron/profiles/*/journals/<chat id>.jsonl`, and each account's under `~/.zeron/orgs`). A chat whose journal is gone gets the only session that started in its folder within 120 seconds after it. Zeron starts pi at once: sessions named in journals started at most 20 s after their chat. On this Mac, journals match 238 of 273 pi chats and the fallback 29 more. Checked against the journal matches, the fallback was never wrong, and it skipped 29 it couldn't tell apart. The other 6 have no session left. (`~/.pi/agent/zeron-sessions/<hash>.json` doesn't help: its names aren't derived from the chat id.) The import sends the matches to the engine's `import_chats`, which writes them to Ludolph's part of the index only. It starts no pi, and running it again changes nothing. An imported title is shown until the chat's next run writes it to pi's file with `set_session_name`, without asking the sidecar model. If the import is skipped, the list shows each chat's first prompt until it runs again, and nothing is archived.
-- **Turn changes:** zeron-tools' saved turns (`~/.zeron/turn-snapshots` and its own store) aren't carried over.
+There's nothing to import. The first time the engine starts, it indexes every session under `~/.pi/agent/sessions`, whichever tool ran pi, and lists each by its `cwd`, title and activity. Nothing starts archived.
+
+- **Copies:** a session file copied under another folder keeps its session id. The index lists a session once, by the copy written last.
+- **Untitled sessions:** see [titles](#titles).
 
 ## Milestones
 
-1. **Engine:** the index, pi processes, status, titles, archiving, turn changes, the socket API, and the relay link. The phone works against it, and Zeron can be removed.
+1. **Engine:** the index, pi processes, status, titles, archiving, turn changes, the socket API, and the relay link. The phone works against it.
 2. **Quick window:** the Companion ported to the engine's socket, with the views moved into `ui`.
 3. **Main window:** the sidebar, Dock icon, and app bundle, signed like fettle.
 4. **Settings:** including linking a phone.

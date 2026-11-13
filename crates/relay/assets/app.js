@@ -97,9 +97,6 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-/** Zeron composer references (`[$commit](zeron-invoke:…)`, files, chats) as their labels: chats
- * started in Zeron keep them in their pi sessions. */
-const ZERON_REF = /\[([^\]]+)\]\(zeron-[a-z-]+:[^)\s]*\)/g;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const haptic = (ms = 8) => navigator.vibrate?.(ms);
 
@@ -373,7 +370,6 @@ function inline(text) {
   const codes = [];
   let s = text.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
   s = esc(s)
-    .replace(/\[([^\]]+)\]\(zeron-[a-z-]+:[^)\s]*\)/g, '<span class="ref">$1</span>')
     .replace(/\[([^\]]+)\]\(((?:https?:\/\/|#)[^)\s]*)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]*[^\s<).,;:!?])/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
@@ -843,7 +839,7 @@ function fileIcon(path) {
 const fileBadge = path => h("span", { class: "badge" }, h("span", { class: "well" }, fileIcon(path)), h("span", { class: "name" }, baseName(path)));
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-/** The desktop's group summary (zeron_proto::view::tool_group_summary). */
+/** A tool group's one-line summary, as the desktop words it. */
 function toolSummary(tools) {
   let commands = 0, reads = 0, searches = 0, fetches = 0, todos = 0, other = 0, failed = 0;
   const edited = new Set();
@@ -893,12 +889,6 @@ function toolGroup(lines, open, onToggle) {
 
 /** A message's prose: its text parts, joined as read_chat joins them. */
 const textOf = m => m.parts.filter(p => p.kind === "text").map(p => p.text).join("\n\n");
-
-/** Messages from another Zeron chat carry a routing header; show it as a label (chats from Zeron keep it). */
-function splitFrom(text) {
-  const m = text.match(/^\[Message from Zeron chat (.+?)\. Reply to it with the Zeron `send_message` tool, chat [^\]]+\]\n\n/);
-  return m ? [m[1], text.slice(m[0].length)] : [null, text];
-}
 
 /** The text a new chat was started with, shown in it until the transcript has it. */
 let handoff = null;
@@ -1263,18 +1253,8 @@ function chatView(machine, id, fromList) {
   }
 
   function userBubble(m, isPending = false) {
-    const [from, text] = splitFrom(textOf(m));
-    // Composer references become labels; the rest stays literal text.
-    const parts = [];
-    let last = 0;
-    for (const ref of text.matchAll(ZERON_REF)) {
-      parts.push(text.slice(last, ref.index), h("span", { class: "ref" }, ref[1]));
-      last = ref.index + ref[0].length;
-    }
-    parts.push(text.slice(last));
     return h("div", { class: `msg user${isPending ? " pending new" : ""}` },
-      from && h("div", { class: "from" }, `From chat ${from}`),
-      h("div", { class: "bubble" }, parts));
+      h("div", { class: "bubble" }, textOf(m)));
   }
 
   // Prose, tool groups, and errors in transcript order, as on the desktop.
