@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use ludolph_engine::engine::{ChatInfo, Config, Delivery, Engine, Status};
+use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, Status};
 use ludolph_engine::relay::{self, Link};
 use ludolph_engine::server;
 use ludolph_engine::settings::{Notify, Settings};
-use ludolph_engine::transcript::{Part, Role};
+use ludolph_engine::transcript::{Part, Role, Window};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixStream};
@@ -37,7 +37,9 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         grace: Duration::from_secs(2),
         home: dir.to_owned(),
     };
-    Engine::start(config).await.unwrap()
+    Engine::start(config)
+        .await
+        .unwrap_or_else(|e| panic!("{e:?}"))
 }
 
 /// Wait until the chat list passes `check`.
@@ -111,7 +113,7 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
     })
     .await;
     assert_eq!(chats.len(), 1, "the draft became the session file's row");
-    let view = engine.view(&id, 40).await.unwrap();
+    let view = engine.view(&id, Window::Latest(40)).await.unwrap();
     let shown: Vec<(Role, Vec<Part>)> = view
         .page
         .messages
@@ -191,7 +193,15 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
         .await
         .expect("the chat never changed")
         .unwrap();
-    assert_eq!(engine.view("s1", 40).await.unwrap().page.total, 2);
+    assert_eq!(
+        engine
+            .view("s1", Window::Latest(40))
+            .await
+            .unwrap()
+            .page
+            .total,
+        2
+    );
 
     // Sending waits for a take-over, and the chat's own prompts don't count
     // as another pi's.
@@ -225,7 +235,7 @@ async fn tool(engine: &Engine, tool: &str, args: Value) -> anyhow::Result<Value>
 /// The text of the chat's last message, once it's settled.
 async fn last_reply(engine: &Engine, id: &str) -> String {
     until(engine, |c| c[0].status == Status::Idle).await;
-    let view = engine.view(id, 40).await.unwrap();
+    let view = engine.view(id, Window::Latest(40)).await.unwrap();
     let parts = &view.page.messages.last().unwrap().parts;
     match parts.last().unwrap() {
         Part::Text { text } => text.clone(),
@@ -686,7 +696,20 @@ async fn a_pi_that_dies_mid_run_leaves_the_chat_interrupted() {
         c[0].status == Status::Idle && last_prompt(&c[0]) == Some("retry")
     })
     .await;
+
+    // A run cut short by a restart shows so after it, with no notice, since
+    // the engine was stopped on purpose.
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    let mut alerts = engine.alerts();
     engine.shutdown().await.unwrap();
+    while let Ok(alert) = alerts.try_recv() {
+        assert_ne!(alert.kind, AlertKind::Interrupted);
+    }
+    drop(engine);
+    let restarted = self::engine(dir.path(), Duration::from_secs(60)).await;
+    until(&restarted, |c| c[0].status == Status::Interrupted).await;
+    restarted.shutdown().await.unwrap();
 }
 
 /// Read records from the socket until those read so far pass `check`.
@@ -746,6 +769,18 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     .await;
     assert!(seen.contains(&json!({"id": 1, "ok": null})));
     assert!(seen.contains(&json!({"id": 3, "error": "no tool nope"})));
+
+    // A line past the limit is refused, and the connection ends.
+    let (huge_read, mut huge_write) = UnixStream::connect(&socket).await.unwrap().into_split();
+    let huge = vec![b'x'; usize::try_from(server::MAX_LINE).unwrap() + 1];
+    let writing = tokio::spawn(async move { huge_write.write_all(&huge).await });
+    let mut huge_read = BufReader::new(huge_read);
+    let mut refused = String::new();
+    huge_read.read_line(&mut refused).await.unwrap();
+    assert!(refused.contains("a request longer than"), "{refused}");
+    refused.clear();
+    assert_eq!(huge_read.read_line(&mut refused).await.unwrap(), 0);
+    let _ = writing.await;
     let created = seen.iter().find(|r| r["id"] == 2).unwrap().clone();
     assert_eq!(created["ok"]["sent"]["delivery"], "run", "{created}");
     assert_eq!(
@@ -877,6 +912,13 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         tcp.write_all(refusal).await.unwrap();
     });
     let token = "t0ken".to_owned();
+    // Without TLS, the token only goes to a relay on this Mac.
+    let plain = Link {
+        relay: "http://relay.example.com".into(),
+        token: token.clone(),
+    };
+    let plain = relay::verify(&plain).await.unwrap_err();
+    assert!(format!("{plain:#}").contains("https://"), "{plain:#}");
     let refused = relay::verify(&Link {
         relay,
         token: token.clone(),

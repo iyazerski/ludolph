@@ -26,6 +26,11 @@ pub struct Index {
     /// changes.
     #[serde(default)]
     archived: BTreeMap<String, DateTime<Utc>>,
+    /// Chats whose run the engine cut short, by session id, with their last
+    /// activity then; newer activity ends it, as with `archived`. The file
+    /// can't tell: pi writes the same abort for a stop and a shutdown.
+    #[serde(default)]
+    interrupted: BTreeMap<String, DateTime<Utc>>,
     /// Each session id's file. A session can have copies under other
     /// folders, as a tool that moves chats between folders can leave; the most recently
     /// written one is the chat.
@@ -171,15 +176,14 @@ impl Index {
         let Some((path, summary)) = best else {
             self.ids.remove(id);
             self.archived.remove(id);
+            self.interrupted.remove(id);
             return;
         };
-        if self
-            .archived
-            .get(id)
-            .is_some_and(|&at| summary.activity() > at)
-        {
-            self.archived.remove(id);
-        }
+        let activity = summary.activity();
+        self.archived
+            .retain(|chat, at| chat != id || activity <= *at);
+        self.interrupted
+            .retain(|chat, at| chat != id || activity <= *at);
         self.ids.insert(id.to_owned(), path.clone());
     }
 
@@ -224,6 +228,21 @@ impl Index {
         };
         let at = summary.activity();
         self.archived.insert(id.to_owned(), at) != Some(at)
+    }
+
+    /// Whether the engine cut chat `id`'s run short, and it has had no
+    /// activity since.
+    pub fn is_interrupted(&self, id: &str) -> bool {
+        self.interrupted.contains_key(id)
+    }
+
+    /// Mark chat `id`'s run as cut short, as of its last activity. A chat pi
+    /// hasn't written has no run to resume.
+    pub fn set_interrupted(&mut self, id: &str) {
+        if let Some((_, summary)) = self.find(id) {
+            let at = summary.activity();
+            self.interrupted.insert(id.to_owned(), at);
+        }
     }
 
     /// The number of session files.

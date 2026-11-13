@@ -907,7 +907,7 @@ function chatView(machine, id, fromList) {
     h("button", { class: "circle", "aria-label": "Back", onclick: () => { haptic(5); fromList ? history.back() : go("#/"); } }, icon("back")),
     h("div", { class: "grow" }, titleEl, subEl),
     isDraft ? h("div", { class: "circle" }) : h("button", { class: "circle", "aria-label": "More", onclick: () => menu() }, icon("more"))));
-  const older = h("button", { class: "older hide", onclick: () => { limit += 40; keepAnchor = true; poll.now(); } }, "Load earlier messages");
+  const older = h("button", { class: "older hide", onclick: () => { earlier = 40; keepAnchor = true; poll.now(); } }, "Load earlier messages");
   const started = !isDraft && handoff?.chat === id ? handoff.text : null;
   if (started) handoff = null;
   const msgs = h("div", { class: `msgs${isDraft ? " blank" : ""}` }, older,
@@ -956,7 +956,9 @@ function chatView(machine, id, fromList) {
   const dockSize = new ResizeObserver(() => el.style.setProperty("--dock", `${dock.offsetHeight}px`));
   dockSize.observe(dock);
 
-  let chat = null, read = null, limit = 40, version = "", keepAnchor = false, pending = [];
+  // Once earlier messages are loaded, the page runs from its first message (`from`) to the end,
+  // so new ones don't push the loaded ones out.
+  let chat = null, read = null, from = null, earlier = 0, version = "", keepAnchor = false, pending = [];
   // The composer's branch, context, and model (composer_info): re-read when the chat
   // moves, at most every few seconds.
   let info = null, infoFor = "", infoAt = 0;
@@ -1616,7 +1618,7 @@ function chatView(machine, id, fromList) {
   async function refresh() {
     let view;
     try {
-      view = await api("chat_view", { limit, known: version });
+      view = await api("chat_view", from || earlier ? { from: from ?? read?.messages[0]?.id, earlier, known: version } : { known: version });
     } catch (e) {
       // Show why the Mac can't answer instead of a stale page.
       const name = machineName(machine);
@@ -1633,6 +1635,7 @@ function chatView(machine, id, fromList) {
     if (view.version !== infoFor && Date.now() - infoAt > 8000) { infoFor = view.version; loadInfo(); }
     if (!view.read) return;
     read = view.read;
+    if (earlier) { from = read.messages[0]?.id ?? from; earlier = 0; }
     drawMessages();
     // Only once the messages are shown, so a failed poll retries them.
     version = view.version;

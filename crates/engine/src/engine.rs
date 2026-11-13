@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
@@ -26,7 +26,7 @@ use crate::session::{Outcome, Summary};
 use crate::settings::Settings;
 use crate::skills::{self, Skill};
 use crate::title::Titler;
-use crate::transcript::{Page, Tail, Transcripts};
+use crate::transcript::{Page, Tail, Transcripts, Window};
 use crate::turns::{Counts, Diff, Snapshot, Turns};
 use crate::watch::{Changes, Watcher};
 
@@ -111,6 +111,9 @@ struct State {
     index: Index,
     runtime: Runtime,
     chats: HashMap<String, Chat>,
+    /// The engine is shutting down, so the runs it stops aren't news to
+    /// tell anyone about.
+    stopping: bool,
 }
 
 /// What the engine knows about a chat beyond its session file.
@@ -121,8 +124,9 @@ struct Chat {
     /// A new chat whose session file pi hasn't written yet.
     draft: Option<Draft>,
     process: Option<Running>,
-    /// pi or the engine stopped during the last run.
-    interrupted: bool,
+    /// Bumped by every stop, so a send that started before one doesn't go
+    /// out after it.
+    stops: u64,
     /// The `timestamp`s of the user messages the chat's own pi reported.
     sent: VecDeque<i64>,
     /// Another pi wrote a prompt to the session, so sending waits for a
@@ -146,7 +150,7 @@ impl Default for Chat {
             ops: Arc::default(),
             draft: None,
             process: None,
-            interrupted: false,
+            stops: 0,
             sent: VecDeque::new(),
             elsewhere: false,
             named: None,
@@ -355,24 +359,18 @@ impl Engine {
                 Index::default()
             });
             index.refresh(&sessions_dir)?;
+            for id in &interrupted {
+                index.set_interrupted(id);
+            }
             index.save(&index_path)?;
             Ok(index)
         })
         .await??;
-        let chats = interrupted
-            .into_iter()
-            .map(|id| {
-                let chat = Chat {
-                    interrupted: true,
-                    ..Chat::default()
-                };
-                (id, chat)
-            })
-            .collect();
         let state = State {
             index,
             runtime,
-            chats,
+            chats: HashMap::new(),
+            stopping: false,
         };
         let settings = Settings::load(&config.state_dir)?;
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
@@ -423,12 +421,12 @@ impl Engine {
         self.0.alerts.subscribe()
     }
 
-    /// A chat with the last `limit` messages of its transcript.
+    /// A chat with the `window` of its transcript.
     ///
     /// # Errors
     ///
     /// Fails if there's no such chat, or its session file can't be read.
-    pub async fn view(&self, id: &str, limit: usize) -> Result<View> {
+    pub async fn view(&self, id: &str, window: Window) -> Result<View> {
         let (chat, path, messages, streaming, revision, question) = {
             let state = self.state();
             let chat = state.chats.get(id);
@@ -460,7 +458,7 @@ impl Engine {
                 streaming: streaming.as_ref(),
             };
             let mut transcripts = transcripts.lock().expect("lock poisoned");
-            transcripts.page(path.as_deref().filter(|p| p.exists()), tail, limit)
+            transcripts.page(path.as_deref().filter(|p| p.exists()), tail, &window)
         })
         .await??;
         Ok(View {
@@ -542,6 +540,7 @@ impl Engine {
     /// message.
     pub async fn send(&self, id: &str, text: &str, images: Vec<Value>) -> Result<Delivery> {
         let ops = self.ops(id)?;
+        let stops = self.stops(id);
         let _ops = ops.lock().await;
         self.refuse_elsewhere(id)?;
         let pi = self.process(id)?;
@@ -568,7 +567,6 @@ impl Engine {
                 .chats
                 .get_mut(id)
                 .expect("a chat with a process is known");
-            chat.interrupted = false;
             if let Some(before) = before {
                 chat.run = Some(Run {
                     before,
@@ -578,7 +576,13 @@ impl Engine {
             }
         }
         let settled = self.live_of(id, &pi, |live| live.settled());
-        let delivery = self.prompt(&pi, &skills::to_front(text), images).await;
+        // Stop can come while pi starts or the tree is taken, before there's
+        // a run to abort.
+        let delivery = if self.stops(id) == stops {
+            self.prompt(&pi, &skills::to_front(text), images).await
+        } else {
+            Err(anyhow!("stopped before it was sent"))
+        };
         if let (Ok(Delivery::Started), Some(settled)) = (&delivery, settled)
             && self.live_of(id, &pi, |live| live.started(settled)) == Some(true)
         {
@@ -1007,10 +1011,11 @@ impl Engine {
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let (pi, questions) = {
             let mut state = self.state();
-            let running = state
-                .chats
-                .get_mut(id)
-                .and_then(|chat| chat.process.as_mut());
+            let chat = state.chats.get_mut(id);
+            let running = chat.and_then(|chat| {
+                chat.stops += 1;
+                chat.process.as_mut()
+            });
             match running {
                 Some(running) => (running.pi.clone(), std::mem::take(&mut running.questions)),
                 None => return Ok(()),
@@ -1037,13 +1042,16 @@ impl Engine {
     /// Fails if the index can't be saved.
     pub async fn shutdown(&self) -> Result<()> {
         self.0.watching.abort();
-        let processes: Vec<Arc<Pi>> = {
-            let state = self.state();
+        let (processes, working): (Vec<Arc<Pi>>, Vec<String>) = {
+            let mut state = self.state();
+            state.stopping = true;
             let running = state
                 .chats
-                .values()
-                .filter_map(|chat| chat.process.as_ref());
-            running.map(|running| running.pi.clone()).collect()
+                .iter()
+                .filter_map(|(id, chat)| Some((id, chat.process.as_ref()?)));
+            let working = running.clone().filter(|(_, r)| r.live.working());
+            let working = working.map(|(id, _)| id.clone()).collect();
+            (running.map(|(_, r)| r.pi.clone()).collect(), working)
         };
         let grace = self.0.config.grace;
         let stops: Vec<_> = processes
@@ -1053,6 +1061,18 @@ impl Engine {
         for stop in stops {
             if let Err(e) = stop.await? {
                 eprintln!("stopping pi: {e:#}");
+            }
+        }
+        // Marked after pi's last write, its abort, which would end the mark.
+        {
+            let mut state = self.state();
+            let State { index, chats, .. } = &mut *state;
+            for id in working {
+                let draft = chats.get(&id).and_then(|chat| chat.draft.as_ref());
+                if let Some(path) = file_of(index, &id, draft) {
+                    index.refresh_file(&path)?;
+                }
+                index.set_interrupted(&id);
             }
         }
         self.save_index()
@@ -1079,6 +1099,11 @@ impl Engine {
         Ok(state.chats.entry(id.to_owned()).or_default().ops.clone())
     }
 
+    /// How many times chat `id` was stopped.
+    fn stops(&self, id: &str) -> u64 {
+        self.state().chats.get(id).map_or(0, |chat| chat.stops)
+    }
+
     /// The chat's pi, started if it has none. Callers hold the chat's `ops`.
     fn process(&self, id: &str) -> Result<Arc<Pi>> {
         let mut state = self.state();
@@ -1086,10 +1111,15 @@ impl Engine {
             index,
             runtime,
             chats,
+            stopping,
         } = &mut *state;
         let chat = chats.get_mut(id).expect("callers look the chat up first");
         if let Some(running) = &chat.process {
             return Ok(running.pi.clone());
+        }
+        // Shutdown stops the processes it saw, so a later one would outlive it.
+        if *stopping {
+            bail!("the engine is shutting down");
         }
         let (cwd, session) = match (index.find(id), &chat.draft) {
             (Some((path, summary)), _) => (summary.cwd.clone(), Session::Resume(path.to_owned())),
@@ -1163,6 +1193,7 @@ impl Engine {
             index,
             runtime,
             chats,
+            ..
         } = &mut *state;
         let Some(chat) = chats.get_mut(id) else {
             return Ok(());
@@ -1319,14 +1350,15 @@ impl Engine {
         Ok(())
     }
 
-    /// Forget `pi` as its chat's process, if it still is, and remember a run
-    /// it cut short.
+    /// Forget `pi` as its chat's process, if it still is, and tell about a
+    /// run it cut short.
     fn detach(&self, id: &str, pi: &Arc<Pi>) -> Result<()> {
         let mut state = self.state();
         let State {
             index,
             runtime,
             chats,
+            stopping,
         } = &mut *state;
         runtime.remove(id, pi.pid())?;
         let Some(chat) = chats.get_mut(id) else {
@@ -1340,6 +1372,9 @@ impl Engine {
         if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
             index.refresh_file(&path)?;
         }
+        if running.live.working() {
+            index.set_interrupted(id);
+        }
         // A draft pi never wrote, whose pi stopped idle, has nothing to show
         // or resume. One cut off mid-run stays, so its message can be sent
         // again.
@@ -1347,13 +1382,10 @@ impl Engine {
         let dropped = !running.live.working() && chat.draft.take_if(|d| unwritten(d)).is_some();
         // An idle pi leaves nothing a viewer sees but its questions; a
         // working one leaves the chat interrupted.
-        if running.live.working() {
-            chat.interrupted = true;
-        }
         if dropped || running.live.working() || !running.questions.is_empty() {
             chat.changed();
         }
-        let interrupted = running.live.working();
+        let interrupted = running.live.working() && !*stopping;
         drop(state);
         if interrupted {
             self.alert(id, AlertKind::Interrupted);
@@ -1572,7 +1604,7 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
         id: summary.id.clone(),
         cwd: summary.cwd.clone(),
         created: summary.created,
-        status: status(chat, Some(summary)),
+        status: status(chat, Some(summary), state.index.is_interrupted(&summary.id)),
         title: summary
             .title
             .clone()
@@ -1593,15 +1625,16 @@ fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
         created: draft.created,
         summary: None,
         title: chat.named.clone(),
-        status: status(Some(chat), None),
+        status: status(Some(chat), None, false),
         elsewhere: chat.elsewhere,
         archived: false,
     })
 }
 
-/// What a chat is doing, from its process if it has one, else from how its
-/// last run ended in the file.
-fn status(chat: Option<&Chat>, summary: Option<&Summary>) -> Status {
+/// What a chat is doing, from its process if it has one, else from whether
+/// the engine cut its run short, else from how its last run ended in the
+/// file.
+fn status(chat: Option<&Chat>, summary: Option<&Summary>, interrupted: bool) -> Status {
     if let Some(running) = chat.and_then(|chat| chat.process.as_ref()) {
         let live = &running.live;
         if !running.questions.is_empty() {
@@ -1614,7 +1647,7 @@ fn status(chat: Option<&Chat>, summary: Option<&Summary>) -> Status {
             return Status::Failed;
         }
     }
-    if chat.is_some_and(|chat| chat.interrupted) {
+    if interrupted {
         return Status::Interrupted;
     }
     match summary.and_then(|summary| summary.outcome) {

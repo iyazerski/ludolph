@@ -1,7 +1,9 @@
 use std::io::Write;
 use std::path::Path;
 
-use ludolph_engine::transcript::{Message, MessageStatus, Page, Part, Role, Tail, Transcripts};
+use ludolph_engine::transcript::{
+    Message, MessageStatus, Page, Part, Role, Tail, Transcripts, Window,
+};
 use serde_json::{Value, json};
 
 const HEADER: &str = r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-05-01T10:00:00.000Z","cwd":"/tmp"}"#;
@@ -130,7 +132,9 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
     writeln!(file, "{cut}").unwrap();
 
     let mut transcripts = Transcripts::default();
-    let page = transcripts.page(Some(&path), Tail::default(), 40).unwrap();
+    let page = transcripts
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
     assert_eq!(
         shown(&page),
         [
@@ -174,9 +178,33 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
 
     // A page has the last messages, and what pi appends shows next time.
     append(&path, &[message("u3", Some("a3"), user("next", 11))]);
-    let page = transcripts.page(Some(&path), Tail::default(), 2).unwrap();
+    let page = transcripts
+        .page(Some(&path), Tail::default(), &Window::Latest(2))
+        .unwrap();
     assert_eq!((page.total, page.older()), (7, 5));
     assert_eq!(shown(&page)[1].2, [text("next")]);
+
+    // Anchored on a message, a page keeps it as more come, and can reach
+    // back from it.
+    let from = |id: &str, earlier| Window::From {
+        id: id.into(),
+        earlier,
+    };
+    append(&path, &[message("u4", Some("u3"), user("more", 12))]);
+    let page = transcripts
+        .page(Some(&path), Tail::default(), &from("u3", 0))
+        .unwrap();
+    let ids: Vec<&str> = page.messages.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!((ids, page.older()), (vec!["u3", "u4"], 6));
+    let page = transcripts
+        .page(Some(&path), Tail::default(), &from("u3", 2))
+        .unwrap();
+    assert_eq!((page.messages.len(), page.older()), (4, 4));
+    // An anchor that's gone gives the latest page.
+    let page = transcripts
+        .page(Some(&path), Tail::default(), &from("nope", 2))
+        .unwrap();
+    assert_eq!((page.messages.len(), page.older()), (8, 0));
 }
 
 #[test]
@@ -203,7 +231,9 @@ fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
     };
 
     let mut transcripts = Transcripts::default();
-    let page = transcripts.page(Some(&path), tail, 40).unwrap();
+    let page = transcripts
+        .page(Some(&path), tail, &Window::Latest(40))
+        .unwrap();
     assert_eq!(
         shown(&page),
         [
@@ -218,7 +248,7 @@ fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
     assert_eq!(page.messages[1].id, "a1");
 
     // A new chat has only its tail.
-    let page = transcripts.page(None, tail, 40).unwrap();
+    let page = transcripts.page(None, tail, &Window::Latest(40)).unwrap();
     assert_eq!(page.messages.len(), 2);
     assert_eq!(page.messages[0].id, "live-0");
 }

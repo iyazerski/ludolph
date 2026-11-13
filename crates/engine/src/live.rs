@@ -153,8 +153,19 @@ impl Live {
             Event::MessageEnd { message } => {
                 if message["role"] == "assistant" {
                     self.streaming = None;
+                    // A retry clears it; one that gives up sets its own.
+                    match message["stopReason"].as_str() {
+                        Some("error") => {
+                            let error = message["errorMessage"].as_str();
+                            self.failure = Some(error.unwrap_or("the request failed").into());
+                        }
+                        Some("length") => {
+                            self.failure = Some("The reply hit the model's length limit.".into());
+                        }
+                        _ => {}
+                    }
                 }
-                self.messages.push(message.clone());
+                self.messages.push(slim(message));
             }
             Event::ToolExecutionStart {
                 tool_call_id,
@@ -190,6 +201,7 @@ impl Live {
                 max_attempts,
                 error_message,
             } => {
+                self.failure = None;
                 self.retry = Some(Retry {
                     attempt: *attempt,
                     max_attempts: *max_attempts,
@@ -252,9 +264,26 @@ fn update_block(message: &mut Value, update: &Value) -> bool {
     true
 }
 
-/// Append an update's `delta` to a block's text field.
+/// Append an update's `delta` to a block's text field, in place, so a long
+/// reply isn't copied on every token.
 fn append(block: &mut Value, field: &str, update: &Value) {
     let delta = update["delta"].as_str().unwrap_or_default();
-    let text = block[field].as_str().unwrap_or_default();
-    block[field] = Value::String(format!("{text}{delta}"));
+    match block.get_mut(field) {
+        Some(Value::String(text)) => text.push_str(delta),
+        _ => block[field] = Value::String(delta.to_owned()),
+    }
+}
+
+/// A finished message without what no view shows: a tool's output and an
+/// image's data, which can be megabytes and stay until the run settles.
+fn slim(message: &Value) -> Value {
+    let mut message = message.clone();
+    if message["role"] == "toolResult" {
+        message["content"] = json!([]);
+    } else if let Some(content) = message["content"].as_array_mut() {
+        for block in content.iter_mut().filter(|b| b["type"] == "image") {
+            *block = json!({"type": "image"});
+        }
+    }
+    message
 }

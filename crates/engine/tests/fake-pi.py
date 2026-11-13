@@ -238,6 +238,13 @@ def ask(briefly):
                 picked = "cancelled" if command.get("cancelled") else command["value"]
                 break
             respond(command)
+        else:
+            # Input ended: pi aborts the run on its way out, as for a stop.
+            aborted = {"role": "assistant", "content": [], "stopReason": "aborted", "timestamp": now()}
+            emit({"type": "message_end", "message": aborted})
+            write(aborted)
+            emit({"type": "agent_settled", "aborted": True})
+            sys.exit(0)
     done = {"role": "assistant", "content": [{"type": "text", "text": f"You picked {picked}."}],
             "stopReason": "stop", "timestamp": now()}
     emit({"type": "message_end", "message": done})
@@ -290,7 +297,7 @@ def main():
         elif kind == "prompt":
             prompt(command)
         elif kind == "spawn_child":
-            respond(command, {"pid": subprocess.Popen(["sleep", "60"]).pid})
+            respond(command, {"pid": subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL).pid})
         elif kind in ("abort", "clear_queue"):
             respond(command)
         elif kind == "exit":
