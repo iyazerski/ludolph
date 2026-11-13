@@ -34,7 +34,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::engine::Engine;
-use crate::feed::Feed;
+use crate::feed::{self, Feed};
 use crate::tools::{self, Tool};
 
 /// The shortest time between two frames of a chat's feed: a streaming
@@ -225,42 +225,20 @@ fn subscription(
             let args: ChatArgs = serde_json::from_value(args).context("invalid arguments")?;
             let changes = engine.subscribe_chat(&args.chat)?;
             let feed = Feed::new(engine.clone(), args.chat.clone(), args.thinking);
-            Ok(Box::pin(follow(changes, feed, args.chat, out)))
+            let chat = args.chat;
+            Ok(Box::pin(feed::follow(
+                changes,
+                feed,
+                FRAME,
+                move |mut frame| {
+                    frame["event"] = json!("chat");
+                    frame["chatId"] = json!(chat);
+                    let out = out.clone();
+                    async move { out.send(frame).await.is_ok() }
+                },
+            )))
         }
         _ => bail!("no subscription {topic}"),
-    }
-}
-
-/// Push `feed`'s frames for chat `chat`: one now, then one whenever the
-/// chat changes, at most one per [`FRAME`], until the client leaves.
-async fn follow(
-    mut changes: watch::Receiver<u64>,
-    mut feed: Feed,
-    chat: String,
-    out: mpsc::Sender<Value>,
-) {
-    loop {
-        changes.mark_unchanged();
-        let record = match feed.frame().await {
-            Ok(mut frame) => {
-                frame["event"] = json!("chat");
-                frame["chatId"] = json!(chat);
-                frame
-            }
-            Err(e) => {
-                let _ = out
-                    .send(json!({"event": "chat", "chatId": chat, "error": format!("{e:#}")}))
-                    .await;
-                return;
-            }
-        };
-        if out.send(record).await.is_err() {
-            return;
-        }
-        tokio::time::sleep(FRAME).await;
-        if changes.changed().await.is_err() {
-            return;
-        }
     }
 }
 

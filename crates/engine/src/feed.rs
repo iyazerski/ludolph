@@ -3,13 +3,44 @@
 //! without reading the page again.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{Value, json};
+use tokio::sync::watch;
 
 use crate::engine::{Engine, Status};
 use crate::tools::{pending_input, summary, turn_changes_of};
 use crate::transcript::{LATEST, Message, Part, Window};
+
+/// Push `feed`'s frames with `send`: one now, then one whenever `changes`
+/// says the chat changed, at most one per `every`, until `send` returns
+/// `false`. A chat that can't be read any more gets a last frame,
+/// `{"error": …}`. Changes that come in between merge into the next frame.
+pub async fn follow<F: Future<Output = bool>>(
+    mut changes: watch::Receiver<u64>,
+    mut feed: Feed,
+    every: Duration,
+    mut send: impl FnMut(Value) -> F,
+) {
+    loop {
+        changes.mark_unchanged();
+        let frame = match feed.frame().await {
+            Ok(frame) => frame,
+            Err(e) => {
+                send(json!({"error": format!("{e:#}")})).await;
+                return;
+            }
+        };
+        if !send(frame).await {
+            return;
+        }
+        tokio::time::sleep(every).await;
+        if changes.changed().await.is_err() {
+            return;
+        }
+    }
+}
 
 /// Follows one chat, keeping what its subscriber was last sent.
 pub struct Feed {
@@ -66,6 +97,7 @@ impl Feed {
         if reset {
             self.sent.clear();
         }
+        let older = view.page.older();
         let messages = std::mem::take(&mut view.page.messages);
         let messages: Vec<Message> = messages
             .into_iter()
@@ -95,7 +127,7 @@ impl Feed {
             "pendingInput": view.question.as_ref().map(pending_input),
             "turnChanges": turn_changes,
             "total": view.page.total,
-            "olderRemaining": view.page.older(),
+            "olderRemaining": older,
             "ids": ids,
             "messages": changed,
         });

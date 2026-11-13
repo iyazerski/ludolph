@@ -269,7 +269,9 @@ The app and the phone call the same tools:
 
 The socket also has `get_settings` and `set_settings`, which the relay refuses: a relay mustn't change settings.
 
-In the phone app, a Mac whose engine isn't running is offline. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 4. Version 2 dropped the `Engine` message, since a linked Mac is a running engine, version 3 changed messages' parts, and version 4 dropped harnesses and took pi's dialog shape.
+In the phone app, a Mac whose engine isn't running is offline. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 5. Version 2 dropped the `Engine` message, since a linked Mac is a running engine, version 3 changed messages' parts, version 4 dropped harnesses and took pi's dialog shape, and version 5 added watches.
+
+An open chat streams to the phone rather than being polled. The phone opens `GET /api/watch/{machine}/{chat}`, a server-sent event stream, and the relay asks the Mac to `watch` the chat. The Mac pushes the chat's feed (see [Live view and the file](#live-view-and-the-file)) as `frame`s, at most one per 200 ms, since each goes over the network. Each frame becomes one event. When the phone leaves, the relay sends `unwatch`, and a frame for a watch nobody holds gets another. A phone that falls 32 frames behind loses its stream rather than a frame, since a skipped frame would leave its page wrong. The stream also ends when the Mac's link does. The phone connects again, and the first frame resets its page. The phone closes the stream while it's hidden and drops one that sent nothing for 40 s; the relay sends a keep-alive every 15 s. Earlier messages still come from `chat_view`. The service worker leaves `/api/` alone, since a stream never ends.
 
 ## App
 

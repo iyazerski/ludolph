@@ -19,7 +19,8 @@ self.addEventListener("activate", event => {
 // Network first: the relay serves the newest app; the cache covers it being away.
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
-  if (event.request.method !== "GET" || url.origin !== location.origin || url.pathname === "/connect") return;
+  // The API is live data, and a followed chat's stream never ends.
+  if (event.request.method !== "GET" || url.origin !== location.origin || url.pathname === "/connect" || url.pathname.startsWith("/api/")) return;
   event.respondWith((async () => {
     try {
       const response = await fetch(event.request);
