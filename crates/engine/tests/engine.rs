@@ -388,9 +388,12 @@ async fn turn_changes(engine: &Engine, id: &str, runs: usize) -> (Vec<Value>, Ve
         let settled = view["chat"]["status"] == "idle";
         let changes = read["turnChanges"].as_array().unwrap().clone();
         let users = messages.iter().filter(|m| m["role"] == "user").count();
+        // A run's store goes before its diff is saved, so both are waited for.
+        let saved = engine.config().state_dir.join("turns").join(id);
         if settled
             && users == runs
             && std::fs::read_dir(state_runs(engine)).map_or(0, Iterator::count) == 0
+            && std::fs::read_dir(saved).map_or(0, Iterator::count) == runs
             && !changes.is_empty()
         {
             return (changes, messages);
@@ -584,6 +587,48 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     let log = std::fs::read_to_string(dir.path().join("pi.log")).unwrap();
     let listing = log.lines().filter(|l| l.ends_with("--no-session")).count();
     assert_eq!(listing, 1, "the models are listed once");
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skill_runs_from_wherever_it_was_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let review =
+        json!([{"name": "review", "description": "Review the diff", "ref": "/skill:review"}]);
+    let skills = tool(
+        &engine,
+        "list_skills",
+        json!({"harness": "pi", "project": dir.path()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(skills["skills"], review, "for a new chat");
+
+    let id = engine.create(dir.path()).await.unwrap();
+    let skills = tool(&engine, "list_skills", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(skills["skills"], review, "for a chat");
+    // The composer puts the ref where `$review` was typed.
+    let text = "please /skill:review\nthe last commit";
+    tool(&engine, "send_message", json!({"chat": id, "text": text}))
+        .await
+        .unwrap();
+    let typed = "/skill:review please\nthe last commit";
+    until(&engine, |c| {
+        last_prompt(&c[0]) == Some("/skill:review please the last commit")
+    })
+    .await;
+    let view = tool(&engine, "chat_view", json!({"chat": id}))
+        .await
+        .unwrap();
+    let user = &view["read"]["messages"][0];
+    assert_eq!(
+        user["parts"],
+        json!([{"kind": "text", "text": typed}]),
+        "pi ran it, and it shows as typed"
+    );
     engine.shutdown().await.unwrap();
 }
 

@@ -45,6 +45,7 @@ pub enum Tool {
     ListModels,
     SetChatModel,
     ComposerInfo,
+    ListSkills,
 }
 
 impl FromStr for Tool {
@@ -67,6 +68,7 @@ impl FromStr for Tool {
             "list_models" => Self::ListModels,
             "set_chat_model" => Self::SetChatModel,
             "composer_info" => Self::ComposerInfo,
+            "list_skills" => Self::ListSkills,
             _ => bail!("no tool {name}"),
         })
     }
@@ -94,6 +96,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::ListModels => list_models(engine, parse(args)?).await,
         Tool::SetChatModel => set_chat_model(engine, parse(args)?).await,
         Tool::ComposerInfo => composer_info(engine, parse(args)?).await,
+        Tool::ListSkills => list_skills(engine, parse(args)?).await,
     }
 }
 
@@ -393,6 +396,32 @@ async fn composer_info(engine: &Engine, args: ComposerInfoArgs) -> Result<Value>
     }));
     answer["branch"] = json!(checkout.and_then(|checkout| checkout.branch));
     Ok(answer)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListSkillsArgs {
+    chat: Option<String>,
+    harness: Option<String>,
+    /// For a new chat, the project it would start in.
+    project: Option<PathBuf>,
+}
+
+/// The skills a chat, or a new chat in a project, can run. A skill's `ref`
+/// is the command the composer puts where its `$name` was typed.
+async fn list_skills(engine: &Engine, args: ListSkillsArgs) -> Result<Value> {
+    pi_only(args.harness.as_deref())?;
+    let skills = match &args.chat {
+        Some(id) => engine.skills(id).await?,
+        None => engine.skills_in(args.project.as_deref()).await?,
+    };
+    let skills: Vec<Value> = skills
+        .iter()
+        .map(|skill| {
+            json!({"name": skill.name, "description": skill.description, "ref": skill.command()})
+        })
+        .collect();
+    Ok(json!({"skills": skills}))
 }
 
 /// A chat's model settings and context use, as the composer reads them.
