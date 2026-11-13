@@ -2,12 +2,18 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use futures_util::{SinkExt, StreamExt};
 use ludolph_engine::engine::{ChatInfo, Config, Delivery, Engine, Status};
+use ludolph_engine::relay::{self, Link};
 use ludolph_engine::server;
 use ludolph_engine::transcript::{Part, Role};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::net::{TcpListener, UnixStream};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{
+    Callback, ErrorResponse, Request, Response,
+};
 
 /// An engine in `dir` that runs the fake pi, which logs to `dir/pi.log`.
 async fn engine(dir: &Path, idle: Duration) -> Engine {
@@ -784,5 +790,84 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     write.shutdown().await.unwrap();
     let seen = read_until(&mut BufReader::new(read), |seen| !seen.is_empty()).await;
     assert_eq!(seen[0]["ok"]["projects"].as_array().unwrap().len(), 1);
+    engine.shutdown().await.unwrap();
+}
+
+/// Keeps the `Authorization` header of the Mac's handshake.
+struct Bearer<'a>(&'a mut Option<String>);
+
+impl Callback for Bearer<'_> {
+    fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+        let header = request.headers().get("authorization");
+        *self.0 = header
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok(response)
+    }
+}
+
+/// The next message the Mac sent the relay.
+async fn from_mac(socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>) -> Value {
+    loop {
+        if let Message::Text(body) = socket.next().await.unwrap().unwrap() {
+            return serde_json::from_str(&body).unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_relay_link_answers_the_phones_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+
+    // A relay that refuses the token.
+    let refusing = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay = format!("http://{}", refusing.local_addr().unwrap());
+    tokio::spawn(async move {
+        let (mut tcp, _) = refusing.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut tcp, &mut request).await;
+        let refusal = b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n";
+        tcp.write_all(refusal).await.unwrap();
+    });
+    let token = "t0ken".to_owned();
+    let refused = relay::verify(&Link {
+        relay,
+        token: token.clone(),
+    })
+    .await
+    .unwrap_err();
+    assert!(format!("{refused:#}").contains("rejected"), "{refused:#}");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(relay::run(engine.clone(), Link { relay, token }));
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut bearer = None;
+    let mut socket = tokio_tungstenite::accept_hdr_async(tcp, Bearer(&mut bearer))
+        .await
+        .unwrap();
+    assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
+    assert_eq!(from_mac(&mut socket).await["protocol"], 1);
+    assert_eq!(from_mac(&mut socket).await["state"], "running");
+
+    let calls = [
+        json!("nonsense"),
+        json!({"id": 7, "tool": "list_chats", "args": {}}),
+        json!({"id": 8, "tool": "open_terminal", "args": {}}),
+    ];
+    for call in calls {
+        let text = call
+            .as_str()
+            .map_or_else(|| call.to_string(), str::to_owned);
+        socket.send(Message::Text(text.into())).await.unwrap();
+    }
+    let mut replies = std::collections::BTreeMap::new();
+    while replies.len() < 2 {
+        let reply = from_mac(&mut socket).await;
+        replies.insert(reply["id"].as_u64().unwrap(), reply["result"].clone());
+    }
+    assert_eq!(replies[&7], json!({"Ok": {"total": 0, "chats": []}}));
+    assert_eq!(replies[&8], json!({"Err": "no tool open_terminal"}));
     engine.shutdown().await.unwrap();
 }

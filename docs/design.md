@@ -284,13 +284,14 @@ They live in a `ui` crate. Each window gives them its own layout.
 
 The relay, its Kubernetes manifests, and the phone app (`relay/assets`) move into this repo. The phone app keeps its look and flows.
 
-- **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command.
+- **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. Until there are settings, `ludolph link --relay <address> --token <token>` checks the token with the relay and saves the link in `relay.json`, and the engine connects when it starts.
+- **Until the relay moves:** the engine speaks protocol 1, so it works with Zeron's relay as deployed. It reports itself as running, and serves calls with its own tools, so the phone's "open Zeron" is gone. Version 2 comes with moving the relay.
 - **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later.
 - **Self-hosting:** the README explains how to run the relay (container image and manifests) and how to create the setup link.
 
 ### Trust
 
-The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac, and keep the Mac's relay token in the Keychain. End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
+The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac, and keep the Mac's relay token in the Keychain. Until the app is signed, the token is in `relay.json`, readable only by you: the Keychain ties an item to the program's signature, so each unsigned build would ask for access again. End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
 
 ## Performance budget
 
