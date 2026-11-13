@@ -1,6 +1,5 @@
 //! The tools the app and the phone call, by name, with JSON arguments and
-//! answers in the shapes the phone app reads. The settings tools are the
-//! app's alone.
+//! answers. The settings tools are the app's alone.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -14,6 +13,7 @@ use serde_json::{Value, json};
 use crate::engine::{
     ChatInfo, Composer, Config, Delivery, Dialog, Engine, Question, Reply, Status,
 };
+use crate::models::Model;
 use crate::repo;
 use crate::transcript::{LATEST, Message, Part, Role, Window};
 use crate::turns::Counts;
@@ -41,9 +41,9 @@ pub enum Tool {
     InterruptChat,
     TakeOverChat,
     RespondToInput,
+    RenameChat,
     ArchiveChat,
     TurnChanges,
-    ListHarnesses,
     ListModels,
     SetChatModel,
     ComposerInfo,
@@ -77,9 +77,9 @@ impl FromStr for Tool {
             "interrupt_chat" => Self::InterruptChat,
             "take_over_chat" => Self::TakeOverChat,
             "respond_to_input" => Self::RespondToInput,
+            "rename_chat" => Self::RenameChat,
             "archive_chat" => Self::ArchiveChat,
             "turn_changes" => Self::TurnChanges,
-            "list_harnesses" => Self::ListHarnesses,
             "list_models" => Self::ListModels,
             "set_chat_model" => Self::SetChatModel,
             "composer_info" => Self::ComposerInfo,
@@ -119,10 +119,10 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::InterruptChat => interrupt_chat(engine, parse(args)?).await,
         Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
         Tool::RespondToInput => respond_to_input(engine, parse(args)?).await,
+        Tool::RenameChat => rename_chat(engine, parse(args)?).await,
         Tool::ArchiveChat => archive_chat(engine, parse(args)?),
         Tool::TurnChanges => turn_changes(engine, parse(args)?).await,
-        Tool::ListHarnesses => Ok(list_harnesses()),
-        Tool::ListModels => list_models(engine, parse(args)?).await,
+        Tool::ListModels => list_models(engine).await,
         Tool::SetChatModel => set_chat_model(engine, parse(args)?).await,
         Tool::ComposerInfo => composer_info(engine, parse(args)?).await,
         Tool::ListSkills => list_skills(engine, parse(args)?).await,
@@ -385,48 +385,21 @@ async fn turn_changes(engine: &Engine, args: TurnArgs) -> Result<Value> {
     }
 }
 
-/// The one harness, as the phone's agent picker lists harnesses.
-fn list_harnesses() -> Value {
-    json!({"harnesses": [{
-        "id": "pi",
-        "name": "Pi",
-        "available": true,
-        "installed": true,
-        "steersMidTurn": true,
-        // For models pi doesn't list, so their own levels are unknown.
-        "reasoningLevels": ["off", "minimal", "low", "medium", "high"],
-    }]})
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ListModelsArgs {
-    harness: String,
-}
-
 /// The models pi can use, with the thinking levels each supports.
-async fn list_models(engine: &Engine, args: ListModelsArgs) -> Result<Value> {
-    pi_only(Some(&args.harness))?;
+async fn list_models(engine: &Engine) -> Result<Value> {
     let models = engine.models().await?;
-    let models: Vec<Value> = models
-        .iter()
-        .map(|model| {
-            json!({
-                "id": model.id,
-                "label": model.name,
-                "description": null,
-                "reasoningLevels": model.levels,
-            })
-        })
-        .collect();
-    Ok(json!({"harness": "pi", "models": models}))
+    let models: Vec<Value> = models.iter().map(model).collect();
+    Ok(json!({"models": models}))
+}
+
+fn model(model: &Model) -> Value {
+    json!({"id": model.id, "label": model.name, "reasoningLevels": model.levels})
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SetModelArgs {
     chat: String,
-    harness: Option<String>,
     model: Option<String>,
     reasoning: Option<String>,
 }
@@ -434,7 +407,6 @@ struct SetModelArgs {
 /// Change a chat's model or thinking level from its next answer, and
 /// return its composer settings then.
 async fn set_chat_model(engine: &Engine, args: SetModelArgs) -> Result<Value> {
-    pi_only(args.harness.as_deref())?;
     find(engine, &args.chat)?;
     let (model, reasoning) = (args.model.as_deref(), args.reasoning.as_deref());
     let composer = engine.set_model(&args.chat, model, reasoning).await?;
@@ -464,7 +436,6 @@ async fn composer_info(engine: &Engine, args: ComposerInfoArgs) -> Result<Value>
         None => None,
     };
     let mut answer = composer.as_ref().map_or_else(|| json!({}), settings);
-    answer["harness"] = json!("pi");
     answer["checkout"] = json!(checkout.as_ref().map(|checkout| {
         if checkout.worktree {
             "worktree"
@@ -480,7 +451,6 @@ async fn composer_info(engine: &Engine, args: ComposerInfoArgs) -> Result<Value>
 #[serde(deny_unknown_fields)]
 struct ListSkillsArgs {
     chat: Option<String>,
-    harness: Option<String>,
     /// For a new chat, the project it would start in.
     project: Option<PathBuf>,
 }
@@ -488,7 +458,6 @@ struct ListSkillsArgs {
 /// The skills a chat, or a new chat in a project, can run. A skill's `ref`
 /// is the command the composer puts where its `$name` was typed.
 async fn list_skills(engine: &Engine, args: ListSkillsArgs) -> Result<Value> {
-    pi_only(args.harness.as_deref())?;
     let skills = match &args.chat {
         Some(id) => engine.skills(id).await?,
         None => engine.skills_in(args.project.as_deref()).await?,
@@ -525,14 +494,6 @@ fn settings(composer: &Composer) -> Value {
     })
 }
 
-/// Fail unless `harness` is pi or unset: it's the only one Ludolph runs.
-fn pi_only(harness: Option<&str>) -> Result<()> {
-    match harness {
-        None | Some("pi") => Ok(()),
-        Some(other) => bail!("Ludolph runs only pi, not {other}"),
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SendArgs {
@@ -546,13 +507,9 @@ async fn send_message(engine: &Engine, args: SendArgs) -> Result<Value> {
     if text.is_empty() {
         bail!("text is empty");
     }
-    let before = find(engine, &args.chat)?;
+    find(engine, &args.chat)?;
     let delivery = engine.send(&args.chat, text, Vec::new()).await?;
-    Ok(json!({
-        "chatId": args.chat,
-        "title": before.title,
-        "sent": sent(delivery, before.status),
-    }))
+    Ok(json!({"chatId": args.chat, "delivery": delivery_name(delivery)}))
 }
 
 #[derive(Deserialize)]
@@ -561,21 +518,15 @@ struct CreateChatArgs {
     /// The project's folder; without one, the chat gets a scratch folder.
     project: Option<PathBuf>,
     prompt: Option<String>,
-    harness: Option<String>,
     /// `provider/model`; without one, pi's default.
     model: Option<String>,
     reasoning: Option<String>,
-    /// The branch the phone saw. Unused: the chat runs in the project's
-    /// checkout as it is.
-    #[serde(rename = "branch")]
-    _branch: Option<String>,
 }
 
 /// Create a chat, in a project or a scratch folder, and send it the first
 /// prompt. If the chat was created but the prompt didn't go, `sendError`
 /// says why: retrying the whole call would create a second chat.
 async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
-    pi_only(args.harness.as_deref())?;
     let cwd = match &args.project {
         Some(project) => project.clone(),
         None => {
@@ -589,9 +540,7 @@ async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
     let id = engine.create(&cwd).await?;
     let mut answer = json!({
         "chatId": id,
-        "kind": "chat",
         "project": args.project.as_deref().map(project),
-        "harness": "pi",
     });
     if args.model.is_some() || args.reasoning.is_some() {
         let (model, reasoning) = (args.model.as_deref(), args.reasoning.as_deref());
@@ -608,7 +557,7 @@ async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
         .filter(|p| !p.is_empty())
     {
         match engine.send(&id, prompt, Vec::new()).await {
-            Ok(delivery) => answer["sent"] = sent(delivery, Status::Idle),
+            Ok(delivery) => answer["delivery"] = json!(delivery_name(delivery)),
             Err(e) => answer["sendError"] = json!(format!("{e:#}")),
         }
     }
@@ -627,81 +576,66 @@ async fn interrupt_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
     Ok(json!({"chatId": args.chat}))
 }
 
-/// The question the phone and the Companion show for a dialog: one question,
-/// in the shape of Claude Code's `AskUserQuestion`.
+/// An extension's open dialog, as pi asks it (`docs/rpc-extension-ui.md`).
 fn pending_input(question: &Question) -> Value {
-    let (header, text) = match &question.message {
-        Some(message) => (Some(question.title.as_str()), message.as_str()),
-        None => (None, question.title.as_str()),
-    };
-    let options: Vec<&str> = match question.dialog {
-        Dialog::Select => question.options.iter().map(String::as_str).collect(),
-        Dialog::Confirm => CONFIRM.to_vec(),
-        Dialog::Input | Dialog::Editor => Vec::new(),
+    let dialog = match question.dialog {
+        Dialog::Select => "select",
+        Dialog::Confirm => "confirm",
+        Dialog::Input => "input",
+        Dialog::Editor => "editor",
     };
     json!({
-        "requestId": question.id,
-        "questions": [{
-            "id": ANSWER,
-            "header": header,
-            "question": text,
-            "options": options,
-            "multiSelect": false,
-            "multiline": question.dialog == Dialog::Editor,
-            "prefill": question.prefill,
-        }],
+        "id": question.id,
+        "dialog": dialog,
+        "title": question.title,
+        "message": question.message,
+        "options": question.options,
+        "prefill": question.prefill,
     })
 }
-
-/// The one question's id in `pending_input`.
-const ANSWER: &str = "answer";
-
-/// A `confirm`'s options, yes first.
-const CONFIRM: [&str; 2] = ["Yes", "No"];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RespondArgs {
     chat: String,
-    /// The question's `requestId`; the open one when it's left out.
-    request_id: Option<String>,
-    answers: Vec<Answer>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Answer {
-    #[serde(rename = "question_id")]
-    _question_id: String,
-    /// The picked options, then any typed text.
-    labels: Vec<String>,
+    /// The dialog's `id`, so an answer can't land on a newer one.
+    id: String,
+    /// A `select`'s option, or the typed text.
+    value: Option<String>,
+    /// A `confirm`'s answer.
+    confirmed: Option<bool>,
 }
 
 /// Answer the dialog a chat waits on.
 async fn respond_to_input(engine: &Engine, args: RespondArgs) -> Result<Value> {
     let question = engine
         .question(&args.chat)
-        .filter(|q| args.request_id.as_ref().is_none_or(|id| *id == q.id))
+        .filter(|q| q.id == args.id)
         .context("this chat has no such open question")?;
-    let labels = args
-        .answers
-        .into_iter()
-        .next()
-        .map(|a| a.labels)
-        .unwrap_or_default();
-    let Some(first) = labels.first() else {
-        bail!("answers is empty");
-    };
-    let reply = match question.dialog {
-        Dialog::Confirm => match CONFIRM.iter().position(|label| label == first) {
-            Some(at) => Reply::Confirmed(at == 0),
-            None => bail!("answer Yes or No"),
-        },
-        Dialog::Select => Reply::Value(first.clone()),
-        Dialog::Input | Dialog::Editor => Reply::Value(labels.join("\n")),
+    let reply = match (question.dialog, args.value, args.confirmed) {
+        (Dialog::Confirm, None, Some(yes)) => Reply::Confirmed(yes),
+        (Dialog::Confirm, ..) => bail!("a confirm takes `confirmed`"),
+        (Dialog::Select, Some(value), None) if question.options.contains(&value) => {
+            Reply::Value(value)
+        }
+        (Dialog::Select, ..) => bail!("pick one of the options"),
+        (Dialog::Input | Dialog::Editor, Some(value), None) => Reply::Value(value),
+        (Dialog::Input | Dialog::Editor, ..) => bail!("this dialog takes a `value`"),
     };
     engine.respond(&args.chat, &question.id, reply).await?;
-    Ok(json!({"chatId": args.chat, "requestId": question.id}))
+    Ok(json!({"chatId": args.chat}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameArgs {
+    chat: String,
+    title: String,
+}
+
+async fn rename_chat(engine: &Engine, args: RenameArgs) -> Result<Value> {
+    engine.rename(&args.chat, &args.title).await?;
+    Ok(json!({"chatId": args.chat, "title": args.title.trim()}))
 }
 
 #[derive(Deserialize)]
@@ -740,7 +674,6 @@ fn summary(chat: &ChatInfo, config: &Config) -> Value {
         "title": chat.title,
         "project": config.is_project(&chat.cwd).then(|| project(&chat.cwd)),
         "cwd": chat.cwd,
-        "harness": "pi",
         "model": summary.and_then(|s| s.model.as_deref()),
         "reasoning": summary.and_then(|s| s.thinking.as_deref()),
         "archived": chat.archived,
@@ -762,13 +695,14 @@ fn project(path: &Path) -> Value {
     json!({"id": path, "name": name, "path": path})
 }
 
-fn sent(delivery: Delivery, status: Status) -> Value {
-    let delivery = match delivery {
+/// How a message went: it started a run, steers the one going, or was a
+/// command pi handled itself.
+fn delivery_name(delivery: Delivery) -> &'static str {
+    match delivery {
         Delivery::Started => "run",
         Delivery::Queued => "steer",
         Delivery::Handled => "handled",
-    };
-    json!({"delivery": delivery, "chatStatusAtSend": label(status)})
+    }
 }
 
 /// A status as the phone app names it.

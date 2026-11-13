@@ -26,7 +26,6 @@ const ICONS = {
   "fetch": ["0 0 24 24", "", "<g fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M22 12a10 10 0 1 1-20.001 0A10 10 0 0 1 22 12Z\"/><path d=\"M16 12c0 1.313-.104 2.614-.305 3.827c-.2 1.213-.495 2.315-.867 3.244c-.371.929-.812 1.665-1.297 2.168c-.486.502-1.006.761-1.531.761s-1.045-.259-1.53-.761c-.486-.503-.927-1.24-1.298-2.168c-.372-.929-.667-2.03-.868-3.244A23.6 23.6 0 0 1 8 12c0-1.313.103-2.614.304-3.827s.496-2.315.868-3.244c.371-.929.812-1.665 1.297-2.168C10.955 2.26 11.475 2 12 2s1.045.259 1.53.761c.486.503.927 1.24 1.298 2.168c.372.929.667 2.03.867 3.244C15.897 9.386 16 10.687 16 12Z\"/><path stroke-linecap=\"round\" d=\"M2 12h20\"/></g>"],
   "todo": ["0 0 24 24", "", "<g fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-width=\"1.5\"><path stroke-linejoin=\"round\" d=\"M2 5.5L3.214 7L7.5 3M2 12.5L3.214 14L7.5 10M2 19.5L3.214 21L7.5 17\"/><path d=\"M22 19H12m10-7H12m10-7H12\"/></g>"],
   "tool": ["0 0 24 24", "", "<path fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" d=\"M2.5 6.5c0-1.886 0-2.828.586-3.414S4.614 2.5 6.5 2.5s2.828 0 3.414.586s.586 1.528.586 3.414s0 2.828-.586 3.414s-1.528.586-3.414.586s-2.828 0-3.414-.586S2.5 8.386 2.5 6.5Zm11 11c0-1.886 0-2.828.586-3.414s1.528-.586 3.414-.586s2.828 0 3.414.586s.586 1.528.586 3.414s0 2.828-.586 3.414s-1.528.586-3.414.586s-2.828 0-3.414-.586s-.586-1.528-.586-3.414Zm-11 0c0-1.886 0-2.828.586-3.414S4.614 13.5 6.5 13.5s2.828 0 3.414.586s.586 1.528.586 3.414s0 2.828-.586 3.414s-1.528.586-3.414.586s-2.828 0-3.414-.586S2.5 19.386 2.5 17.5Zm11-11c0-1.886 0-2.828.586-3.414S15.614 2.5 17.5 2.5s2.828 0 3.414.586s.586 1.528.586 3.414s0 2.828-.586 3.414s-1.528.586-3.414.586s-2.828 0-3.414-.586S13.5 8.386 13.5 6.5Z\"/>"],
-  "bot": ["0 0 24 24", "", "<g fill=\"none\"><path stroke=\"currentColor\" stroke-width=\"1.5\" d=\"M4.75 10.5C4.75 8.98122 5.98122 7.75 7.5 7.75H16.5C18.0188 7.75 19.25 8.98122 19.25 10.5V16.5C19.25 18.0188 18.0188 19.25 16.5 19.25H7.5C5.98122 19.25 4.75 18.0188 4.75 16.5V10.5Z\"/><path stroke=\"currentColor\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M12 7.5V5.25\"/><path fill=\"currentColor\" d=\"M13.25 3.75C13.25 4.44036 12.6904 5 12 5C11.3096 5 10.75 4.44036 10.75 3.75C10.75 3.05964 11.3096 2.5 12 2.5C12.6904 2.5 13.25 3.05964 13.25 3.75Z\"/><path stroke=\"currentColor\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M9.25 12.25V14\"/><path stroke=\"currentColor\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M14.75 12.25V14\"/><path stroke=\"currentColor\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M2 12.5V15\"/><path stroke=\"currentColor\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M22 12.5V15\"/></g>"],
   "archive": ["0 0 24 24", "", "<g fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M2 12c0-4.714 0-7.071 1.464-8.536C4.93 2 7.286 2 12 2s7.071 0 8.535 1.464C22 4.93 22 7.286 22 12\"/><path d=\"M2 14c0-2.8 0-4.2.545-5.27A5 5 0 0 1 4.73 6.545C5.8 6 7.2 6 10 6h4c2.8 0 4.2 0 5.27.545a5 5 0 0 1 2.185 2.185C22 9.8 22 11.2 22 14s0 4.2-.545 5.27a5 5 0 0 1-2.185 2.185C18.2 22 16.8 22 14 22h-4c-2.8 0-4.2 0-5.27-.545a5 5 0 0 1-2.185-2.185C2 18.2 2 16.8 2 14Z\"/><path stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"m9.5 14.4l1.429 1.6l3.571-4\"/></g>"],
   "laptop": ["0 0 24 24", "", "<g fill=\"none\"><path stroke=\"currentColor\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M19.647 15.536H4.353m15.294 0V8c0-1.886 0-2.828-.586-3.414C18.476 4 17.533 4 15.647 4H8.353c-1.886 0-2.828 0-3.414.586S4.353 6.114 4.353 8v7.536m15.294 0l1.744 1.8l.088.092a2 2 0 0 1 .52 1.284l.001.127c0 .15 0 .224-.004.287a2 2 0 0 1-1.87 1.87a5 5 0 0 1-.287.004H4.161c-.15 0-.224 0-.287-.004a2 2 0 0 1-1.87-1.87C2 19.063 2 18.988 2 18.84l.001-.127a2 2 0 0 1 .52-1.284l.088-.092l1.744-1.8M9.5 18.5h5\"/><path fill=\"currentColor\" d=\"M12.75 6.75a.75.75 0 1 1-1.5 0a.75.75 0 0 1 1.5 0\"/></g>"],
   "logout": ["0 0 24 24", "", "<g fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-width=\"1.5\"><path d=\"M9.002 7c.012-2.175.109-3.353.877-4.121C10.758 2 12.172 2 15 2h1c2.829 0 4.243 0 5.122.879C22 3.757 22 5.172 22 8v8c0 2.828 0 4.243-.878 5.121C20.242 22 18.829 22 16 22h-1c-2.828 0-4.242 0-5.121-.879c-.768-.768-.865-1.946-.877-4.121\"/><path stroke-linejoin=\"round\" d=\"M15 12H2m0 0l3.5-3M2 12l3.5 3\"/></g>"],
@@ -39,13 +38,6 @@ const ICONS = {
   "branch": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M6 8.5v7M6 12h10a2 2 0 0 0 2-2V8.5\"/><circle cx=\"6\" cy=\"6.25\" r=\"2.25\"/><circle cx=\"6\" cy=\"17.75\" r=\"2.25\"/><circle cx=\"18\" cy=\"6.25\" r=\"2.25\"/>"],
   "home": ["0 0 24 24", "", "<g fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path stroke-linecap=\"round\" d=\"M3 10.75L10.51 4.4c.86-.727 2.12-.727 2.98 0L21 10.75\"/><path d=\"M5 9.5V16c0 2.357 0 3.536.732 4.268C6.464 21 7.643 21 10 21h4c2.357 0 3.536 0 4.268-.732C19 19.536 19 18.357 19 16V9.5\"/><path stroke-linecap=\"round\" d=\"M12 21v-4\"/></g>"],
   "mark-pi": ["0 0 800 800", "", "<path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65ZM517.36 400H634.72V634.72H517.36Z\"/>"],
-  "mark-codex": ["0 0 256 260", "fill=\"currentColor\"", "<path d=\"M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z\"/>"],
-  "mark-claude-code": ["0 0 256 257", "fill=\"currentColor\"", "<path d=\"m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z\"/>"],
-  "mark-cursor": ["0 0 466.73 532.09", "fill=\"currentColor\"", "<path d=\"M457.43,125.94L244.42,2.96c-6.84-3.95-15.28-3.95-22.12,0L9.3,125.94c-5.75,3.32-9.3,9.46-9.3,16.11v247.99c0,6.65,3.55,12.79,9.3,16.11l213.01,122.98c6.84,3.95,15.28,3.95,22.12,0l213.01-122.98c5.75-3.32,9.3-9.46,9.3-16.11v-247.99c0-6.65-3.55-12.79-9.3-16.11h-.01ZM444.05,151.99l-205.63,356.16c-1.39,2.4-5.06,1.42-5.06-1.36v-233.21c0-4.66-2.49-8.97-6.53-11.31L24.87,145.67c-2.4-1.39-1.42-5.06,1.36-5.06h411.26c5.84,0,9.49,6.33,6.57,11.39h-.01Z\"/>"],
-  "mark-grok": ["0 0 16 16", "", "<path fill=\"currentColor\" d=\"M0.58392448,14.9254204 L0.8326,14.66295 C2.004465,13.42985 3.1678,12.2082 2.45814,10.48105 C1.50813,8.1701 2.061355,5.4619 3.820575,3.70057 C5.6495,1.8709 8.3431,1.40957 10.59295,2.336505 C11.0907,2.52161 11.5245,2.785025 11.86295,3.02993 L9.98425,3.89849 C8.235,3.163775 6.23115,3.66355 5.0081,4.88809 C3.354105,6.5426 3.019895,9.4117 4.95835,11.2656 L-0.335,15.99995 C-0.066496,15.62975 0.2538896,15.275934 0.58392448,14.9254204 Z M14.0391,2.288155 L16.33165,2.57749377e-12 L16.20795,0.172288 C14.4658,2.574355 13.6153,3.749045 14.29795,6.6879 C14.76445,8.68415 14.261,10.90255 12.63545,12.53005 C10.5861,14.58325 7.3066,15.0403 4.6059,13.19215 L6.48885,12.3193 C8.2125,12.99705 10.0983,12.69945 11.4536,11.34255 C12.80895,9.9856 13.1133,8.00925 12.4321,6.3647 C12.30265,6.05285 11.9144,5.97455 11.64275,6.1753 L6.102,10.27035 L14.0391,2.288155 Z\"/>"],
-  "mark-opencode": ["0 0 24 30", "", "<path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M24 0H0V30H24V0ZM18 6H6V24H18V6Z\"/> <path fill=\"currentColor\" fill-opacity=\"0.45\" d=\"M18 12H6V24H18V12Z\"/>"],
-  "mark-devin": ["0 0 263 300", "", "<path fill=\"currentColor\" d=\"M1.84577e-10 100.797V38.6224C1.88813e-05 35.8899 1.45777 33.365 3.82414 31.9988L57.6539 0.920185C60.0203 -0.446051 62.9358 -0.446051 65.3022 0.920185L119.132 31.9988C121.498 33.3651 122.956 35.8899 122.956 38.6224V70.375C123.192 80.9262 128.769 91.103 138.577 96.7655C148.384 102.428 159.986 102.169 169.242 97.0979L196.74 81.2217C199.107 79.8554 202.022 79.8554 204.388 81.2217L258.218 112.3C260.585 113.667 262.042 116.191 262.042 118.924V181.081C262.042 183.814 260.585 186.339 258.218 187.705L204.388 218.783C202.022 220.15 199.107 220.15 196.74 218.783L169.464 203.036C160.173 197.847 148.465 197.536 138.579 203.244C128.772 208.906 123.195 219.083 122.959 229.634V261.378C122.959 264.111 121.501 266.635 119.135 268.002L65.3048 299.08C62.9384 300.447 60.0229 300.447 57.6566 299.08L3.82673 268.002C1.46036 266.635 0.00260562 264.111 0.00260562 261.378V199.221C0.0026245 196.488 1.46038 193.963 3.82675 192.597L57.6565 161.519C60.0229 160.152 62.9384 160.152 65.3048 161.519L92.8656 177.431C102.11 182.467 113.679 182.711 123.463 177.062C133.349 171.355 138.934 161.06 139.086 150.419C138.85 139.868 133.274 128.601 123.466 122.938C113.658 117.276 102.056 117.534 92.8007 122.606L65.1758 138.645C62.7991 140.025 59.8649 140.024 57.4894 138.642L3.80216 107.407C1.44816 106.038 -1.88809e-05 103.52 1.84577e-10 100.797Z\"/>"],
-  "mark-antigravity": ["0 0 24 24", "", "<path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z\"/>"],
 };
 
 // ---- helpers -------------------------------------------------------------------
@@ -60,8 +52,8 @@ function icon(name, cls = "") {
   return wrap.firstChild;
 }
 
-/** The harness's brand mark, or a bot for one without a mark. */
-const mark = harness => icon(ICONS[`mark-${harness}`] ? `mark-${harness}` : "bot");
+/** pi's mark. */
+const piMark = () => icon("mark-pi");
 
 /** A status glyph: `spin` (sidebar), `trail` (transcript), `dot`, or `check`. */
 function glyph(kind, color) {
@@ -117,25 +109,21 @@ function ago(when) {
 const statusOf = chat => (chat?.status || "idle").split(" ")[0];
 const isStale = chat => /stale/.test(chat?.status || "");
 
-const HARNESS_NAMES = { pi: "Pi", codex: "Codex", "claude-code": "Claude Code", cursor: "Cursor", devin: "Devin", grok: "Grok", hermes: "Hermes", antigravity: "Antigravity", opencode: "OpenCode", mock: "Mock" };
-const harnessName = id => HARNESS_NAMES[id] || id || "Agent";
 const shortModel = m => (m || "").split("/").pop();
 const reasoningName = level => ({ xhigh: "X-High" })[level] || (level ? level[0].toUpperCase() + level.slice(1) : "");
 
-/** Each Mac's model catalog per harness, loaded once: models, and the
- * harness's reasoning levels for models without their own. */
+/** pi's thinking levels, for a model it doesn't list, like a new chat's default. */
+const DEFAULT_LEVELS = ["off", "minimal", "low", "medium", "high"];
+
+/** Each Mac's models, loaded once. */
 const catalogs = new Map();
-function catalog(machine, harness) {
-  const key = `${machine}/${harness}`;
-  if (!catalogs.has(key)) {
+function catalog(machine) {
+  if (!catalogs.has(machine)) {
     const entry = { ready: null };
-    entry.promise = Promise.all([
-      call(machine, "list_models", { harness }).then(r => r.models || []),
-      call(machine, "list_harnesses").then(r => r.harnesses?.find(x => x.id === harness)?.reasoningLevels || []),
-    ]).then(value => (entry.ready = value), e => { catalogs.delete(key); throw e; });
-    catalogs.set(key, entry);
+    entry.promise = call(machine, "list_models").then(r => (entry.ready = r.models || []), e => { catalogs.delete(machine); throw e; });
+    catalogs.set(machine, entry);
   }
-  return catalogs.get(key);
+  return catalogs.get(machine);
 }
 
 /** The desktop's context ring: a faint track under the used arc. */
@@ -518,8 +506,10 @@ function toast({ title, body = "", kind = "info", onclick, timeout = 3800 }) {
 }
 
 let openSheetClose = null;
-/** Show a bottom sheet; `build(close)` returns its content. Back closes it. */
+/** Show a bottom sheet in place of any open one; `build(close)` returns its content. Back closes it. */
 function sheet(build) {
+  // The new sheet takes the open one's history entry, so Back still closes one sheet.
+  const replacing = Boolean(openSheetClose);
   openSheetClose?.(true);
   const root = $("#sheet-root");
   const scrim = h("div", { class: "scrim", onclick: () => close() });
@@ -536,7 +526,8 @@ function sheet(build) {
   const fill = content => panel.replaceChildren(panel.firstChild, ...[content].flat().filter(c => c != null && c !== false));
   fill(build(close, fill));
   root.append(scrim, panel);
-  history.pushState({ sheet: true }, "");
+  if (replacing) history.replaceState({ sheet: true }, "");
+  else history.pushState({ sheet: true }, "");
   openSheetClose = close;
   // Drag down from the top to dismiss.
   let startY = null;
@@ -697,7 +688,7 @@ function listView() {
   // results also name the project.
   function row(c, withProject) {
     const s = statusOf(c), unseen = s === "idle" && seen.unseen(c);
-    const sig = JSON.stringify([chatTitle(c), s, isStale(c), unseen, ago(c.lastMessageAt || c.createdAt), c.harness, c.project?.id, withProject]);
+    const sig = JSON.stringify([chatTitle(c), s, isStale(c), unseen, ago(c.lastMessageAt || c.createdAt), c.project?.id, withProject]);
     const old = known.get(c.machine + c.id);
     if (old?.sig === sig) return old.el;
     const corner = s === "working" ? [glyph("spin"), h("span", { style: { color: "var(--tone-working)" } }, isStale(c) ? "Offline?" : "Working")]
@@ -707,7 +698,7 @@ function listView() {
       : unseen ? [glyph("check", "var(--tone-done)"), h("span", { style: { color: "var(--tone-done)" } }, "Done")]
       : [ago(c.lastMessageAt || c.createdAt)];
     const el = h("a", { class: `row${unseen ? " unseen" : ""}${s !== "idle" ? " live" : ""}${old || !painted ? "" : " new"}`, href: chatHash(c.machine, c.id) },
-      h("span", { class: "mark" }, mark(c.harness)),
+      h("span", { class: "mark" }, piMark()),
       h("span", { class: "title" }, chatTitle(c)),
       h("span", { class: "corner" }, corner),
       withProject && h("span", { class: "meta" }, h("span", {}, tile(c.project), c.project?.name || "No project")));
@@ -976,7 +967,7 @@ function chatView(machine, id, fromList) {
     const stop = !text && isWorking();
     sendBtn.classList.toggle("stop", stop);
     sendBtn.replaceChildren(icon(stop ? "stop" : "send"));
-    sendBtn.disabled = Boolean(dictation) || polishing || (isDraft ? creating || !text || !machine || !draft.harness : !text && !stop);
+    sendBtn.disabled = Boolean(dictation) || polishing || (isDraft ? creating || !text || !machine : !text && !stop);
     sendBtn.setAttribute("aria-label", stop ? "Stop" : "Send");
   }
   textarea.addEventListener("input", () => {
@@ -1001,17 +992,17 @@ function chatView(machine, id, fromList) {
   // Late, so a tap that blurs the text still lands on its skill.
   textarea.addEventListener("blur", () => setTimeout(() => document.activeElement !== textarea && skillMenu.classList.add("hide"), 200));
 
-  // The skills of the chat's agent (a new chat's: its agent's in its project),
-  // loaded on the first `$` and again when the new chat's picks change.
+  // The chat's skills (a new chat's: those in its project), loaded on the
+  // first `$` and again when the new chat's picks change.
   let skills = null, skillsError = "", skillsFor = "";
   function loadSkills() {
-    const key = isDraft ? `${machine}/${draft.harness}/${draft.project}` : id;
+    const key = isDraft ? `${machine}/${draft.project}` : id;
     if (key === skillsFor) return;
     skillsFor = key;
     skills = null;
     skillsError = "";
-    if (isDraft && (!machine || !draft.harness)) { skills = []; return; }
-    const args = isDraft ? { harness: draft.harness, ...(draft.project ? { project: draft.project } : {}) } : { chat: id };
+    if (isDraft && !machine) { skills = []; return; }
+    const args = isDraft ? (draft.project ? { project: draft.project } : {}) : { chat: id };
     call(machine, "list_skills", args).then(r => {
       if (key === skillsFor) skills = r.skills || [];
     }, e => {
@@ -1230,9 +1221,10 @@ function chatView(machine, id, fromList) {
     sheet(close => [
       h("h2", {}, chat ? chatTitle(chat) : "Chat"),
       chat && h("div", { class: "note", style: { marginTop: "-8px" } },
-        [harnessName(chat.harness), shortModel(chat.model), chat.reasoning, chat.project?.name, chat.branch, severalMacs() && machineName(machine)].filter(Boolean).join(" · ")),
+        [shortModel(chat.model), chat.reasoning, chat.project?.name, chat.branch, severalMacs() && machineName(machine)].filter(Boolean).join(" · ")),
       h("div", { class: "group" },
         isWorking() && itemRow({ iconName: "stop", label: "Stop the agent", cls: "danger", onclick: () => { close(); stop(); } }),
+        itemRow({ iconName: "edit", label: "Rename", onclick: renameSheet }),
         itemRow({ iconName: "copy", label: "Copy link", onclick: () => { close(); copyText(location.href); toast({ title: "Link copied", kind: "done", timeout: 1800 }); } }),
         itemRow({ iconName: "archive", label: "Archive", cls: "danger", onclick: async () => {
           close();
@@ -1243,6 +1235,28 @@ function chatView(machine, id, fromList) {
           } catch (e) { toast({ title: "Couldn't archive", body: e.message, kind: "error" }); }
         } })),
     ]);
+  }
+
+  function renameSheet() {
+    haptic(5);
+    sheet(close => {
+      const field = h("input", { class: "field", maxlength: 200, enterkeyhint: "done" });
+      field.value = chat ? chatTitle(chat) : "";
+      const save = h("button", { class: "btn solid full", style: { marginTop: "12px" }, onclick: async () => {
+        const title = field.value.trim();
+        if (!title) return;
+        save.disabled = true;
+        try {
+          await api("rename_chat", { title });
+          close();
+          version = "";
+          poll.now();
+        } catch (e) { toast({ title: "Couldn't rename", body: e.message, kind: "error" }); save.disabled = false; }
+      } }, "Save");
+      field.addEventListener("keydown", e => e.key === "Enter" && save.click());
+      setTimeout(() => field.focus(), 250);
+      return [h("h2", {}, "Rename"), field, save];
+    });
   }
 
   // A call's arguments and output, loaded when it's opened.
@@ -1380,46 +1394,40 @@ function chatView(machine, id, fromList) {
     return kept.node;
   }
 
-  // The agent is blocked on questions: pick options, type an answer, or both.
+  // An extension asks something: tap an option or Yes/No, or type an answer.
   function drawQuestion(input) {
     if (!input) { questionSlot.replaceChildren(); questionId = null; return; }
-    if (questionId === input.requestId) return;
-    questionId = input.requestId;
+    if (questionId === input.id) return;
+    questionId = input.id;
     haptic([12, 40, 12]);
-    const answers = new Map();
-    const parts = input.questions.map(q => {
-      const picked = new Set();
-      const field = h("textarea", { class: "field", rows: q.multiline ? 3 : 1, placeholder: q.options.length ? "Other…" : "Your answer" });
-      field.value = q.prefill || "";
-      answers.set(q.id, { picked, field });
-      const opts = q.options.map(option => {
-        const btn = h("button", { class: `opt${q.multiSelect ? " multi" : ""}`, onclick: () => {
-          haptic(5);
-          if (!q.multiSelect) { picked.clear(); btn.parentNode.querySelectorAll(".opt").forEach(b => b.classList.remove("on")); }
-          picked.has(option) ? picked.delete(option) : picked.add(option);
-          btn.classList.toggle("on", picked.has(option));
-        } }, h("span", { class: "box" }, icon("check")), h("span", {}, option));
-        return btn;
-      });
-      return [h("div", { class: "q" }, q.header ? `${q.header}: ` : "", q.question), opts.length ? h("div", { class: "opts" }, opts) : null, field];
-    });
-    const submit = h("button", { class: "btn solid full", style: { marginTop: "12px" }, onclick: async () => {
-      const payload = input.questions.map(q => {
-        const { picked, field } = answers.get(q.id);
-        const typed = field.value.trim();
-        return { question_id: q.id, labels: typed ? [...picked, typed] : [...picked] };
-      });
-      if (payload.some(a => !a.labels.length)) { toast({ title: "Answer every question first", kind: "input", timeout: 2200 }); return; }
-      submit.disabled = true;
+    const buttons = [];
+    const answer = async reply => {
+      buttons.forEach(b => (b.disabled = true));
       haptic(10);
       try {
-        await api("respond_to_input", { request_id: input.requestId, answers: payload });
+        await api("respond_to_input", { id: input.id, ...reply });
         version = "";
         poll.now();
-      } catch (e) { toast({ title: "Not sent", body: e.message, kind: "error" }); submit.disabled = false; }
-    } }, "Submit");
+      } catch (e) { toast({ title: "Not sent", body: e.message, kind: "error" }); buttons.forEach(b => (b.disabled = false)); }
+    };
+    const choice = (label, reply) => {
+      const btn = h("button", { class: "opt", onclick: () => answer(reply) }, h("span", {}, label));
+      buttons.push(btn);
+      return btn;
+    };
+    let body;
+    if (input.dialog === "select") body = h("div", { class: "opts" }, input.options.map(o => choice(o, { value: o })));
+    else if (input.dialog === "confirm") body = h("div", { class: "opts" }, choice("Yes", { confirmed: true }), choice("No", { confirmed: false }));
+    else {
+      const field = h("textarea", { class: "field", rows: input.dialog === "editor" ? 3 : 1, placeholder: "Your answer" });
+      field.value = input.prefill || "";
+      const submit = h("button", { class: "btn solid full", style: { marginTop: "12px" }, onclick: () => answer({ value: field.value }) }, "Submit");
+      buttons.push(submit);
+      body = [field, submit];
+    }
     questionSlot.replaceChildren(h("div", { class: "question" },
-      h("div", { class: "head" }, glyph("dot", "var(--tone-input)"), "Needs your answer"), parts, submit));
+      h("div", { class: "head" }, glyph("dot", "var(--tone-input)"), "Needs your answer"),
+      h("div", { class: "q" }, input.message ? `${input.title}: ${input.message}` : input.title), body));
     toBottom(true);
   }
 
@@ -1440,15 +1448,15 @@ function chatView(machine, id, fromList) {
 
   /** The model and reasoning the composer shows: the new chat's picks, else the chat's. */
   const config = () => (isDraft ? draft
-    : { harness: info?.harness || chat?.harness, model: info ? info.model : chat?.model, reasoning: info ? info.reasoning : chat?.reasoning });
+    : { model: info ? info.model : chat?.model, reasoning: info ? info.reasoning : chat?.reasoning });
 
   function drawInfo() {
-    const { harness, model, reasoning } = config();
-    const entry = harness && catalog(machine, harness);
+    const { model, reasoning } = config();
+    const entry = machine && catalog(machine);
     if (entry && !entry.ready) entry.promise.then(drawInfo, () => {});
-    const label = entry?.ready?.[0].find(m => m.id === model)?.label || shortModel(model) || "Default";
-    modelChip.disabled = !harness;
-    modelChip.replaceChildren(harness ? mark(harness) : "", h("span", { class: "name" }, label),
+    const label = entry?.ready?.find(m => m.id === model)?.label || shortModel(model) || "Default";
+    modelChip.disabled = !machine;
+    modelChip.replaceChildren(piMark(), h("span", { class: "name" }, label),
       // replaceChildren, unlike h(), prints null as "null": no level, no node.
       reasoning ? h("span", { class: "lvl" }, reasoningName(reasoning)) : "");
     // A new chat picks its project (and Mac) here, in front of the checkout;
@@ -1467,7 +1475,7 @@ function chatView(machine, id, fromList) {
     const tone = fraction >= 0.9 ? "var(--danger)" : fraction >= 0.75 ? "var(--warning)" : "var(--secondary)";
     // A set `checkout` means a git project, the only place the branch shows.
     const left = info.checkout && h("span", { class: "branch-ref" }, icon("branch"), h("span", { class: "txt" }, info.branch || "No ref"));
-    // Harnesses that never report a window get no ring, as on the desktop.
+    // A model without a known window gets no ring, as on the desktop.
     const right = usage?.window > 0 && h("button", { class: "ctx", style: { color: fraction == null ? "var(--tertiary)" : tone },
       "aria-label": "Context window", onclick: () => toast({ title: "Context window", body: contextDetails(usage), kind: "info", timeout: 4000 }) },
       ring(fraction || 0, tone), fraction == null ? "—" : `${Math.round(fraction * 100)}%`);
@@ -1478,17 +1486,15 @@ function chatView(machine, id, fromList) {
 
   /** Pick the model and reasoning for the next turns, like the desktop's picker. */
   function modelSheet() {
-    if (!config().harness) return;
+    if (!machine) return;
     haptic(5);
     sheet(() => {
-      const title = h("h2", {}, harnessName(config().harness));
+      const title = h("h2", {}, "Model");
       const body = h("div", {}, h("div", { class: "skeleton", style: { margin: "0 0 14px" } }));
       const pick = async change => {
         haptic(5);
         if (isDraft) {
-          if (change.harness && change.harness !== draft.harness) Object.assign(draft, { model: "", reasoning: "" });
           Object.assign(draft, change);
-          title.textContent = harnessName(draft.harness);
           drawHeader();
           load();
           return;
@@ -1502,16 +1508,13 @@ function chatView(machine, id, fromList) {
       };
       let first = true;
       const draw = () => {
-        const { harness, model: current, reasoning } = config();
-        const [models, harnessLevels] = catalog(machine, harness).ready;
-        const levels = levelsOf(models, harnessLevels, current);
+        const { model: current, reasoning } = config();
+        const models = catalog(machine).ready;
+        const levels = levelsOf(models, current);
         if (isDraft) fitDraft(models, levels);
         const check = on => (on ? icon("check") : null);
-        const agents = isDraft && draft.harnesses.length > 1 ? [h("div", { class: "group-label" }, "Agent"),
-          h("div", { class: "pills" }, draft.harnesses.map(x => h("button", { class: `pill${x.id === harness ? " on" : ""}`, "aria-pressed": String(x.id === harness),
-            onclick: () => x.id !== harness && pick({ harness: x.id }) }, harnessName(x.id))))] : [];
-        // Reasoning first, as pills: a harness like Pi lists dozens of models.
-        body.replaceChildren(...agents,
+        // Reasoning first, as pills: pi lists dozens of models.
+        body.replaceChildren(
           levels.length ? h("div", { class: "group-label" }, "Reasoning") : "",
           levels.length ? h("div", { class: "pills" }, levels.map(l => h("button", { class: `pill${l === reasoning ? " on" : ""}`, "aria-pressed": String(l === reasoning),
             onclick: () => l !== reasoning && pick({ reasoning: l }) }, reasoningName(l)))) : "",
@@ -1523,8 +1526,7 @@ function chatView(machine, id, fromList) {
         first = false;
       };
       const load = () => {
-        const harness = config().harness;
-        catalog(machine, harness).promise.then(() => harness === config().harness && draw(),
+        catalog(machine).promise.then(draw,
           e => body.replaceChildren(h("div", { class: "note" }, `Couldn't load the models: ${e.message}`)));
       };
       load();
@@ -1532,7 +1534,7 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  /** Keep the new chat's model in its agent's catalog and its reasoning on the model's levels. */
+  /** Keep the new chat's model in its Mac's catalog and its reasoning on the model's levels. */
   function fitDraft(models, levels) {
     if (draft.model && !models.some(m => m.id === draft.model)) draft.model = "";
     if (draft.reasoning && !levels.includes(draft.reasoning)) draft.reasoning = "";
@@ -1548,7 +1550,7 @@ function chatView(machine, id, fromList) {
         close();
         if (m === machine) return;
         machine = draft.machine = m;
-        Object.assign(draft, { project: null, projects: [], harnesses: [] });
+        Object.assign(draft, { project: null, projects: [] });
         info = null;
         loadDraft();
       };
@@ -1574,51 +1576,42 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  /** Load the new chat's projects and agents on its Mac, keeping valid picks. */
+  /** Load the new chat's projects and models on its Mac, keeping valid picks. */
   async function loadDraft() {
     drawHeader();
     if (!machine) return;
     try {
-      const [p, x] = await Promise.all([call(machine, "list_projects"), call(machine, "list_harnesses")]);
+      const p = await call(machine, "list_projects");
       draft.projects = p.projects.sort((a, b) => a.name.localeCompare(b.name));
-      draft.harnesses = x.harnesses.filter(item => item.available);
       const recent = store.chats?.find(c => c.machine === machine);
       if (draft.project === null && recent?.project) draft.project = recent.project.id;
       if (!draft.projects.some(item => item.id === draft.project)) draft.project = null;
-      if (!draft.harnesses.some(item => item.id === draft.harness)) {
-        draft.harness = (draft.harnesses.find(item => item.id === recent?.harness) || draft.harnesses[0])?.id || null;
-        Object.assign(draft, { model: "", reasoning: "" });
-      }
       drawHeader();
       loadInfo();
-      const harness = draft.harness;
-      if (harness) {
-        catalog(machine, harness).promise.then(([models, harnessLevels]) => {
-          if (harness !== draft.harness) return;
-          fitDraft(models, levelsOf(models, harnessLevels, draft.model));
-          drawInfo();
-        }, () => {});
-      }
+      const from = machine;
+      catalog(machine).promise.then(models => {
+        if (from !== machine) return;
+        fitDraft(models, levelsOf(models, draft.model));
+        drawInfo();
+      }, () => {});
     } catch (e) { toast({ title: "Couldn't load the options", body: e.message, kind: "error" }); }
   }
 
   /** Create the chat with the first message, then show it in place of this screen. */
   async function create() {
     const typed = textarea.value.trim();
-    if (creating || !typed || !machine || !draft.harness) return;
+    if (creating || !typed || !machine) return;
     const text = withSkillRefs(typed);
     haptic(12);
     creating = true;
     updateComposer();
     // The picks may change while the chat is created; use the ones sent.
     const target = machine;
-    const picks = { machine: target, project: draft.project, harness: draft.harness, model: draft.model, reasoning: draft.reasoning };
-    const args = { prompt: text, harness: draft.harness };
+    const picks = { machine: target, project: draft.project, model: draft.model, reasoning: draft.reasoning };
+    const args = { prompt: text };
     if (draft.project) args.project = draft.project;
     if (draft.model) args.model = draft.model;
     if (draft.reasoning) args.reasoning = draft.reasoning;
-    // The desktop records the project's branch on the chat it creates.
-    if (info?.branch) args.branch = info.branch;
     try {
       const made = await call(target, "create_chat", args);
       prefs.set(picks);
@@ -1804,13 +1797,13 @@ function newDraft() {
   const online = ready();
   const saved = prefs.get();
   const machine = (online.find(m => m.id === selectedMac()?.id) || online.find(m => m.id === saved.machine) || online[0])?.id || null;
-  return { machine, project: saved.project ?? null, harness: saved.harness || null, model: saved.model || "", reasoning: saved.reasoning || "", projects: [], harnesses: [] };
+  return { machine, project: saved.project ?? null, model: saved.model || "", reasoning: saved.reasoning || "", projects: [] };
 }
 
-/** The reasoning levels for `model`: its own, else its harness's. */
-function levelsOf(models, harnessLevels, model) {
+/** The reasoning levels for `model`: its own, else pi's. */
+function levelsOf(models, model) {
   const own = models.find(m => m.id === model)?.reasoningLevels;
-  return own?.length ? own : harnessLevels;
+  return own?.length ? own : DEFAULT_LEVELS;
 }
 
 // ---- settings: Macs, notifications, sign out ------------------------------------

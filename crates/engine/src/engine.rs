@@ -132,8 +132,8 @@ struct Chat {
     /// Another pi wrote a prompt to the session, so sending waits for a
     /// take-over.
     elsewhere: bool,
-    /// The title the engine gave the chat, shown until pi writes it to the
-    /// file.
+    /// The title the engine or you gave the chat, which is newer than the
+    /// file's until pi writes it there.
     named: Option<String>,
     /// A title is being asked for.
     titling: bool,
@@ -795,6 +795,34 @@ impl Engine {
         {
             return Ok(());
         }
+        pi.call(json!({"type": "set_session_name", "name": title}))
+            .await?;
+        let mut state = self.state();
+        if let Some(chat) = state.chats.get_mut(id) {
+            chat.named = Some(title.to_owned());
+            chat.changed();
+        }
+        drop(state);
+        self.changed();
+        Ok(())
+    }
+
+    /// Rename chat `id` to `title` through its pi, which it starts if it has
+    /// to, since pi owns the session file.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the title is empty, there's no such chat, another pi has it
+    /// open, or pi refuses.
+    pub async fn rename(&self, id: &str, title: &str) -> Result<()> {
+        let title = title.trim();
+        if title.is_empty() {
+            bail!("the title is empty");
+        }
+        let ops = self.ops(id)?;
+        let _ops = ops.lock().await;
+        self.refuse_elsewhere(id)?;
+        let pi = self.process(id)?;
         pi.call(json!({"type": "set_session_name", "name": title}))
             .await?;
         let mut state = self.state();
@@ -1658,10 +1686,9 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
         cwd: summary.cwd.clone(),
         created: summary.created,
         status: status(chat, Some(summary), state.index.is_interrupted(&summary.id)),
-        title: summary
-            .title
-            .clone()
-            .or_else(|| chat.and_then(|chat| chat.named.clone())),
+        title: chat
+            .and_then(|chat| chat.named.clone())
+            .or_else(|| summary.title.clone()),
         summary: Some(summary.clone()),
         elsewhere: chat.is_some_and(|chat| chat.elsewhere),
         archived: state.index.is_archived(&summary.id),

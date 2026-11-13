@@ -265,10 +265,13 @@ async fn an_extensions_dialog_waits_for_an_answer() {
     assert_eq!(view["chat"]["status"], "awaitingInput");
     assert_eq!(
         view["read"]["pendingInput"],
-        json!({"requestId": "d1", "questions": [{"id": "answer", "header": null, "question": "Pick one",
-               "options": ["red", "blue"], "multiSelect": false, "multiline": false, "prefill": null}]})
+        json!({"id": "d1", "dialog": "select", "title": "Pick one", "message": null,
+               "options": ["red", "blue"], "prefill": null})
     );
-    let answer = json!({"chat": id, "request_id": "d1", "answers": [{"question_id": "answer", "labels": ["blue"]}]});
+    let wrong = json!({"chat": id, "id": "d1", "value": "green"});
+    let refused = tool(&engine, "respond_to_input", wrong).await.unwrap_err();
+    assert!(refused.to_string().contains("options"), "{refused:#}");
+    let answer = json!({"chat": id, "id": "d1", "value": "blue"});
     tool(&engine, "respond_to_input", answer.clone())
         .await
         .unwrap();
@@ -584,8 +587,7 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     let made = tool(
         &first,
         "create_chat",
-        json!({"project": repo, "prompt": "hi", "harness": "pi", "model": "fake/deep",
-               "reasoning": "high", "branch": "main"}),
+        json!({"project": repo, "prompt": "hi", "model": "fake/deep", "reasoning": "high"}),
     )
     .await
     .unwrap();
@@ -594,7 +596,7 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
         c[0].status == Status::Idle && last_prompt(&c[0]) == Some("hi")
     })
     .await;
-    let info = json!({"harness": "pi", "checkout": "local", "branch": "main", "model": "fake/deep",
+    let info = json!({"checkout": "local", "branch": "main", "model": "fake/deep",
                       "reasoning": "high", "contextUsage": {"tokens": 1500, "window": 200_000}});
     let composer = |engine| tool(engine, "composer_info", json!({"chat": id}));
     assert_eq!(composer(&first).await.unwrap(), info, "as its pi says");
@@ -605,21 +607,13 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     assert_eq!(composer(&engine).await.unwrap(), info, "as its file says");
     all_exited(dir.path()).await;
 
-    let models = tool(&engine, "list_models", json!({"harness": "pi"}))
-        .await
-        .unwrap();
+    let models = tool(&engine, "list_models", json!({})).await.unwrap();
     assert_eq!(
         models["models"],
         json!([
-            {"id": "fake/deep", "label": "Deep", "description": null,
-             "reasoningLevels": ["off", "low", "medium", "high", "xhigh"]},
-            {"id": "fake/quick", "label": "Quick", "description": null, "reasoningLevels": ["off"]},
+            {"id": "fake/deep", "label": "Deep", "reasoningLevels": ["off", "low", "medium", "high", "xhigh"]},
+            {"id": "fake/quick", "label": "Quick", "reasoningLevels": ["off"]},
         ])
-    );
-    assert!(
-        tool(&engine, "list_models", json!({"harness": "codex"}))
-            .await
-            .is_err()
     );
 
     let quick = json!({"chat": id, "model": "fake/quick"});
@@ -639,10 +633,17 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     let draft = tool(&engine, "composer_info", json!({"project": dir.path()}))
         .await
         .unwrap();
-    assert_eq!(
-        draft,
-        json!({"harness": "pi", "checkout": null, "branch": null})
-    );
+    assert_eq!(draft, json!({"checkout": null, "branch": null}));
+
+    // A rename shows at once, and pi writes it to the file.
+    let rename = json!({"chat": id, "title": " Fix the build "});
+    tool(&engine, "rename_chat", rename).await.unwrap();
+    assert_eq!(engine.chats()[0].title.as_deref(), Some("Fix the build"));
+    let file = dir.path().join(format!("sessions/--fake--/{id}.jsonl"));
+    let named = std::fs::read_to_string(file).unwrap();
+    assert!(named.contains(r#""name": "Fix the build""#), "{named}");
+    let empty = json!({"chat": id, "title": " "});
+    assert!(tool(&engine, "rename_chat", empty).await.is_err());
     let log = std::fs::read_to_string(dir.path().join("pi.log")).unwrap();
     let listing = log.lines().filter(|l| l.ends_with("--no-session")).count();
     assert_eq!(listing, 1, "the models are listed once");
@@ -655,13 +656,9 @@ async fn a_skill_runs_from_wherever_it_was_typed() {
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
     let review =
         json!([{"name": "review", "description": "Review the diff", "ref": "/skill:review"}]);
-    let skills = tool(
-        &engine,
-        "list_skills",
-        json!({"harness": "pi", "project": dir.path()}),
-    )
-    .await
-    .unwrap();
+    let skills = tool(&engine, "list_skills", json!({"project": dir.path()}))
+        .await
+        .unwrap();
     assert_eq!(skills["skills"], review, "for a new chat");
 
     let id = engine.create(dir.path()).await.unwrap();
@@ -790,7 +787,7 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     assert_eq!(huge_read.read_line(&mut refused).await.unwrap(), 0);
     let _ = writing.await;
     let created = seen.iter().find(|r| r["id"] == 2).unwrap().clone();
-    assert_eq!(created["ok"]["sent"]["delivery"], "run", "{created}");
+    assert_eq!(created["ok"]["delivery"], "run", "{created}");
     assert_eq!(
         created["ok"]["project"]["name"],
         json!(dir.path().file_name().unwrap().to_str())
@@ -948,7 +945,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         .await
         .unwrap();
     assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
-    assert_eq!(from_mac(&mut socket).await["protocol"], 3);
+    assert_eq!(from_mac(&mut socket).await["protocol"], 4);
     // A Mac without a battery, like a CI machine, reports none.
     let power = from_mac(&mut socket).await;
     let battery = &power["battery"];
@@ -998,7 +995,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     );
     assert_eq!(asked["body"], "Needs your answer: Pick one");
     let answer = json!({"id": 10, "tool": "respond_to_input", "args": {"chat": chat,
-                        "answers": [{"question_id": "answer", "labels": ["red"]}]}});
+                        "id": "d1", "value": "red"}});
     socket
         .send(Message::Text(answer.to_string().into()))
         .await

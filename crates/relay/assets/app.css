@@ -412,11 +412,6 @@ a { color: inherit; text-decoration: none; }
   border: 1px solid transparent; transition: background .15s, border-color .15s;
 }
 .opt.on { background: var(--accent-soft); border-color: rgb(from var(--accent) r g b / .55); }
-.opt .box { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--tertiary); flex: none; display: grid; place-items: center; }
-.opt.multi .box { border-radius: 5px; }
-.opt.on .box { background: var(--accent); border-color: var(--accent); color: #fff; }
-.opt .box .i { width: 12px; height: 12px; opacity: 0; }
-.opt.on .box .i { opacity: 1; }
 
 .field {
   width: 100%; border: 1px solid var(--hairline); background: var(--bg); color: var(--text);
