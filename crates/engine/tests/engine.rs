@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use ludolph_engine::engine::{ChatInfo, Config, Delivery, Engine, Status};
-use ludolph_engine::relay::{self, Link, NotifyWhen};
+use ludolph_engine::relay::{self, Link};
 use ludolph_engine::server;
+use ludolph_engine::settings::{Notify, Settings};
 use ludolph_engine::transcript::{Part, Role};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -35,8 +36,6 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         idle,
         grace: Duration::from_secs(2),
         home: dir.to_owned(),
-        title_model: None,
-        title_thinking: "low".into(),
     };
     Engine::start(config).await.unwrap()
 }
@@ -516,12 +515,39 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let asked = std::fs::read_to_string(dir.path().join("pi.log-titles")).unwrap();
     assert_eq!(asked, "fix the build\nrename the old\n");
 
-    // Dictation goes through the same model, with thinking off.
+    // Dictation goes through the same sidecar model, with thinking off.
     let heard = json!({"text": " uh fix the um build "});
-    let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
-    assert_eq!(polished, json!({"text": "Fix the build. (off)"}));
+    let polished = tool(&engine, "polish_dictation", heard.clone())
+        .await
+        .unwrap();
+    assert_eq!(polished, json!({"text": "Fix the build. (default, off)"}));
     let blank = tool(&engine, "polish_dictation", json!({"text": " "})).await;
     assert!(blank.is_err());
+
+    // Picking a sidecar model takes effect at once, and lasts.
+    let unknown = json!({"sidecarModel": "fake/none"});
+    let refused = tool(&engine, "set_settings", unknown).await.unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("no model fake/none"),
+        "{refused:#}"
+    );
+    let picked = json!({"sidecarModel": "fake/quick", "notify": "always"});
+    let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
+    assert_eq!(saved, picked);
+    let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
+    assert_eq!(
+        polished,
+        json!({"text": "Fix the build. (fake/quick, off)"})
+    );
+    assert_eq!(
+        tool(&engine, "get_settings", json!({})).await.unwrap(),
+        picked
+    );
+    let kept = Settings::load(&engine.config().state_dir).unwrap();
+    assert_eq!(
+        (kept.sidecar_model.as_deref(), kept.notify),
+        (Some("fake/quick"), Notify::Always)
+    );
     engine.shutdown().await.unwrap();
 }
 
@@ -856,8 +882,11 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = format!("http://{}", listener.local_addr().unwrap());
-    let link = Link { relay, token };
-    tokio::spawn(relay::run(engine.clone(), link, NotifyWhen::Always));
+    // Whether or not someone uses the Mac running the test.
+    tool(&engine, "set_settings", json!({"notify": "always"}))
+        .await
+        .unwrap();
+    tokio::spawn(relay::run(engine.clone(), Link { relay, token }));
     let (tcp, _) = listener.accept().await.unwrap();
     let mut bearer = None;
     let mut socket = tokio_tungstenite::accept_hdr_async(tcp, Bearer(&mut bearer))
@@ -871,6 +900,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         json!("nonsense"),
         json!({"id": 7, "tool": "list_chats", "args": {}}),
         json!({"id": 8, "tool": "open_terminal", "args": {}}),
+        json!({"id": 6, "tool": "set_settings", "args": {"sidecarModel": null}}),
     ];
     for call in calls {
         let text = call
@@ -879,12 +909,16 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         socket.send(Message::Text(text.into())).await.unwrap();
     }
     let mut replies = std::collections::BTreeMap::new();
-    while replies.len() < 2 {
+    while replies.len() < 3 {
         let reply = from_mac(&mut socket).await;
         replies.insert(reply["id"].as_u64().unwrap(), reply["result"].clone());
     }
     assert_eq!(replies[&7], json!({"Ok": {"total": 0, "chats": []}}));
     assert_eq!(replies[&8], json!({"Err": "no tool open_terminal"}));
+    assert_eq!(
+        replies[&6],
+        json!({"Err": "the phone can't call set_settings"})
+    );
 
     // Each moment worth telling reaches the phone as a notice.
     let create =

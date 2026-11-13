@@ -63,7 +63,7 @@ Both processes run from the same binary inside `Ludolph.app`.
 | Transcript, cwd, model, thinking level, title | pi's session files, `~/.pi/agent/sessions/**.jsonl` | pi |
 | Index: one row per session | `~/Library/Application Support/Ludolph/index.json` | engine |
 | Turn changes | `~/Library/Application Support/Ludolph/turns/<session id>/<entry id>.json` | engine |
-| Settings | `~/Library/Application Support/Ludolph/settings.json` | app writes, engine reads |
+| Settings | `~/Library/Application Support/Ludolph/settings.json` | engine; the app changes them through it |
 | UI state (seen turns, folded projects, window frames, last picks) | `~/Library/Application Support/Ludolph/ui.json` | app |
 
 Ludolph never writes to pi's session files directly. It changes them only through pi: prompts, `set_session_name`, and so on.
@@ -173,12 +173,12 @@ A terminal pi that's open but idle writes nothing, so this can't see it. The rea
 Titles are part of the main flow:
 
 1. Until a chat has a title, the app shows the first words of its first prompt.
-2. As soon as Ludolph sends a message to a chat without a title, the engine asks the title model for one, while the run goes on. The model sees the chat's first prompt, or the message itself for a new chat, clipped to 2,000 characters. A new chat has its title about 3 seconds after you send. Messages an extension command handles (like `/name`) don't ask.
+2. As soon as Ludolph sends a message to a chat without a title, the engine asks the sidecar model for one, while the run goes on. The model sees the chat's first prompt, or the message itself for a new chat, clipped to 2,000 characters. A new chat has its title about 3 seconds after you send. Messages an extension command handles (like `/name`) don't ask.
 3. It runs `pi -p` the way zeron-tools' `pi.rs` does: in a temporary folder, with no session, tools, extensions, skills, prompt templates, context files, or MCP, with a 60-second limit, and with at most two running at once.
 4. When the title comes back, the engine asks the chat's pi for its state. If the session got a name in the meantime, from you or from pi, the new title is dropped. Otherwise it stores the title with `set_session_name`. pi keeps the name until it writes the session file, then adds it as a `session_info` entry, so pi's own `/resume` shows the same title. The list shows the title at once, even before the file exists.
 5. If any step fails, or the chat's pi stopped before the title came back, the next message tries again.
 
-The title model is `LUDOLPH_TITLE_MODEL` at `LUDOLPH_TITLE_THINKING` (default `low`) until there are settings, or pi's default model if that's unset. A small, fast model keeps the delay short.
+Titles and dictation cleanup use the **sidecar model** from Settings, or pi's default model if none is picked. It always runs with thinking off, so the setting is just a model, and a small, fast one keeps the delay short. The engine only accepts a model that pi lists, and a new pick applies from the next call.
 
 Renaming a chat by hand goes through the same `set_session_name`. The engine never replaces a title that a person or pi set. Calls that change one chat (title, rename, model) go through one queue per chat, so they can't overtake each other.
 
@@ -249,7 +249,7 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | `set_chat_model` | `set_model`, `set_thinking_level` |
 | `list_models` | Cached `get_available_models` |
 | `list_skills` | `get_commands` (see [pi processes](#pi-processes)) |
-| `polish_dictation` | The title model through `pi -p` |
+| `polish_dictation` | The sidecar model through `pi -p` |
 | `list_harnesses` | pi alone, since the phone's picker still asks |
 | `open_zeron` | Removed. If the engine isn't running, the Mac is offline. |
 
@@ -268,15 +268,17 @@ They live in a `ui` crate. Each window gives them its own layout.
 
 - **Main window:** a normal, resizable window. The sidebar has projects, their chats, status filters, and search. The chat is on the right. It also has **Settings**, and an action to open the current chat in the quick window. It shows a Dock icon while open, and the app can be pinned to the Dock.
 - **Quick window:** today's Companion: floating and slightly transparent, shown and hidden with the global shortcut (default ⌃⌥Space).
-- **Dictation:** Apple's speech recognizer, as now, then cleaned up by the title model.
+- **Dictation:** Apple's speech recognizer, as now, then cleaned up by the sidecar model.
 
 ### Settings
 
-- Title model and its thinking level
-- Chats to keep per project
+The engine keeps them, since it's the one using them and it runs while the app is closed. The app reads and saves them with `get_settings` and `set_settings`, which take all the settings at once. The phone can't call either.
+
+- Sidecar model, for titles and dictation (`sidecarModel`)
+- Notifications even while you're at the Mac (`notify`: `away` or `always`)
 - Minutes before an idle pi process stops
 - Global shortcut
-- Phone: relay address and link, and notifications even while you're at the Mac
+- Phone: relay address and link
 - Open at login
 - The pi binary, if it's not on `PATH`
 
@@ -286,7 +288,7 @@ The relay, its Kubernetes manifests, and the phone app (`relay/assets`) move int
 
 - **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. Until there are settings, `ludolph link --relay <address> --token <token>` checks the token with the relay and saves the link in `relay.json`, and the engine connects when it starts.
 - **Until the relay moves:** the engine speaks protocol 1, so it works with Zeron's relay as deployed. It reports itself as running, and serves calls with its own tools, so the phone's "open Zeron" is gone. Version 2 comes with moving the relay.
-- **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Protocol 1 has no interrupted kind, so that one goes as failed. Until there are settings, `LUDOLPH_NOTIFY=always` turns on always notify. Runs by another pi aren't watched, so they don't notify.
+- **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Protocol 1 has no interrupted kind, so that one goes as failed. Runs by another pi aren't watched, so they don't notify.
 - **Self-hosting:** the README explains how to run the relay (container image and manifests) and how to create the setup link.
 
 ### Trust

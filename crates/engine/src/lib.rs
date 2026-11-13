@@ -12,6 +12,7 @@ pub mod repo;
 pub mod runtime;
 pub mod server;
 pub mod session;
+pub mod settings;
 pub mod skills;
 mod text;
 pub mod title;
