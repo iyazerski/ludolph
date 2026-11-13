@@ -52,7 +52,7 @@ So memory goes on two things: Zeron's engine, which Ludolph removes, and one pi 
   - `ludolph install` writes `~/Library/LaunchAgents/dev.iyazerski.ludolph.engine.plist` for the binary it's run from and loads it. It logs to `~/Library/Logs/Ludolph/engine.log`. `ludolph uninstall` removes it. The signed app will register the same agent itself.
   - launchd's environment is bare, so the engine starts by asking your login shell for its own, like VS Code does. It runs `env` through `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would: tools you install later, and the API keys and proxy settings your rc files export.
 - **App** (`Ludolph.app`): one UI process with both windows. It starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
-  - Until the app bundle, `ludolph app` runs it (`--show` opens the quick window at once). It takes `app.lock` in the state folder, so a second copy quits instead of fighting over the shortcut.
+  - Until the app bundle, `ludolph app` runs it and opens the main window (`--hidden` starts with no window, as at login). It takes `app.lock` in the state folder, so a second copy quits instead of fighting over the shortcut.
 - **Relay** (`crates/relay`): a small server you host. It started as zeron-tools' `zeron-relay`.
 
 Why the engine is its own process: agents and the phone keep working when the app is quit, crashes, or updates. That's the reason Zeron's engine was moved to a service in zeron-tools 0.19.
@@ -285,7 +285,7 @@ The views are shared by both windows. They're today's Companion views, with the 
 
 They live in a `ui` crate. Each window gives them its own layout.
 
-- **Main window:** a normal, resizable window. The sidebar has projects, their chats, status filters, and search. The chat is on the right. It also has **Settings**, and an action to open the current chat in the quick window. It shows a Dock icon while open, and the app can be pinned to the Dock.
+- **Main window:** a normal, resizable window. The sidebar has **New chat** (⌘N), search (⌘F), the status filters, and the projects with their chats, each project with a **+** for a new chat in it, collapsible, and with **Show more**. ⌃⌘S hides the sidebar. The open chat is on the right, its transcript capped at a reading width. Its toolbar has the title and project, an action to open the chat in the quick window, and the chat's menu. The quick window's header can open its chat here too, and hides as it does. The window shows a Dock icon while open, and the app can be pinned to the Dock. Closing it keeps the draft but drops the open chat and the window's GPU surface, so the app goes back near its hidden size. **Settings** comes with milestone 4.
 - **Quick window:** today's Companion: floating and slightly transparent, shown and hidden with the global shortcut (⌃⌥Space, fixed until Settings). It follows the chat list and the open chat through the socket's feeds while it shows, and drops them when it hides. Its 1-second tick runs only while something on screen counts: a toast, the working clock, a copy check, or a retry countdown. The list loads the 200 latest chats and shows 10 per project, with **Show more**.
 - **Dictation:** Apple's speech recognizer, as now, then cleaned up by the sidecar model.
 
@@ -334,6 +334,8 @@ What keeps the engine inside its budget:
 - pi's stdout is read all the time, as pi asks, but the engine keeps only each chat's live tail.
 
 Measured on the quick window's release build, with a long chat: 63 MB hidden, 87 MB shown with the list, 100 MB with a chat open, all at 0% CPU while nothing changes. While a reply streams, the app takes about 4% of a core. The hidden app is 3 MB over budget.
+
+Measured on the main window's release build (physical footprint): 10 MB started with no window, 69 MB with the main window on a new chat, 150 MB with a long chat open, and 88 MB after closing it, all at 0 to 0.3% CPU. The rest after closing is Rune's per-window state (text atlas, motion, layout), which it keeps for a window that may reopen.
 
 Why streaming frames skip springs: Rune springs a page to its new layout, so with each frame animated, a growing reply kept the window drawing at the display's 120 Hz for the whole reply. That took 20 to 25% of a core, and fewer frames didn't change it. Frames that only grow a streaming reply now land at once, which leaves Rune drawing about 7 frames a second. Other changes still animate.
 

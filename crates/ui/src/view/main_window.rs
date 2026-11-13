@@ -1,0 +1,68 @@
+//! The main window: the sidebar beside the chat, under a toolbar with the
+//! chat's title and actions.
+
+use rune::{Cx, El, col, el, text};
+use rune_kit::shell::{SidebarToggle, SplitView, Toolbar};
+use rune_kit::{IconButton, IconButtonVariant, Kit};
+
+use super::{chat, icons, sidebar, toast};
+use crate::app::{ChatPage, Page, State};
+
+pub fn view(s: &State, cx: &mut Cx<State>) -> El {
+    let k = rune_theme_opencode::kit(cx.system_dark());
+    let mut layer = Vec::new();
+    let (pane, bar) = match &s.page {
+        Page::Chat(page) => (
+            chat::pane(s, page, k, &mut layer),
+            toolbar(page, k, &mut layer),
+        ),
+        Page::List => (el(), Toolbar::new()),
+    };
+    layer.extend(toast(s, k));
+    let split = SplitView::new(pane)
+        .sidebar(
+            &s.sidebar,
+            |s: &mut State| &mut s.sidebar,
+            sidebar::view(s, k),
+        )
+        .toolbar(bar)
+        .titlebar_inset(cx.titlebar_inset())
+        .sidebar_toggle(SidebarToggle::new().in_header().shortcut("⌃⌘S"))
+        .reduced_motion(cx.is_reduced_motion())
+        .build(k);
+    rune_kit::root(split, layer)
+}
+
+/// The chat's title and project, then its actions.
+fn toolbar(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> Toolbar {
+    let (title, sub) = chat::titles(page);
+    let mut titles = col().min_w(0.0).shrink().child(
+        text(title)
+            .font(k.ty.ui_medium)
+            .color(k.c.text_base)
+            .truncate(),
+    );
+    if !sub.is_empty() {
+        titles = titles.child(
+            text(sub)
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .truncate(),
+        );
+    }
+    let mut bar = Toolbar::new().leading(titles);
+    if let Some(c) = page.existing() {
+        let id = c.id.clone();
+        bar = bar
+            .trailing(
+                IconButton::new(&icons::POP_OUT)
+                    .variant(IconButtonVariant::GhostMuted)
+                    .label("Open in the quick window")
+                    .help("Open in the quick window")
+                    .on_press(move |s: &mut State| s.open_in_peer(id.clone()))
+                    .build(k),
+            )
+            .trailing(chat::more_menu(page, k, layer));
+    }
+    bar
+}

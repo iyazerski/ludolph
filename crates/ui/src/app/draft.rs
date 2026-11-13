@@ -182,7 +182,7 @@ impl State {
                 // Also resets the caret, history, and marks.
                 page.composer.clear();
                 page.attached.clear();
-                s.prefs.new_chat = pick;
+                s.prefs.borrow_mut().new_chat = pick;
                 s.save_prefs();
                 if let Some(why) = made.send_error {
                     // Open it with the message back in its composer.

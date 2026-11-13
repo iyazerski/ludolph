@@ -7,7 +7,7 @@ use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 use super::icons;
 use super::widgets::{busy, head, head_titles, hide_button};
-use crate::app::{Changes, Existing, State};
+use crate::app::{Changes, Existing, State, Window};
 use crate::data::TurnChanges;
 
 /// "3 files changed +12 −4", pressed to open the diff.
@@ -84,10 +84,10 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
                 .color(k.c.text_faint)
                 .truncate(),
         );
-    let bar = head("changes-head")
-        .child(back)
-        .child(titles)
-        .child(hide_button(k));
+    let mut bar = head("changes-head").child(back).child(titles);
+    if s.window == Window::Quick {
+        bar = bar.child(hide_button(k));
+    }
     let body = match changes {
         Changes::Loading => note().child(busy(18.0, k)),
         Changes::Failed(why) => note().child(

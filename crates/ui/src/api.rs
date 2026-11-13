@@ -1,6 +1,7 @@
-//! The bridge from the window to the engine: calls and subscriptions run on
+//! The bridge from a window to the engine: calls and subscriptions run on
 //! a tokio runtime and hand their results back to the UI thread through
-//! the app's handle.
+//! the window's handle. The windows share one connection and one prefs
+//! writer ([`Shared`]).
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -21,22 +22,44 @@ use crate::prefs::Prefs;
 /// a toast's end.
 const TICK: Duration = Duration::from_secs(1);
 
-pub struct Api {
+/// What the windows share: the runtime, the engine connection and the
+/// prefs writer.
+#[derive(Clone)]
+pub struct Shared {
     rt: Handle,
     client: Client,
-    app: AppHandle<State>,
-    prefs: watch::Sender<Value>,
-    ticking: watch::Sender<bool>,
+    prefs: Arc<watch::Sender<Value>>,
 }
 
-impl Api {
-    /// Connect to the engine at `socket`, tell the UI when it comes and goes,
-    /// and write the prefs to `prefs_path`, all on `rt`.
-    pub fn start(rt: Handle, socket: PathBuf, app: AppHandle<State>, prefs_path: PathBuf) -> Self {
+impl Shared {
+    /// Connect to the engine at `socket` and write the prefs to
+    /// `prefs_path`, both on `rt`.
+    pub fn start(rt: Handle, socket: PathBuf, prefs_path: PathBuf) -> Self {
         let client = {
             let _entered = rt.enter();
             Client::start(socket)
         };
+        let prefs = Arc::new(write_prefs(&rt, prefs_path));
+        Self { rt, client, prefs }
+    }
+}
+
+pub struct Api {
+    rt: Handle,
+    client: Client,
+    app: AppHandle<State>,
+    /// The other window, for handing it a chat and redrawing it after the
+    /// prefs it shows change.
+    peer: AppHandle<State>,
+    prefs: Arc<watch::Sender<Value>>,
+    ticking: watch::Sender<bool>,
+}
+
+impl Api {
+    /// Serve the window behind `app` over `shared`'s connection: tell it
+    /// when the engine comes and goes, and tick it while it asks.
+    pub fn start(shared: &Shared, app: AppHandle<State>, peer: AppHandle<State>) -> Self {
+        let Shared { rt, client, prefs } = shared.clone();
         let mut up = client.up();
         let to_ui = app.clone();
         rt.spawn(async move {
@@ -66,11 +89,11 @@ impl Api {
                 }
             }
         });
-        let prefs = write_prefs(&rt, prefs_path);
         Self {
             rt,
             client,
             app,
+            peer,
             prefs,
             ticking,
         }
@@ -82,8 +105,9 @@ impl Api {
             .send_if_modified(|was| std::mem::replace(was, on) != on);
     }
 
-    /// Save the prefs off the UI thread; losing them only resets what the
-    /// list shows as new and the last picks.
+    /// Save the prefs off the UI thread, and redraw the other window, which
+    /// shows them too. Losing them only resets what the list shows as new
+    /// and the last picks.
     pub fn save_prefs(&self, prefs: &Prefs) {
         match serde_json::to_value(prefs) {
             Ok(prefs) => {
@@ -91,10 +115,15 @@ impl Api {
             }
             Err(e) => eprintln!("{e:#}"),
         }
+        self.peer.update(|_, _| {});
     }
 
     pub fn app(&self) -> &AppHandle<State> {
         &self.app
+    }
+
+    pub fn peer(&self) -> &AppHandle<State> {
+        &self.peer
     }
 
     /// Call `tool` with `args`, then `done` with its parsed answer (or why

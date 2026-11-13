@@ -30,14 +30,14 @@ fn main() -> ExitCode {
             engine()
         }
         ["app"] => app(false),
-        ["app", "--show"] => app(true),
+        ["app", "--hidden"] => app(true),
         ["install"] => install(),
         ["uninstall"] => uninstall(),
         ["link", code] => link(code),
         ["unlink"] => unlink(),
         _ => {
             eprintln!(
-                "usage: ludolph engine\n       ludolph app [--show]\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
+                "usage: ludolph engine\n       ludolph app [--hidden]\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
             );
             return ExitCode::from(2);
         }
@@ -89,15 +89,15 @@ async fn engine() -> Result<()> {
     engine.shutdown().await
 }
 
-/// Run the windows until the app quits. `show` opens the quick window at
-/// once, rather than on its shortcut.
-fn app(show: bool) -> Result<()> {
+/// Run the windows until the app quits. It opens the main window, unless
+/// `hidden` keeps it closed until the app is opened again, as at login.
+fn app(hidden: bool) -> Result<()> {
     let state_dir = state_dir(&home()?);
     println!(
         "Ludolph is running; {} shows the quick window.",
         ludolph_ui::SHORTCUT
     );
-    ludolph_ui::run(ludolph_ui::Opts { state_dir, show })
+    ludolph_ui::run(ludolph_ui::Opts { state_dir, hidden })
 }
 
 /// Run the engine in the background from now on, on this binary.
