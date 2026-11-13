@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use ludolph_engine::engine::{Config, Engine};
-use ludolph_engine::relay::{self, Link};
+use ludolph_engine::relay::{self, Link, NotifyWhen};
 use ludolph_engine::server;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -68,7 +68,12 @@ async fn engine() -> Result<()> {
     let link = Link::load(&config.state_dir)?;
     let engine = Engine::start(config).await?;
     if let Some(link) = link {
-        tokio::spawn(relay::run(engine.clone(), link));
+        // Until there are settings (`docs/design.md`, "Phone and relay").
+        let notify = match std::env::var("LUDOLPH_NOTIFY").as_deref() {
+            Ok("always") => NotifyWhen::Always,
+            _ => NotifyWhen::Away,
+        };
+        tokio::spawn(relay::run(engine.clone(), link, notify));
     }
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;

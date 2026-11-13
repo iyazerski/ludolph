@@ -3,7 +3,8 @@
 //!
 //! The engine keeps one outgoing WebSocket to the relay, and answers its
 //! calls with the same tools the app uses. Only those tools exist, so the
-//! relay can't reach anything else on the Mac.
+//! relay can't reach anything else on the Mac. It also passes the chats'
+//! alerts on, so the phone can notify you.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -12,17 +13,21 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use ludolph_relay_proto::{CONNECT_PATH, Call, Engine as State, PROTOCOL, Up};
+use ludolph_relay_proto::{CONNECT_PATH, Call, Engine as State, Notice, NoticeKind, PROTOCOL, Up};
+use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, header};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
-use crate::engine::Engine;
+use crate::engine::{Alert, AlertKind, Engine};
+use crate::text::one_line;
 use crate::tools::{self, Tool};
+use crate::transcript::{self, Part};
 
 /// How often to ping the relay. Proxies drop idle sockets, and any frame
 /// back proves the link still works.
@@ -43,6 +48,20 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(25);
 const MAX_CALLS: usize = 16;
 /// Calls running or waiting on one connection; more are refused.
 const MAX_QUEUED_CALLS: usize = 64;
+/// The Mac counts as in use if it had keyboard or mouse input this recently.
+const AWAY_AFTER: Duration = Duration::from_secs(120);
+/// How long building one notice (reading its chat) may take.
+const NOTICE_TIMEOUT: Duration = Duration::from_secs(15);
+const BODY_CHARS: usize = 240;
+
+/// When the phone gets notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyWhen {
+    /// Only while nobody uses the Mac: at it, you see the chat yourself.
+    Away,
+    /// Whether or not someone uses the Mac.
+    Always,
+}
 
 /// The relay's address and this Mac's token, from the phone's "Add a Mac".
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,10 +106,10 @@ impl Link {
     }
 }
 
-/// Stay connected to the relay and answer its calls, reconnecting when the
-/// link drops. It returns only when the relay rejects the token, since
-/// trying again can't help then.
-pub async fn run(engine: Engine, link: Link) {
+/// Stay connected to the relay, answer its calls, and pass alerts on as
+/// `notify` allows, reconnecting when the link drops. It returns only when
+/// the relay rejects the token, since trying again can't help then.
+pub async fn run(engine: Engine, link: Link, notify: NotifyWhen) {
     let url = match socket_url(&link.relay) {
         Ok(url) => url,
         Err(e) => {
@@ -106,7 +125,7 @@ pub async fn run(engine: Engine, link: Link) {
             let socket = dial(&url, &link.token).await?;
             eprintln!("relay: connected to {url}");
             connected = Some(Instant::now());
-            serve(socket, &engine, &slots).await
+            serve(socket, &engine, &slots, notify).await
         }
         .await;
         if connected.is_some_and(|at| at.elapsed() >= STABLE_AFTER) {
@@ -146,16 +165,25 @@ type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Serve one connection until it ends. `Ok` means the relay closed it.
-async fn serve(socket: Socket, engine: &Engine, slots: &Arc<Semaphore>) -> Result<()> {
+///
+/// Alerts from before it began are dropped: a late notice would only be
+/// noise (`docs/design.md`, "Phone and relay").
+async fn serve(
+    socket: Socket,
+    engine: &Engine,
+    slots: &Arc<Semaphore>,
+    notify: NotifyWhen,
+) -> Result<()> {
+    let mut alerts = engine.alerts();
     let (mut sink, mut stream) = socket.split();
     sink.send(encode(&hello())?).await?;
     let running = State::Running {
         running: Some(env!("CARGO_PKG_VERSION").to_owned()),
     };
     sink.send(encode(&Up::Engine(running))?).await?;
-    // Dropping the set when the connection ends stops its calls, since their
-    // replies have nowhere to go.
-    let mut calls: JoinSet<Up> = JoinSet::new();
+    // Calls and notices being built. Dropping the set when the connection
+    // ends stops them, since they have nowhere to go.
+    let mut calls: JoinSet<Option<Up>> = JoinSet::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut heard = Instant::now();
     loop {
@@ -169,7 +197,8 @@ async fn serve(socket: Socket, engine: &Engine, slots: &Arc<Semaphore>) -> Resul
                             sink.send(encode(&busy)?).await?;
                         }
                         Ok(call) => {
-                            calls.spawn(answer(engine.clone(), slots.clone(), call));
+                            let reply = answer(engine.clone(), slots.clone(), call);
+                            calls.spawn(async { Some(reply.await) });
                         }
                         // The relay times out the call it holds.
                         Err(e) => eprintln!("relay: skipped a bad call: {e}"),
@@ -179,7 +208,16 @@ async fn serve(socket: Socket, engine: &Engine, slots: &Arc<Semaphore>) -> Resul
                     Some(Err(e)) => return Err(e.into()),
                 }
             }
-            Some(Ok(reply)) = calls.join_next() => sink.send(encode(&reply)?).await?,
+            alert = alerts.recv() => match alert {
+                Ok(alert) => _ = calls.spawn(tell(engine.clone(), alert, notify)),
+                Err(RecvError::Lagged(missed)) => eprintln!("relay: skipped {missed} notifications"),
+                Err(RecvError::Closed) => bail!("the engine stopped"),
+            },
+            Some(Ok(up)) = calls.join_next() => {
+                if let Some(up) = up {
+                    sink.send(encode(&up)?).await?;
+                }
+            }
             _ = ping.tick() => {
                 if heard.elapsed() > SILENCE_LIMIT {
                     bail!("no word from the relay for {}s", SILENCE_LIMIT.as_secs());
@@ -204,6 +242,91 @@ async fn answer(engine: Engine, slots: Arc<Semaphore>, call: Call) -> Up {
         Err(_) => Err("the Mac didn't answer in time".into()),
     };
     Up::Reply { id, result }
+}
+
+/// The notice for `alert`, if `notify` allows one now and it's still news.
+async fn tell(engine: Engine, alert: Alert, notify: NotifyWhen) -> Option<Up> {
+    if notify == NotifyWhen::Away && !away() {
+        return None;
+    }
+    match tokio::time::timeout(NOTICE_TIMEOUT, notice(&engine, &alert)).await {
+        Ok(Ok(notice)) => notice.map(Up::Notify),
+        Ok(Err(e)) => {
+            eprintln!("relay: notification for {}: {e:#}", alert.chat);
+            None
+        }
+        Err(_) => {
+            eprintln!(
+                "relay: notification for {}: the chat took too long to read",
+                alert.chat
+            );
+            None
+        }
+    }
+}
+
+/// Build the notice for `alert` from the chat as it is now: its last
+/// message, or the question it asks. `None` if the question is answered
+/// already.
+async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
+    let view = engine.view(&alert.chat, 1).await?;
+    let last = view.page.messages.last();
+    let (kind, body) = match alert.kind {
+        AlertKind::Finished => (NoticeKind::Finished, last.map(text).unwrap_or_default()),
+        AlertKind::Failed => {
+            let error = last.and_then(error);
+            (
+                NoticeKind::Failed,
+                error.unwrap_or_else(|| "The run failed.".into()),
+            )
+        }
+        AlertKind::Interrupted => (NoticeKind::Failed, "The run stopped: pi exited.".into()),
+        AlertKind::Input => {
+            let Some(question) = view.question else {
+                return Ok(None);
+            };
+            let asked = question.message.filter(|_| question.title.is_empty());
+            let asked = asked.unwrap_or(question.title);
+            (NoticeKind::Input, format!("Needs your answer: {asked}"))
+        }
+    };
+    let title = view.chat.title.unwrap_or_else(|| "Untitled chat".into());
+    Ok(Some(Notice {
+        kind,
+        chat: view.chat.id,
+        title: one_line(&title, BODY_CHARS).unwrap_or_default(),
+        body: one_line(&body, BODY_CHARS).unwrap_or_default(),
+    }))
+}
+
+/// A message's text, without its tool calls.
+fn text(message: &transcript::Message) -> String {
+    let parts = message.parts.iter().filter_map(|part| match part {
+        Part::Text { text } => Some(text.as_str()),
+        _ => None,
+    });
+    parts.collect::<Vec<_>>().join("\n")
+}
+
+fn error(message: &transcript::Message) -> Option<String> {
+    message.parts.iter().find_map(|part| match part {
+        Part::Error { error } => Some(error.clone()),
+        _ => None,
+    })
+}
+
+/// Whether nobody has touched the Mac's keyboard or mouse for [`AWAY_AFTER`].
+/// If idle time can't be read, assume away: a missed notice is worse.
+fn away() -> bool {
+    // `kCGAnyInputEventType` (`~0`), a C macro the bindings leave out.
+    let any_input = CGEventType(u32::MAX);
+    let idle = CGEventSource::seconds_since_last_event_type(
+        CGEventSourceStateID::HIDSystemState,
+        any_input,
+    );
+    Duration::try_from_secs_f64(idle)
+        .ok()
+        .is_none_or(|idle| idle >= AWAY_AFTER)
 }
 
 async fn dial(url: &str, token: &str) -> Result<Socket> {

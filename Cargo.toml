@@ -35,6 +35,7 @@ libc = "0.2"
 ludolph-json-file = { path = "crates/json-file" }
 ludolph-relay-proto = { path = "crates/relay-proto" }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFArray", "CFString", "std"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGEventSource", "CGEventTypes", "std"] }
 objc2-core-services = { version = "0.3", default-features = false, features = ["FSEvents", "dispatch2", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

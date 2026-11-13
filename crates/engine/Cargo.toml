@@ -19,6 +19,7 @@ libc.workspace = true
 ludolph-json-file.workspace = true
 ludolph-relay-proto.workspace = true
 objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
 objc2-core-services.workspace = true
 rustls.workspace = true
 serde.workspace = true

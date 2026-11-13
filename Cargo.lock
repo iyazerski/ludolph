@@ -326,6 +326,7 @@ dependencies = [
  "ludolph-json-file",
  "ludolph-relay-proto",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-core-services",
  "rustls",
  "serde",
@@ -387,6 +388,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "objc2-core-graphics"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
+dependencies = [
+ "bitflags",
+ "objc2-core-foundation",
 ]
 
 [[package]]
