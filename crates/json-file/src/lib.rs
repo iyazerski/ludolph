@@ -4,6 +4,7 @@
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -28,8 +29,11 @@ pub fn save<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 
 /// Write `bytes` to `path` atomically, readable only by the user.
 pub fn save_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    // Per process, so two runs (say, `--install` and the agent) can't share it.
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    // Per process and write, so two runs (say, `--install` and the agent),
+    // or two tasks in one, can't share it.
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let write = WRITES.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{write}", std::process::id()));
     // A fresh file, so the mode applies: a leftover one keeps its own.
     match std::fs::remove_file(&tmp) {
         Err(e) if e.kind() != ErrorKind::NotFound => {

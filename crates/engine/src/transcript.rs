@@ -85,7 +85,22 @@ pub struct Tail<'a> {
     pub streaming: Option<&'a Value>,
 }
 
-/// The latest messages of a transcript.
+/// Messages a page shows when it isn't anchored, or its anchor is gone.
+pub const LATEST: usize = 40;
+
+/// Which messages of a transcript a page has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Window {
+    /// The last `n`.
+    Latest(usize),
+    /// From message `id` to the end, with `earlier` more before it. A
+    /// window anchored on a message keeps it as new ones come, which a
+    /// count from the end can't. Without the message, as when the session
+    /// moved to another branch, it's the latest [`LATEST`].
+    From { id: String, earlier: usize },
+}
+
+/// Messages of a transcript, up to its end.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Page {
     /// The transcript's messages, of which these are the last.
@@ -110,8 +125,8 @@ pub struct Transcripts {
 }
 
 impl Transcripts {
-    /// The last `limit` messages of the transcript in `path`, followed by
-    /// the messages of `tail` the file doesn't have yet. A chat pi hasn't
+    /// The `window` of the transcript in `path`, followed by the messages
+    /// of `tail` the file doesn't have yet. A chat pi hasn't
     /// written yet has no `path`.
     ///
     /// pi writes each message when it ends, while its events carry on, so
@@ -122,10 +137,10 @@ impl Transcripts {
     /// # Errors
     ///
     /// Fails if the file can't be read.
-    pub fn page(&mut self, path: Option<&Path>, tail: Tail, limit: usize) -> Result<Page> {
+    pub fn page(&mut self, path: Option<&Path>, tail: Tail, window: &Window) -> Result<Page> {
         match path {
-            Some(path) => self.scan(path)?.page(path, tail, limit),
-            None => Scan::default().page(Path::new(""), tail, limit),
+            Some(path) => self.scan(path)?.page(path, tail, window),
+            None => Scan::default().page(Path::new(""), tail, window),
         }
     }
 
@@ -305,9 +320,9 @@ impl Scan {
         Ok(())
     }
 
-    /// The last `limit` messages of the path to the leaf, followed by the
-    /// messages of `tail` that the path doesn't have.
-    fn page(&mut self, path: &Path, tail: Tail, limit: usize) -> Result<Page> {
+    /// The `window` of the path to the leaf, followed by the messages of
+    /// `tail` that the path doesn't have.
+    fn page(&mut self, path: &Path, tail: Tail, window: &Window) -> Result<Page> {
         let mut chain = Vec::new();
         let mut at = self.entries.len().checked_sub(1);
         // A parent always comes before its child, so this ends.
@@ -334,7 +349,14 @@ impl Scan {
         let file_items = chain.iter().map(|&i| (Item::File(i), self.entries[i].kind));
         let live_items = (live.iter().enumerate()).map(|(i, m)| (Item::Live(i), message_kind(m)));
         let groups = group(file_items.chain(live_items));
-        let skip = groups.len().saturating_sub(limit);
+        let latest = |n: usize| groups.len().saturating_sub(n);
+        let skip = match window {
+            Window::Latest(n) => latest(*n),
+            Window::From { id, earlier } => groups
+                .iter()
+                .position(|span| matches!(span.first(), Some(Item::File(i)) if self.entries[*i].id == *id))
+                .map_or_else(|| latest(LATEST), |at| at.saturating_sub(*earlier)),
+        };
 
         let mut reader = None;
         let previous = std::mem::take(&mut self.rendered);

@@ -1,5 +1,6 @@
-//! The login shell's `PATH`. launchd starts the engine with a short one,
-//! but pi's tools (`git`, `cargo`, `uv`, …) need what a terminal has.
+//! The login shell's environment. launchd starts the engine with a bare
+//! one, but pi needs what a terminal has: a `PATH` for its tools (`git`,
+//! `cargo`, `uv`, …), and the API keys and proxy settings rc files export.
 
 use std::ffi::CStr;
 use std::io::Read;
@@ -11,39 +12,39 @@ use anyhow::{Context, Result, bail};
 
 /// How long the shell may take: an interactive one loads your rc files.
 const TIMEOUT: Duration = Duration::from_secs(10);
-/// Marks the value in the output, since rc files may print too.
-const MARK: &str = "_LUDOLPH_PATH_";
+/// Marks the values in the output, since rc files may print too.
+const MARK: &str = "_LUDOLPH_ENV_";
+/// The shell's own bookkeeping, which means nothing to the engine.
+const SKIP: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
 
-/// Use the login shell's `PATH` from now on, or keep the current one if it
-/// can't be read.
+/// Add the login shell's environment to the engine's from now on, or keep
+/// launchd's alone if it can't be read.
 ///
 /// # Safety
 ///
 /// No other thread may be running, since it changes the environment.
-pub unsafe fn adopt_login_path() {
-    match login_path() {
-        // SAFETY: the caller promises there's only this thread.
-        Ok(path) => unsafe { std::env::set_var("PATH", path) },
-        Err(e) => eprintln!("keeping launchd's PATH: {e:#}"),
+pub unsafe fn adopt_login_env() {
+    match login_env() {
+        Ok(vars) => {
+            for (name, value) in vars {
+                // SAFETY: the caller promises there's only this thread.
+                unsafe { std::env::set_var(name, value) };
+            }
+        }
+        Err(e) => eprintln!("keeping launchd's environment: {e:#}"),
     }
 }
 
-fn login_path() -> Result<String> {
+fn login_env() -> Result<Vec<(String, String)>> {
     let shell = user_shell().unwrap_or_else(|| "/bin/zsh".into());
-    let fish = shell.file_name().is_some_and(|name| name == "fish");
-    // fish keeps `PATH` as a list, which `"$PATH"` would join with spaces.
-    let value = if fish {
-        "(string join : $PATH)"
-    } else {
-        "\"$PATH\""
-    };
     // Interactive and login, so both `.zprofile` and `.zshrc` edits count.
+    // `env` prints the same in every shell, fish's list `PATH` included.
     let mut child = Command::new(&shell)
         .args([
             "-i",
             "-l",
             "-c",
-            &format!("printf '\\n{MARK}%s{MARK}\\n' {value}"),
+            &format!("printf '{MARK}'; /usr/bin/env -0; printf '{MARK}'"),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -70,9 +71,17 @@ fn login_path() -> Result<String> {
         std::thread::sleep(Duration::from_millis(20));
     }
     let out = reader.join().expect("the reader doesn't panic")?;
-    let path = out.split(MARK).nth(1).filter(|path| !path.is_empty());
-    path.map(str::to_owned)
-        .with_context(|| format!("{} printed no PATH", shell.display()))
+    let block = out.split(MARK).nth(1).unwrap_or_default();
+    let vars: Vec<(String, String)> = block
+        .split('\0')
+        .filter_map(|var| var.split_once('='))
+        .filter(|(name, _)| !name.is_empty() && !SKIP.contains(name))
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect();
+    if !vars.iter().any(|(name, _)| name == "PATH") {
+        bail!("{} printed no environment", shell.display());
+    }
+    Ok(vars)
 }
 
 /// Your login shell, from the user database rather than `SHELL`, which

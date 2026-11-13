@@ -26,7 +26,7 @@ fn main() -> ExitCode {
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["engine"] => {
             // SAFETY: the engine's runtime, and so its threads, start after.
-            unsafe { shell::adopt_login_path() };
+            unsafe { shell::adopt_login_env() };
             engine()
         }
         ["install"] => install(),

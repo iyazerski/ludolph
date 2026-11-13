@@ -50,7 +50,7 @@ So memory goes on two things: Zeron's engine, which Ludolph removes, and one pi 
 
 - **Engine** (`ludolph engine`): a launch agent. It starts at login, restarts after a crash, and runs whether a window is open or not. It owns the pi processes, the index, titles, archiving, turn changes, and the relay link. It has no UI.
   - `ludolph install` writes `~/Library/LaunchAgents/dev.iyazerski.ludolph.engine.plist` for the binary it's run from and loads it. It logs to `~/Library/Logs/Ludolph/engine.log`. `ludolph uninstall` removes it. The signed app will register the same agent itself.
-  - launchd's `PATH` is short, so the engine starts by asking your login shell for its own, like VS Code does. It runs `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's `PATH` if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would, including tools you install later.
+  - launchd's environment is bare, so the engine starts by asking your login shell for its own, like VS Code does. It runs `env` through `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would: tools you install later, and the API keys and proxy settings your rc files export.
 - **App** (`Ludolph.app`): one UI process with both windows. It starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
 - **Relay** (`crates/relay`): a small server you host. It started as zeron-tools' `zeron-relay`.
 
@@ -120,9 +120,9 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 - **Images:** sent in the `prompt` command as base64. There's no upload store.
 - **Live view:** see [live view and the file](#live-view-and-the-file).
 - **Stopping idle processes:** once a chat settles (`agent_settled`) and has no open question, the engine closes its process's stdin after a few idle minutes (a setting, default 5). pi then shuts down cleanly, and the next message starts it again with `--session <file>`. A restart costs about 270 ms even for a large session, while a loaded process holds up to ~300 MB, so stopping idle processes is the biggest memory saving.
-- **Crashes:** if pi exits during a run, the chat shows as interrupted, and the next message starts pi again.
-- **Engine restarts:** the engine writes a small runtime file, `runtime.json`, with each pi process's pid, its session, and whether a run is in flight. On start, it stops any pi it finds there that's still running, before any new pi may write to that session. Its stdin closed with the old engine, so it gets SIGTERM, and its process group gets SIGKILL if it's still running after 10 s. The file keeps each process's start time, so a reused pid is left alone. A run that was in flight shows as interrupted. It doesn't count as finished, since the file alone can't tell.
-- **Shutdown:** on SIGTERM, the engine closes every pi's stdin and gives them 10 s to finish before it kills what's left. Each pi runs in its own process group, so its tool processes go with it.
+- **Crashes:** if pi exits during a run, the chat shows as interrupted, and the next message starts pi again. A pi that crashes takes its process group with it, so its tools don't keep changing files. A clean exit leaves background jobs the agent started, such as a dev server, as a terminal pi does.
+- **Engine restarts:** the engine writes a small runtime file, `runtime.json`, with each pi process's pid, its session, and whether a run is in flight. On start, it stops any pi it finds there that's still running, before any new pi may write to that session. Its stdin closed with the old engine, so it gets SIGTERM, and its process group gets SIGKILL if it's still running after 10 s. The file keeps each process's start time, so a reused pid is left alone. A run that was in flight shows as interrupted. It doesn't count as finished, since the file alone can't tell: pi writes the same `aborted` reply on its way out as for a Stop. The mark is kept in the index with the chat's last activity, as the archive is, so it lasts across restarts and ends with the chat's next activity.
+- **Shutdown:** on SIGTERM, the engine closes every pi's stdin and gives them 10 s to finish before it kills what's left, with their process groups. Runs it stops this way show as interrupted once it's back, without notices, since the stop was on purpose. No new pi starts once shutdown begins.
 
 ### Live view and the file
 
@@ -132,7 +132,11 @@ Two sources describe a working chat: pi's events, and the file. pi sends `messag
 2. The transcript is the file's path to its leaf, followed by the tail's messages that the file doesn't have yet. A message and its entry share their role, their `timestamp` and, for a tool result, its `toolCallId`, which is how they're matched. A turn that's partly written shows as one message.
 3. When the run settles, the file has every message, and the tail is dropped.
 
+The tail keeps finished messages without tool output or image data, which no view shows and which can be megabytes. Streamed text grows in place.
+
 A message's id is its first entry's id. A turn that's only in the tail has a `live-<n>` id until pi writes its first entry.
+
+`chat_view` returns the latest 40 messages. Once you load earlier ones, it returns every message from the first one shown (`from`) to the end, with `earlier` more before it. The anchor keeps loaded messages in place as new ones come, which a count from the end can't, so there's no limit on how far back you can go. If the anchor is gone, as when the session moved to another branch, it's the latest 40 again.
 
 Every change bumps the chat's revision, and subscribers get a notice with it. The notices coalesce: a client that falls behind sees only the latest, and then reads the view again, so a reconnect needs nothing special. The view is cheap to read again, since each open file is scanned once, then only for what pi appended, and only the lines of the page asked for are parsed.
 
@@ -228,8 +232,8 @@ Folders that aren't git repos get no run changes. Two chats working in the same 
 
 The app and the relay link use the same tool layer, as `connect` and the Companion do now.
 
-- **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push a notice when something changes: the chat list, one chat's view, and later the engine's state. The client then reads what changed with a call, like `chat_view`, which can answer "unchanged" for the version the client already shows. Pushing instead of polling means no 1-second timer while a window is hidden. Notices that wait merge into one, so a slow client gets no backlog.
-- **Relay ↔ engine:** the relay protocol (`relay-proto`). Only the phone's tools are allowed, and they're checked in the engine, not on the relay.
+- **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push a notice when something changes: the chat list, one chat's view, and later the engine's state. The client then reads what changed with a call, like `chat_view`, which can answer "unchanged" for the version the client already shows. Pushing instead of polling means no 1-second timer while a window is hidden. Notices that wait merge into one, so a slow client gets no backlog. A request line can be up to 64 MiB, which leaves room for a message's screenshots.
+- **Relay ↔ engine:** the relay protocol (`relay-proto`). Only the phone's tools are allowed, and they're checked in the engine, not on the relay. The relay address must be `https://`, or `http://` for a relay on this Mac, so the token is never sent in the clear.
 
 ### Tools
 
@@ -243,7 +247,7 @@ The phone's tools keep their names and answer shapes, so the phone app needs onl
 | `chat_view` | The [transcript](#live-view-and-the-file)'s latest messages, a page at a time. Long tool output and images load on request. |
 | `send_message` | `prompt`, or a steering `prompt` |
 | `create_chat` | Start pi in the project's folder or a scratch folder, set the picked model, then `prompt` |
-| `interrupt_chat` | `clear_queue` and `abort` |
+| `interrupt_chat` | `clear_queue` and `abort`. A send that hasn't reached pi yet is cancelled. |
 | `respond_to_input` | Answers the [open question](#questions-from-the-agent) with that id, as an `extension_ui_response` |
 | `archive_chat` | Index |
 | `turn_changes` | Saved turn changes |

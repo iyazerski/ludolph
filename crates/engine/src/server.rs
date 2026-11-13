@@ -23,7 +23,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinSet};
@@ -33,6 +33,9 @@ use crate::tools::{self, Tool};
 
 /// Records waiting to be written to one client.
 const OUT_QUEUE: usize = 64;
+
+/// The longest request line, with room for a message's screenshots.
+pub const MAX_LINE: u64 = 64 << 20;
 
 /// Listen on `path`, readable and writable only by the user.
 ///
@@ -95,10 +98,24 @@ async fn connection(engine: Engine, stream: UnixStream) {
     let mut reader = BufReader::new(read);
     let mut line = Vec::new();
     loop {
+        // A client can stay for hours, so finished tasks don't pile up.
+        while calls.try_join_next().is_some() {}
+        while subscriptions.try_join_next().is_some() {}
         line.clear();
-        match reader.read_until(b'\n', &mut line).await {
+        match (&mut reader)
+            .take(MAX_LINE + 1)
+            .read_until(b'\n', &mut line)
+            .await
+        {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
+        }
+        // There's no telling where the next request starts.
+        if !line.ends_with(b"\n") && line.len() as u64 > MAX_LINE {
+            let refused =
+                json!({"id": null, "error": format!("a request longer than {MAX_LINE} bytes")});
+            let _ = out.send(refused).await;
+            break;
         }
         let record = match serde_json::from_slice::<Request>(&line) {
             Ok(Request {

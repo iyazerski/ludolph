@@ -15,7 +15,7 @@ use crate::engine::{
     ChatInfo, Composer, Config, Delivery, Dialog, Engine, Question, Reply, Status,
 };
 use crate::repo;
-use crate::transcript::{Message, Role};
+use crate::transcript::{LATEST, Message, Role, Window};
 use crate::turns::Counts;
 
 /// Chats `list_chats` returns without a `limit`, and at most.
@@ -23,8 +23,8 @@ const DEFAULT_CHATS: usize = 50;
 const MAX_CHATS: usize = 500;
 /// Chats `list_chat_groups` returns per group without a `limit`.
 const DEFAULT_GROUP_CHATS: usize = 10;
-/// Messages `chat_view` returns without a `limit`, and at most.
-const DEFAULT_MESSAGES: usize = 40;
+/// The most messages `chat_view` returns from the end, or adds before its
+/// anchor, in one call.
 const MAX_MESSAGES: usize = 500;
 
 /// A tool, by its name.
@@ -231,21 +231,35 @@ fn list_projects(engine: &Engine) -> Value {
 #[serde(deny_unknown_fields)]
 struct ViewArgs {
     chat: String,
+    /// How many of the latest messages, without `from`.
     limit: Option<usize>,
+    /// The message to show from, to the end: the first one shown, so the
+    /// page keeps it as new messages come.
+    from: Option<String>,
+    /// With `from`, how many more to add before it, to load earlier ones.
+    #[serde(default)]
+    earlier: usize,
     /// The `version` the caller shows.
     known: Option<String>,
 }
 
-/// A chat and its latest messages. `read` is `null` when the caller already
-/// shows this `version`.
+/// A chat and its latest messages, or those from a message on. `read` is
+/// `null` when the caller already shows this `version`.
 async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
-    let limit = args
-        .limit
-        .unwrap_or(DEFAULT_MESSAGES)
-        .clamp(1, MAX_MESSAGES);
-    let view = engine.view(&args.chat, limit).await?;
+    let window = match args.from {
+        Some(id) => Window::From {
+            id,
+            earlier: args.earlier.min(MAX_MESSAGES),
+        },
+        None => Window::Latest(args.limit.unwrap_or(LATEST).clamp(1, MAX_MESSAGES)),
+    };
+    let shape = match &window {
+        Window::Latest(n) => format!("latest {n}"),
+        Window::From { id, earlier } => format!("from {id} {earlier}"),
+    };
+    let view = engine.view(&args.chat, window).await?;
     let version = format!(
-        "{}|{}|{}|{limit}",
+        "{}|{}|{}|{shape}",
         view.page.leaf.as_deref().unwrap_or_default(),
         view.revision,
         label(view.chat.status),

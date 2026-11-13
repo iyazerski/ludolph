@@ -22,7 +22,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, header};
+use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, Uri, header};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::engine::{Alert, AlertKind, Engine};
@@ -30,7 +30,7 @@ use crate::power;
 use crate::settings::Notify;
 use crate::text::one_line;
 use crate::tools::{self, Tool};
-use crate::transcript::{self, Part};
+use crate::transcript::{self, Part, Window};
 
 /// How often to ping the relay. Proxies drop idle sockets, and any frame
 /// back proves the link still works.
@@ -287,7 +287,7 @@ async fn tell(engine: Engine, alert: Alert) -> Option<Up> {
 /// message, or the question it asks. `None` if the question is answered
 /// already.
 async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
-    let view = engine.view(&alert.chat, 1).await?;
+    let view = engine.view(&alert.chat, Window::Latest(1)).await?;
     let last = view.page.messages.last();
     let (kind, body) = match alert.kind {
         AlertKind::Finished => (NoticeKind::Finished, last.map(text).unwrap_or_default()),
@@ -376,12 +376,31 @@ fn socket_url(relay: &str) -> Result<String> {
     let base = relay.trim_end_matches('/');
     let rest = if let Some(rest) = base.strip_prefix("https://") {
         format!("wss://{rest}")
-    } else if let Some(rest) = base.strip_prefix("http://") {
+    } else if let Some(rest) = base.strip_prefix("http://")
+        && on_this_mac(base)
+    {
         format!("ws://{rest}")
     } else {
         bail!("the relay address must start with https:// (got {relay})")
     };
     Ok(format!("{rest}{CONNECT_PATH}"))
+}
+
+/// Whether `address` points at this Mac, the only place the token can go
+/// without TLS and not be overheard.
+fn on_this_mac(address: &str) -> bool {
+    let Some(host) = address
+        .parse::<Uri>()
+        .ok()
+        .and_then(|uri| uri.host().map(str::to_owned))
+    else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Whether the relay refused the token.

@@ -311,11 +311,22 @@ impl Drop for Pi {
     }
 }
 
-/// Wait for pi to exit, and publish its status.
+/// Wait for pi to exit, stop its tools if it crashed, and publish its
+/// status.
 async fn reap(mut child: Child, exited: watch::Sender<Option<Option<ExitStatus>>>) {
+    let pid = child.id();
     let status = child.wait().await;
     if let Err(e) = &status {
         eprintln!("waiting for pi: {e}");
+    }
+    // A crashed pi's tools would keep changing files with no one watching.
+    // A clean exit leaves the jobs the agent started on purpose, such as a
+    // dev server, as a terminal pi does. Right away, so the group's id
+    // can't have been reused yet.
+    if let Some(pid) = pid
+        && !status.as_ref().is_ok_and(ExitStatus::success)
+    {
+        crate::runtime::kill_group(pid);
     }
     exited.send_replace(Some(status.ok()));
 }
