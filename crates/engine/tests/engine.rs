@@ -813,6 +813,8 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     })
     .await;
     assert!(seen.contains(&json!({"id": 1, "ok": null})));
+    let notice = seen.iter().find(|r| r["event"] == "chats").unwrap();
+    assert_eq!(notice["subscription"], 1, "{notice}");
     assert!(seen.contains(&json!({"id": 3, "error": "no tool nope"})));
 
     // A line past the limit is refused, and the connection ends.
@@ -861,6 +863,7 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     assert!(seen.contains(&json!({"id": 6, "ok": null})));
     let mut frames: Vec<Value> = seen.into_iter().filter(|r| r["event"] == "chat").collect();
     assert_eq!(frames[0]["reset"], true, "{}", frames[0]);
+    assert_eq!(frames[0]["subscription"], 6, "{}", frames[0]);
     // Once pi is gone after the run, nothing changes the view.
     until(&engine, |c| last_prompt(&c[0]) == Some("more")).await;
     all_exited(dir.path()).await;

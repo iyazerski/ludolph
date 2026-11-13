@@ -1,0 +1,36 @@
+[package]
+name = "ludolph-ui"
+description = "Ludolph's windows: the chat list, the chat and its composer, in Rune"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+block2.workspace = true
+chrono.workspace = true
+image.workspace = true
+ludolph-json-file.workspace = true
+objc2.workspace = true
+objc2-av-foundation.workspace = true
+objc2-avf-audio.workspace = true
+objc2-foundation.workspace = true
+objc2-speech.workspace = true
+pulldown-cmark.workspace = true
+rune.workspace = true
+rune-kit.workspace = true
+rune-theme-opencode.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Writes an image opened from the transcript for Preview.
+tokio = { workspace = true, features = ["fs"] }
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -52,6 +52,7 @@ So memory goes on two things: Zeron's engine, which Ludolph removes, and one pi 
   - `ludolph install` writes `~/Library/LaunchAgents/dev.iyazerski.ludolph.engine.plist` for the binary it's run from and loads it. It logs to `~/Library/Logs/Ludolph/engine.log`. `ludolph uninstall` removes it. The signed app will register the same agent itself.
   - launchd's environment is bare, so the engine starts by asking your login shell for its own, like VS Code does. It runs `env` through `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would: tools you install later, and the API keys and proxy settings your rc files export.
 - **App** (`Ludolph.app`): one UI process with both windows. It starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
+  - Until the app bundle, `ludolph app` runs it (`--show` opens the quick window at once). It takes `app.lock` in the state folder, so a second copy quits instead of fighting over the shortcut.
 - **Relay** (`crates/relay`): a small server you host. It started as zeron-tools' `zeron-relay`.
 
 Why the engine is its own process: agents and the phone keep working when the app is quit, crashes, or updates. That's the reason Zeron's engine was moved to a service in zeron-tools 0.19.
@@ -238,7 +239,7 @@ Folders that aren't git repos get no run changes. Two chats working in the same 
 
 The app and the relay link use the same tool layer, as `connect` and the Companion do now.
 
-- **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push what changes: a notice when the chat list changes, which the client follows with `list_chats`, and a chat's feed of frames (see above). `chat_view` stays for one-off reads and for loading earlier messages, and can answer "unchanged" for the version the client already shows. Pushing instead of polling means no 1-second timer while a window is hidden. Notices that wait merge into one, so a slow client gets no backlog. A request line can be up to 64 MiB, which leaves room for a message's screenshots.
+- **App ↔ engine:** a Unix socket, `~/Library/Application Support/Ludolph/engine.sock`, with mode 0600. It carries JSON lines: calls with an `id` and their replies, plus subscriptions that push what changes, each push naming its subscription by the request's `id`, so a client can follow one chat twice: a notice when the chat list changes, which the client follows with `list_chats`, and a chat's feed of frames (see above). `chat_view` stays for one-off reads and for loading earlier messages, and can answer "unchanged" for the version the client already shows. Pushing instead of polling means no 1-second timer while a window is hidden. Notices that wait merge into one, so a slow client gets no backlog. A request line can be up to 64 MiB, which leaves room for a message's screenshots.
 - **Relay ↔ engine:** the relay protocol (`relay-proto`). Only the phone's tools are allowed, and they're checked in the engine, not on the relay. The relay address must be `https://`, or `http://` for a relay on this Mac, so the token is never sent in the clear.
 
 ### Tools
@@ -285,7 +286,7 @@ The views are shared by both windows. They're today's Companion views, with the 
 They live in a `ui` crate. Each window gives them its own layout.
 
 - **Main window:** a normal, resizable window. The sidebar has projects, their chats, status filters, and search. The chat is on the right. It also has **Settings**, and an action to open the current chat in the quick window. It shows a Dock icon while open, and the app can be pinned to the Dock.
-- **Quick window:** today's Companion: floating and slightly transparent, shown and hidden with the global shortcut (default ⌃⌥Space).
+- **Quick window:** today's Companion: floating and slightly transparent, shown and hidden with the global shortcut (⌃⌥Space, fixed until Settings). It follows the chat list and the open chat through the socket's feeds while it shows, and drops them when it hides. Its 1-second tick runs only while something on screen counts: a toast, the working clock, a copy check, or a retry countdown. The list loads the 200 latest chats and shows 10 per project, with **Show more**.
 - **Dictation:** Apple's speech recognizer, as now, then cleaned up by the sidecar model.
 
 ### Settings
@@ -306,7 +307,7 @@ The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, w
 
 - **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. The code is the relay's address and the Mac's token, as URL-safe base64 JSON (`relay-proto`'s `LinkCode`). Until there are settings, the phone shows `ludolph link <code>`, which checks the token with the relay, saves the link in `relay.json`, and restarts the installed engine so it connects.
 - **Battery:** the phone shows the Mac's battery. The engine reads it from IOKit when it connects, and again on each `com.apple.system.powersources` notification, about once a minute while charging or on battery. It sends it only when it changed, so nothing polls.
-- **Protocol 4:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
+- **Protocol 5:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
 - **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Runs by another pi aren't watched, so they don't notify.
 - **Self-hosting:** `crates/relay/README.md` explains how to run the relay (container image and manifests) and how to create the setup link.
 
@@ -331,6 +332,8 @@ What keeps the engine inside its budget:
 - Transcripts load in pages, and long tool output and images load only when shown.
 - Subscriber queues are bounded (see [engine API](#engine-api)).
 - pi's stdout is read all the time, as pi asks, but the engine keeps only each chat's live tail.
+
+Measured on the quick window's release build, with a long chat: 63 MB hidden, 87 MB shown with the list, 100 MB with a chat open, all at 0% CPU while nothing changes. While a reply streams, the app takes 12 to 30% of a core. Most of that is Rune laying out the page for each 50 ms frame, not Ludolph's view code. The hidden app is 3 MB over budget.
 
 How we check:
 
