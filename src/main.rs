@@ -1,6 +1,6 @@
-//! The `ludolph` binary. `ludolph engine` runs the engine, `ludolph
-//! install` runs it in the background from now on, and `ludolph link` links
-//! this Mac to a relay for the phone.
+//! The `ludolph` binary. `ludolph engine` runs the engine, `ludolph app`
+//! runs the windows, `ludolph install` runs the engine in the background from
+//! now on, and `ludolph link` links this Mac to a relay for the phone.
 
 mod agent;
 mod shell;
@@ -29,13 +29,15 @@ fn main() -> ExitCode {
             unsafe { shell::adopt_login_env() };
             engine()
         }
+        ["app"] => app(false),
+        ["app", "--show"] => app(true),
         ["install"] => install(),
         ["uninstall"] => uninstall(),
         ["link", code] => link(code),
         ["unlink"] => unlink(),
         _ => {
             eprintln!(
-                "usage: ludolph engine\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
+                "usage: ludolph engine\n       ludolph app [--show]\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
             );
             return ExitCode::from(2);
         }
@@ -85,6 +87,17 @@ async fn engine() -> Result<()> {
     // New clients get refused at once, rather than wait on a stopping engine.
     drop(std::fs::remove_file(&socket));
     engine.shutdown().await
+}
+
+/// Run the windows until the app quits. `show` opens the quick window at
+/// once, rather than on its shortcut.
+fn app(show: bool) -> Result<()> {
+    let state_dir = state_dir(&home()?);
+    println!(
+        "Ludolph is running; {} shows the quick window.",
+        ludolph_ui::SHORTCUT
+    );
+    ludolph_ui::run(ludolph_ui::Opts { state_dir, show })
 }
 
 /// Run the engine in the background from now on, on this binary.
@@ -153,8 +166,6 @@ fn home() -> Result<PathBuf> {
     ))
 }
 
-/// The engine's folder. `LUDOLPH_DIR` keeps a development engine apart from
-/// the installed one.
 /// Restart the installed engine if it uses this folder, which it doesn't
 /// when `LUDOLPH_DIR` points at a development one. Returns whether it did.
 fn restart_installed(home: &Path) -> Result<bool> {
@@ -164,6 +175,8 @@ fn restart_installed(home: &Path) -> Result<bool> {
     agent::restart(home)
 }
 
+/// The engine's folder. `LUDOLPH_DIR` keeps a development engine apart from
+/// the installed one.
 fn state_dir(home: &Path) -> PathBuf {
     std::env::var_os("LUDOLPH_DIR")
         .map(PathBuf::from)

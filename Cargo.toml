@@ -15,6 +15,7 @@ anyhow.workspace = true
 libc.workspace = true
 ludolph-engine = { path = "crates/engine" }
 ludolph-relay-proto.workspace = true
+ludolph-ui.workspace = true
 plist = { version = "1", default-features = false, features = ["serde"] }
 serde.workspace = true
 tokio.workspace = true
@@ -36,22 +37,39 @@ axum = { version = "0.8", features = ["ws"] }
 # The relay's session cookie and a Mac's Bearer token.
 axum-extra = { version = "0.12", default-features = false, features = ["cookie", "typed-header"] }
 base64 = "0.23"
+# The composer's dictation: the microphone and Apple's speech recognizer.
+block2 = "0.6"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Shrinks image thumbnails before Rune keeps them; matches Rune's own image build.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 dispatch2 = { version = "0.3", default-features = false, features = ["alloc"] }
 libc = "0.2"
 ludolph-json-file = { path = "crates/json-file" }
 ludolph-relay-proto = { path = "crates/relay-proto" }
+ludolph-ui = { path = "crates/ui" }
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "block2", "AVAudioBuffer", "AVAudioEngine", "AVAudioFormat", "AVAudioIONode", "AVAudioNode", "AVAudioTime", "AVAudioTypes"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFArray", "CFDictionary", "CFNumber", "CFString", "std"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGEventSource", "CGEventTypes", "std"] }
 objc2-io-kit = { version = "0.3", default-features = false, features = ["libc", "ps", "std"] }
 objc2-core-services = { version = "0.3", default-features = false, features = ["FSEvents", "dispatch2", "std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
+objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-avf-audio", "SFSpeechRecognitionMetadata", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognizer", "SFTranscription"] }
+# Finds inline code in the transcript's Markdown, to colour it, and writes
+# the HTML a copy puts beside the plain text.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 # The relay's Web Push: rustls on ring, which also signs the VAPID tokens.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 ring = "0.17"
+# The windows. Rune is pre-release and changes often: keep one tested revision.
+rune = { git = "https://github.com/anomalyco/rune", rev = "b53fe7236ab11225108f6aee837c2d9942f63991" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "b53fe7236ab11225108f6aee837c2d9942f63991", features = ["markdown"] }
+rune-theme-opencode = { git = "https://github.com/anomalyco/rune", rev = "b53fe7236ab11225108f6aee837c2d9942f63991" }
 # With only `ring` enabled, rustls picks its crypto provider on its own;
 # tokio-tungstenite leaves that to the app.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -60,6 +78,8 @@ tempfile = "3"
 time = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# Splits dictated text into words to compare transcriptions.
+unicode-segmentation = "1"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 # Web Push encryption (RFC 8291).

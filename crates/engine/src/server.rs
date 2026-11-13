@@ -5,7 +5,9 @@
 //! `{"id": …, "ok": …}` or `{"id": …, "error": "…"}`. Calls on one connection
 //! run at the same time, so their answers can come in any order.
 //!
-//! A subscription is answered the same way, and then pushes:
+//! A subscription is answered the same way, and then pushes records that
+//! name it by its request's id in `subscription`, so a client can follow
+//! one chat in two windows:
 //!
 //! - `{"id": …, "subscribe": "chats"}` pushes `{"event": "chats",
 //!   "revision": n}` when the chat list changes.
@@ -144,7 +146,7 @@ async fn connection(engine: Engine, stream: UnixStream) {
                 subscribe: Some(topic),
                 args,
                 unsubscribe: None,
-            }) => match subscription(&engine, &topic, args, out.clone()) {
+            }) => match subscription(&engine, &topic, args, id.clone(), out.clone()) {
                 Ok(pushing) => {
                     let handle = subscriptions.spawn(pushing);
                     if let Some(old) = handles.insert(id.to_string(), handle) {
@@ -201,11 +203,13 @@ async fn call(engine: Engine, id: Value, name: String, args: Value, out: mpsc::S
 /// A task pushing what a subscription to `topic` follows to `out`.
 type Pushing = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-/// The task that pushes what `topic` follows to `out`.
+/// The task that pushes what `topic` follows to `out`, for the
+/// subscription with request id `id`.
 fn subscription(
     engine: &Engine,
     topic: &str,
     args: Value,
+    id: Value,
     out: mpsc::Sender<Value>,
 ) -> Result<Pushing> {
     #[derive(Deserialize)]
@@ -218,7 +222,7 @@ fn subscription(
     match topic {
         "chats" => Ok(Box::pin(push(
             engine.subscribe(),
-            json!({"event": "chats"}),
+            json!({"event": "chats", "subscription": id}),
             out,
         ))),
         "chat" => {
@@ -233,6 +237,7 @@ fn subscription(
                 move |mut frame| {
                     frame["event"] = json!("chat");
                     frame["chatId"] = json!(chat);
+                    frame["subscription"] = id.clone();
                     let out = out.clone();
                     async move { out.send(frame).await.is_ok() }
                 },
