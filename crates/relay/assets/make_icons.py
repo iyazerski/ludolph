@@ -1,10 +1,12 @@
 """Draw the app icons: a pi sign of rounded cells, after Ludolph van Ceulen,
 who gave years to its digits.
 
-Run: uv run --with pillow python crates/relay/assets/make_icons.py crates/relay/assets
+Run: uv run --with pillow python crates/relay/assets/make_icons.py crates/relay/assets assets
 """
 
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -53,9 +55,20 @@ def svg(size: int, plate: float, plate_radius: float, scale: float) -> str:
     return f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" fill="none" xmlns="http://www.w3.org/2000/svg">\n{body}\n</svg>\n'
 
 
+def icns(path: Path, plate: float, plate_radius: float, scale: float, bg: tuple, fg: tuple) -> None:
+    """Write the Mac app's icon to `path`, each size drawn on its own, as `iconutil` takes them."""
+    with tempfile.TemporaryDirectory() as tmp:
+        iconset = Path(tmp) / "Ludolph.iconset"
+        iconset.mkdir()
+        for size in (16, 32, 128, 256, 512):
+            draw(size, plate, plate_radius, scale, bg, fg).save(iconset / f"icon_{size}x{size}.png")
+            draw(size * 2, plate, plate_radius, scale, bg, fg).save(iconset / f"icon_{size}x{size}@2x.png")
+        subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(path)], check=True)
+
+
 def main() -> None:
-    """Write every icon the app references into the given folder."""
-    out = Path(sys.argv[1])
+    """Write every icon the phone app references into the first folder, and the Mac app's into the second."""
+    out, mac = Path(sys.argv[1]), Path(sys.argv[2])
     black, white = (0, 0, 0, 255), (255, 255, 255, 255)
     # Home screen icons: a plate of 80.5 % of the canvas, as macOS app icons have.
     home = (0.805, 0.181, 0.5)
@@ -66,6 +79,8 @@ def main() -> None:
     draw(512, 1.0, 0.0, 0.48, black, white).save(out / "icon-maskable.png")
     # Notification badge: Android uses only the alpha channel.
     draw(96, 1.0, 0.0, 0.8, (0, 0, 0, 0), white).save(out / "badge.png")
+    # The Mac app's icon: the home screen one, on the plate macOS icons share.
+    icns(mac / "Ludolph.icns", *home, black, white)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
-//! The `ludolph` binary. `ludolph engine` runs the engine, `ludolph app`
-//! runs the windows, `ludolph install` runs the engine in the background from
-//! now on, and `ludolph link` links this Mac to a relay for the phone.
+//! The `ludolph` binary. `ludolph` runs the windows, as Ludolph.app does,
+//! and starts the engine in the background; `ludolph engine` is the engine,
+//! and `ludolph link` links this Mac to a relay for the phone.
 
 mod agent;
 mod shell;
@@ -29,15 +29,14 @@ fn main() -> ExitCode {
             unsafe { shell::adopt_login_env() };
             engine()
         }
-        ["app"] => app(false),
-        ["app", "--hidden"] => app(true),
-        ["install"] => install(),
+        [] => app(false),
+        ["--hidden"] => app(true),
         ["uninstall"] => uninstall(),
         ["link", code] => link(code),
         ["unlink"] => unlink(),
         _ => {
             eprintln!(
-                "usage: ludolph engine\n       ludolph app [--hidden]\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
+                "usage: ludolph [--hidden]\n       ludolph engine\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
             );
             return ExitCode::from(2);
         }
@@ -60,6 +59,11 @@ async fn engine() -> Result<()> {
     let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".pi/agent"));
+    let exe = std::env::current_exe().context("finding the ludolph binary")?;
+    // A development engine leaves the installed app's login item alone.
+    let app = bundle_of(&exe)
+        .filter(|_| std::env::var_os("LUDOLPH_DIR").is_none())
+        .map(Path::to_owned);
     let config = Config {
         pi: find_pi(&home)?,
         sessions_dir: agent_dir.join("sessions"),
@@ -67,6 +71,7 @@ async fn engine() -> Result<()> {
         idle: IDLE,
         grace: GRACE,
         home,
+        app,
     };
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;
@@ -92,7 +97,19 @@ async fn engine() -> Result<()> {
 /// Run the windows until the app quits. It opens the main window, unless
 /// `hidden` keeps it closed until the app is opened again, as at login.
 fn app(hidden: bool) -> Result<()> {
-    let state_dir = state_dir(&home()?);
+    let home = home()?;
+    let state_dir = state_dir(&home);
+    // Outside the bundle, or with a development folder, you run the engine yourself.
+    let exe = std::env::current_exe().context("finding the ludolph binary")?;
+    if bundle_of(&exe).is_some() && std::env::var_os("LUDOLPH_DIR").is_none() {
+        let state_dir = state_dir.clone();
+        // launchd may take seconds to let an old engine go; the windows don't wait.
+        std::thread::spawn(move || {
+            if let Err(e) = agent::start(&home, &state_dir) {
+                eprintln!("ludolph: {e:#}");
+            }
+        });
+    }
     println!(
         "Ludolph is running; {} shows the quick window.",
         ludolph_ui::SHORTCUT
@@ -100,23 +117,29 @@ fn app(hidden: bool) -> Result<()> {
     ludolph_ui::run(ludolph_ui::Opts { state_dir, hidden })
 }
 
-/// Run the engine in the background from now on, on this binary.
-fn install() -> Result<()> {
-    let log = agent::install(&home()?)?;
-    println!(
-        "The engine runs in the background now, and starts at login. It logs to {}.",
-        log.display()
-    );
-    Ok(())
-}
-
-/// Stop the background engine and remove its launch agent.
+/// Stop the engine and remove the app's login item, before you delete
+/// Ludolph.app.
 fn uninstall() -> Result<()> {
-    if agent::uninstall(&home()?)? {
-        println!("The engine stopped, and won't start at login.");
-    } else {
-        println!("The engine isn't installed.");
-    }
+    let stopped = agent::stop()?;
+    let item = ludolph_engine::login::path(&home()?);
+    let removed = match std::fs::remove_file(&item) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e).with_context(|| format!("removing {}", item.display())),
+    };
+    println!(
+        "{} {}",
+        if stopped {
+            "The engine stopped."
+        } else {
+            "The engine wasn't running."
+        },
+        if removed {
+            "Ludolph won't open at login."
+        } else {
+            "Ludolph wasn't set to open at login."
+        }
+    );
     Ok(())
 }
 
@@ -134,7 +157,7 @@ async fn link(code: &str) -> Result<()> {
         .with_context(|| format!("creating {}", state_dir.display()))?;
     link.save(&state_dir)?;
     // Until there are settings, the engine reads the link when it starts.
-    if restart_installed(&home)? {
+    if restart_installed()? {
         println!("Linked to {}. The engine is connecting.", link.relay);
     } else {
         println!(
@@ -151,7 +174,7 @@ fn unlink() -> Result<()> {
     let path = Link::path(&state_dir(&home));
     match std::fs::remove_file(&path) {
         Ok(()) => {
-            restart_installed(&home)?;
+            restart_installed()?;
             println!("Unlinked.");
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("This Mac isn't linked."),
@@ -160,19 +183,27 @@ fn unlink() -> Result<()> {
     Ok(())
 }
 
+/// The `.app` bundle `exe` runs from, if it runs from one, as in
+/// `Ludolph.app/Contents/MacOS/ludolph`.
+fn bundle_of(exe: &Path) -> Option<&Path> {
+    exe.ancestors()
+        .nth(3)
+        .filter(|app| app.extension().is_some_and(|e| e == "app"))
+}
+
 fn home() -> Result<PathBuf> {
     Ok(PathBuf::from(
         std::env::var_os("HOME").context("HOME isn't set")?,
     ))
 }
 
-/// Restart the installed engine if it uses this folder, which it doesn't
-/// when `LUDOLPH_DIR` points at a development one. Returns whether it did.
-fn restart_installed(home: &Path) -> Result<bool> {
+/// Restart the app's engine if it uses this folder, which it doesn't when
+/// `LUDOLPH_DIR` points at a development one. Returns whether it did.
+fn restart_installed() -> Result<bool> {
     if std::env::var_os("LUDOLPH_DIR").is_some() {
         return Ok(false);
     }
-    agent::restart(home)
+    agent::restart()
 }
 
 /// The engine's folder. `LUDOLPH_DIR` keeps a development engine apart from

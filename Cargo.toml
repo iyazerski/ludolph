@@ -16,7 +16,7 @@ libc.workspace = true
 ludolph-engine = { path = "crates/engine" }
 ludolph-relay-proto.workspace = true
 ludolph-ui.workspace = true
-plist = { version = "1", default-features = false, features = ["serde"] }
+plist.workspace = true
 serde.workspace = true
 tokio.workspace = true
 
@@ -58,6 +58,8 @@ objc2-io-kit = { version = "0.3", default-features = false, features = ["libc", 
 objc2-core-services = { version = "0.3", default-features = false, features = ["FSEvents", "dispatch2", "std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
 objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-avf-audio", "SFSpeechRecognitionMetadata", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognizer", "SFTranscription"] }
+# launchd's plists: the engine's job and the app's login item.
+plist = { version = "1", default-features = false, features = ["serde"] }
 # Finds inline code in the transcript's Markdown, to colour it, and writes
 # the HTML a copy puts beside the plain text.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

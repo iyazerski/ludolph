@@ -15,6 +15,9 @@ pub struct Settings {
     /// without thinking. pi's default model if `None`.
     pub sidecar_model: Option<String>,
     pub notify: Notify,
+    /// Open Ludolph.app, hidden, at each login, and with it the engine. Off
+    /// until you turn it on.
+    pub open_at_login: bool,
 }
 
 /// When the phone gets notifications.

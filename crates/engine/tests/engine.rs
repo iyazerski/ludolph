@@ -36,6 +36,7 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         idle,
         grace: Duration::from_secs(2),
         home: dir.to_owned(),
+        app: Some(dir.join("Ludolph.app")),
     };
     Engine::start(config)
         .await
@@ -557,7 +558,7 @@ async fn chats_are_titled_as_soon_as_they_start() {
         format!("{refused:#}").contains("no model fake/none"),
         "{refused:#}"
     );
-    let picked = json!({"sidecarModel": "fake/quick", "notify": "always"});
+    let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false});
     let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
     assert_eq!(saved, picked);
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
@@ -574,6 +575,19 @@ async fn chats_are_titled_as_soon_as_they_start() {
         (kept.sidecar_model.as_deref(), kept.notify),
         (Some("fake/quick"), Notify::Always)
     );
+
+    // Nothing opens at login until it's turned on, and turning it off undoes it.
+    let item = ludolph_engine::login::path(&engine.config().home);
+    assert!(!item.exists());
+    let on = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": true});
+    tool(&engine, "set_settings", on).await.unwrap();
+    let written = std::fs::read_to_string(&item).unwrap();
+    assert!(
+        written.contains("Ludolph.app") && written.contains("--hidden"),
+        "{written}"
+    );
+    tool(&engine, "set_settings", picked).await.unwrap();
+    assert!(!item.exists());
     engine.shutdown().await.unwrap();
 }
 

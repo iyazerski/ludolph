@@ -19,6 +19,7 @@ use tokio::time::Instant;
 
 use crate::index::{self, Index};
 use crate::live::{self, Live};
+use crate::login;
 use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
@@ -61,6 +62,10 @@ pub struct Config {
     pub grace: Duration,
     /// The user's home folder. Chats there have no project.
     pub home: PathBuf,
+    /// The Ludolph.app the engine runs from, which the login item opens.
+    /// `None` outside one, as for a development engine, which leaves the
+    /// login item alone.
+    pub app: Option<PathBuf>,
 }
 
 impl Config {
@@ -375,6 +380,10 @@ impl Engine {
             stopping: false,
         };
         let settings = Settings::load(&config.state_dir)?;
+        // A moved app moves its login item.
+        if let Err(e) = login::apply(&config.home, config.app.as_deref(), settings.open_at_login) {
+            eprintln!("login item: {e:#}");
+        }
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
         // The engine's folder has no `.pi` settings to change the list.
         let catalog = Catalog::new(config.pi.clone(), config.state_dir.clone(), config.grace);
@@ -917,6 +926,8 @@ impl Engine {
         {
             bail!("pi has no model {model}");
         }
+        let config = &self.0.config;
+        login::apply(&config.home, config.app.as_deref(), settings.open_at_login)?;
         let mut saved = self
             .0
             .settings
