@@ -156,7 +156,7 @@ For a chat with no process, the status comes from the index: the outcome of its 
 
 ### Questions from the agent
 
-Ludolph adds no question tool of its own. The questions it shows are extensions' dialogs: every `extension_ui_request` dialog (`select`, `confirm`, `input`, `editor`) waits for an answer, so a run would hang without one. Each shows as a one-question form in the shape the phone app and the Companion already render: an optional `header`, the `question`, `options` as strings, `multiline` and `prefill`. A `select` offers its options, a `confirm` offers Yes and No under its title, and an `editor` is multi-line with its prefilled text. An answer is the picked option, or typed text. It goes back as an `extension_ui_response` (`docs/rpc-extension-ui.md`).
+Ludolph adds no question tool of its own. The questions it shows are extensions' dialogs: every `extension_ui_request` dialog (`select`, `confirm`, `input`, `editor`) waits for an answer, so a run would hang without one. A view gets it as pi asks it: its `id`, its `dialog`, its `title`, a `confirm`'s `message`, a `select`'s `options` and an `editor`'s `prefill`. A `select` offers its options, a `confirm` offers Yes and No, and an `input` or `editor` takes typed text, an `editor`'s on several lines. The answer is a `value`, which for a `select` must be one of its options, or a `confirm`'s `confirmed`. It goes back as an `extension_ui_response` (`docs/rpc-extension-ui.md`).
 
 Each pi process keeps its open questions, oldest first, and the chat shows the oldest. `respond_to_input` looks the id up and answers it. An id is answered once. Later answers, and answers to a question from a process that's gone, are refused. A question leaves when it's answered, when its dialog's `timeout` runs out (pi resolves it itself and doesn't say so), when the run is interrupted (the engine dismisses it first), or when its pi exits. A pi with an open question isn't stopped for being idle, since an extension command can wait on it outside a run.
 
@@ -188,7 +188,7 @@ Titles are part of the main flow:
 
 Titles and dictation cleanup use the **sidecar model** from Settings, or pi's default model if none is picked. It always runs with thinking off, so the setting is just a model, and a small, fast one keeps the delay short. The engine only accepts a model that pi lists, and a new pick applies from the next call.
 
-Renaming a chat by hand goes through the same `set_session_name`. The engine never replaces a title that a person or pi set. Calls that change one chat (title, rename, model) go through one queue per chat, so they can't overtake each other.
+Renaming a chat by hand (`rename_chat`) goes through the same `set_session_name`, and starts the chat's pi if it has stopped, since pi owns the file. The list shows the new title at once. The engine never replaces a title that a person or pi set. Calls that change one chat (title, rename, model) go through one queue per chat, so they can't overtake each other.
 
 A session written without a name, by pi in a terminal or by another tool, gets a title the next time it runs in Ludolph. Until then, the list shows its first prompt.
 
@@ -253,6 +253,7 @@ The app and the phone call the same tools:
 | `create_chat` | Start pi in the project's folder or a scratch folder, set the picked model, then `prompt` |
 | `interrupt_chat` | `clear_queue` and `abort`. A send that hasn't reached pi yet is cancelled. |
 | `respond_to_input` | Answers the [open question](#questions-from-the-agent) with that id, as an `extension_ui_response` |
+| `rename_chat` | `set_session_name` (see [titles](#titles)) |
 | `archive_chat` | Index |
 | `turn_changes` | Saved turn changes |
 | `composer_info` | Branch (`git`), then the model, thinking level and context use (see [pi processes](#pi-processes)) |
@@ -260,12 +261,11 @@ The app and the phone call the same tools:
 | `list_models` | Cached `get_available_models` |
 | `list_skills` | `get_commands` (see [pi processes](#pi-processes)) |
 | `polish_dictation` | The sidecar model through `pi -p` |
-| `list_harnesses` | pi alone, since the phone's picker still asks |
 | `take_over_chat` | Turns sending back on for a chat [another pi](#sessions-open-elsewhere) has open |
 
 The socket also has `get_settings` and `set_settings`, which the relay refuses: a relay mustn't change settings.
 
-In the phone app, a Mac whose engine isn't running is offline, and the agent picker hides itself, since pi is the only harness. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 3. Version 2 dropped the `Engine` message, since a linked Mac is a running engine, and version 3 changed messages' parts.
+In the phone app, a Mac whose engine isn't running is offline. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 4. Version 2 dropped the `Engine` message, since a linked Mac is a running engine, version 3 changed messages' parts, and version 4 dropped harnesses and took pi's dialog shape.
 
 ## App
 
@@ -300,7 +300,7 @@ The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, w
 
 - **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings, rather than running an `install` command. The code is the relay's address and the Mac's token, as URL-safe base64 JSON (`relay-proto`'s `LinkCode`). Until there are settings, the phone shows `ludolph link <code>`, which checks the token with the relay, saves the link in `relay.json`, and restarts the installed engine so it connects.
 - **Battery:** the phone shows the Mac's battery. The engine reads it from IOKit when it connects, and again on each `com.apple.system.powersources` notification, about once a minute while charging or on battery. It sends it only when it changed, so nothing polls.
-- **Protocol 3:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
+- **Protocol 4:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
 - **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Runs by another pi aren't watched, so they don't notify.
 - **Self-hosting:** `crates/relay/README.md` explains how to run the relay (container image and manifests) and how to create the setup link.
 
