@@ -306,8 +306,6 @@ a { color: inherit; text-decoration: none; }
 }
 @media (prefers-color-scheme: light) { .msg.user .bubble { box-shadow: 0 0 0 1px var(--hairline); } }
 .msg.user.pending { opacity: .6; }
-.msg.user .from { font-size: 12.5px; color: var(--tertiary); }
-.ref { display: inline-block; padding: 0 6px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-size: .92em; }
 
 .msg.assistant { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .aborted { font-size: 13.5px; color: var(--tertiary); }

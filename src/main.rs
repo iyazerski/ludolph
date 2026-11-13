@@ -1,11 +1,9 @@
 //! The `ludolph` binary. `ludolph engine` runs the engine, `ludolph
 //! install` runs it in the background from now on, and `ludolph link` links
-//! this Mac to a relay for the phone. `ludolph import-zeron` brings over
-//! Zeron's titles and archived chats.
+//! this Mac to a relay for the phone.
 
 mod agent;
 mod shell;
-mod zeron;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -35,10 +33,9 @@ fn main() -> ExitCode {
         ["uninstall"] => uninstall(),
         ["link", code] => link(code),
         ["unlink"] => unlink(),
-        ["import-zeron"] => import_zeron(),
         _ => {
             eprintln!(
-                "usage: ludolph engine\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink\n       ludolph import-zeron"
+                "usage: ludolph engine\n       ludolph install\n       ludolph uninstall\n       ludolph link <code>\n       ludolph unlink"
             );
             return ExitCode::from(2);
         }
@@ -71,7 +68,7 @@ async fn engine() -> Result<()> {
     };
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;
-    let socket = server::path(&config.state_dir);
+    let socket = config.state_dir.join("engine.sock");
     let listener = server::bind(&socket)?;
     let link = Link::load(&config.state_dir)?;
     let engine = Engine::start(config).await?;
@@ -147,14 +144,6 @@ fn unlink() -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("This Mac isn't linked."),
         Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
     }
-    Ok(())
-}
-
-/// Give the engine's chats the titles and archive state Zeron had for them.
-#[tokio::main]
-async fn import_zeron() -> Result<()> {
-    let home = home()?;
-    println!("{}", zeron::import(&home, &state_dir(&home)).await?);
     Ok(())
 }
 

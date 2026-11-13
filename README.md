@@ -25,8 +25,6 @@ target/release/ludolph link <code> # links it to your phone
 
 The code comes from the phone app's **Add a Mac**, on a relay you host: see [crates/relay](crates/relay/README.md). `ludolph uninstall` stops the engine and removes it from login. The engine logs to `~/Library/Logs/Ludolph/engine.log`.
 
-Coming from Zeron? Your pi chats are already there, since they're pi's session files. While Zeron and the engine both run, `ludolph import-zeron` brings over their titles and which ones you archived. After that, Zeron can go.
-
 Ideas and questions are welcome in [Discussions](https://github.com/iyazerski/ludolph/discussions).
 
 ## Why Ludolph

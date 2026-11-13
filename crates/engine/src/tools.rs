@@ -1,6 +1,6 @@
 //! The tools the app and the phone call, by name, with JSON arguments and
-//! answers in the shapes the phone app reads today (zeron-tools'
-//! `connect/tools.rs`). The settings tools are the app's alone.
+//! answers in the shapes the phone app reads. The settings tools are the
+//! app's alone.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -49,18 +49,13 @@ pub enum Tool {
     PolishDictation,
     GetSettings,
     SetSettings,
-    ImportChats,
 }
 
 impl Tool {
     /// Whether the phone may call it. The phone can't change settings, so a
-    /// relay can't, say, point dictation at a model of its choosing, nor
-    /// rewrite every title with an import.
+    /// relay can't, say, point dictation at a model of its choosing.
     pub fn for_phone(self) -> bool {
-        !matches!(
-            self,
-            Self::GetSettings | Self::SetSettings | Self::ImportChats
-        )
+        !matches!(self, Self::GetSettings | Self::SetSettings)
     }
 }
 
@@ -88,7 +83,6 @@ impl FromStr for Tool {
             "polish_dictation" => Self::PolishDictation,
             "get_settings" => Self::GetSettings,
             "set_settings" => Self::SetSettings,
-            "import_chats" => Self::ImportChats,
             _ => bail!("no tool {name}"),
         })
     }
@@ -123,7 +117,6 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::SetSettings => Ok(serde_json::to_value(
             engine.set_settings(parse(args)?).await?,
         )?),
-        Tool::ImportChats => import_chats(engine, parse(args)?),
     }
 }
 
@@ -659,31 +652,6 @@ struct ArchiveArgs {
     chat: String,
     /// `false` unarchives.
     archived: Option<bool>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ImportArgs {
-    chats: Vec<Imported>,
-}
-
-/// One chat's title and archive state, from another app.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Imported {
-    chat: String,
-    title: String,
-    archived: bool,
-}
-
-fn import_chats(engine: &Engine, args: ImportArgs) -> Result<Value> {
-    let chats: Vec<_> = args
-        .chats
-        .into_iter()
-        .map(|c| (c.chat, c.title, c.archived))
-        .collect();
-    let found = engine.import(&chats)?;
-    Ok(json!({"imported": found, "unknown": chats.len() - found}))
 }
 
 fn archive_chat(engine: &Engine, args: ArchiveArgs) -> Result<Value> {
