@@ -39,9 +39,10 @@ use crate::engine::Engine;
 use crate::feed::{self, Feed};
 use crate::tools::{self, Tool};
 
-/// The shortest time between two frames of a chat's feed: a streaming
-/// reply changes the chat with each token, and a window redraws no faster.
-pub const FRAME: Duration = Duration::from_millis(50);
+/// The shortest time between two frames of a chat's feed. A streaming reply
+/// changes the chat with each token, and each frame costs the window a
+/// layout of the page: about 7 frames a second still reads as smooth text.
+pub const FRAME: Duration = Duration::from_millis(150);
 
 /// Records waiting to be written to one client.
 const OUT_QUEUE: usize = 64;

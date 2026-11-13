@@ -145,7 +145,7 @@ The phone sizes a picked image down to 1600 pixels on its longest side, as JPEG,
 
 `chat_view` returns the latest 40 messages. Once you load earlier ones, it returns every message from the first one shown (`from`) to the end, with `earlier` more before it. The anchor keeps loaded messages in place as new ones come, which a count from the end can't, so there's no limit on how far back you can go. If the anchor is gone, as when the session moved to another branch, it's the latest 40 again.
 
-Every change bumps the chat's revision. A chat's subscriber gets a feed of frames: the latest page first, with `reset`, and then, after each change, the page's message ids in order with only the messages that are new or changed. The chat, its run, the question it asks and its run changes come whole in each frame, since they're small. Once the page's first message is in the file, the feed runs from it, so new messages don't push out ones the window has; if it's gone, as after `/tree`, the next frame resets. Frames come at most every 50 ms and changes in between merge, so a client that falls behind gets the latest state, not a backlog, and a reconnect starts over with a reset. While a reply streams, a frame carries just that message: for a 600-word reply, about 11 frames a second of up to 5 KB, at under 1% of a core for the release engine. The view is cheap to read again, since each open file is scanned once, then only for what pi appended, and only the lines of the page asked for are parsed.
+Every change bumps the chat's revision. A chat's subscriber gets a feed of frames: the latest page first, with `reset`, and then, after each change, the page's message ids in order with only the messages that are new or changed. The chat, its run, the question it asks and its run changes come whole in each frame, since they're small. Once the page's first message is in the file, the feed runs from it, so new messages don't push out ones the window has; if it's gone, as after `/tree`, the next frame resets. Frames come at most every 150 ms and changes in between merge, so a client that falls behind gets the latest state, not a backlog, and a reconnect starts over with a reset. While a reply streams, a frame carries just that message: about 7 frames a second of up to 5 KB, at under 1% of a core for the release engine. The window lands those frames without springs, so it draws only when one arrives. The view is cheap to read again, since each open file is scanned once, then only for what pi appended, and only the lines of the page asked for are parsed.
 
 ### Status
 
@@ -333,7 +333,9 @@ What keeps the engine inside its budget:
 - Subscriber queues are bounded (see [engine API](#engine-api)).
 - pi's stdout is read all the time, as pi asks, but the engine keeps only each chat's live tail.
 
-Measured on the quick window's release build, with a long chat: 63 MB hidden, 87 MB shown with the list, 100 MB with a chat open, all at 0% CPU while nothing changes. While a reply streams, the app takes 12 to 30% of a core. Most of that is Rune laying out the page for each 50 ms frame, not Ludolph's view code. The hidden app is 3 MB over budget.
+Measured on the quick window's release build, with a long chat: 63 MB hidden, 87 MB shown with the list, 100 MB with a chat open, all at 0% CPU while nothing changes. While a reply streams, the app takes about 4% of a core. The hidden app is 3 MB over budget.
+
+Why streaming frames skip springs: Rune springs a page to its new layout, so with each frame animated, a growing reply kept the window drawing at the display's 120 Hz for the whole reply. That took 20 to 25% of a core, and fewer frames didn't change it. Frames that only grow a streaming reply now land at once, which leaves Rune drawing about 7 frames a second. Other changes still animate.
 
 How we check:
 
