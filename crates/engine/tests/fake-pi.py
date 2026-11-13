@@ -107,6 +107,13 @@ def prompt(command):
     if command["message"] in ("ask", "ask-briefly"):
         ask(command["message"] == "ask-briefly")
         return
+    if command["message"] == "edit":
+        # Like an agent's edits: a changed file, a new one, and an ignored one.
+        with open("a.txt", "a") as f:
+            f.write("changed\n")
+        for name in ("new.txt", "secret.env"):
+            with open(name, "w") as f:
+                f.write("new\n")
     started = now()
     emit({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending", "timestamp": started}})
     update({"type": "text_start", "contentIndex": 0})

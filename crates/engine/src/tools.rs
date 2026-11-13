@@ -2,7 +2,7 @@
 //! answers in the shapes the phone app reads today (zeron-tools'
 //! `connect/tools.rs`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -12,6 +12,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::engine::{ChatInfo, Config, Delivery, Dialog, Engine, Question, Reply, Status};
+use crate::transcript::{Message, Role};
+use crate::turns::Counts;
 
 /// Chats `list_chats` returns without a `limit`, and at most.
 const DEFAULT_CHATS: usize = 50;
@@ -35,6 +37,7 @@ pub enum Tool {
     TakeOverChat,
     RespondToInput,
     ArchiveChat,
+    TurnChanges,
 }
 
 impl FromStr for Tool {
@@ -52,6 +55,7 @@ impl FromStr for Tool {
             "take_over_chat" => Self::TakeOverChat,
             "respond_to_input" => Self::RespondToInput,
             "archive_chat" => Self::ArchiveChat,
+            "turn_changes" => Self::TurnChanges,
             _ => bail!("no tool {name}"),
         })
     }
@@ -74,6 +78,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
         Tool::RespondToInput => respond_to_input(engine, parse(args)?).await,
         Tool::ArchiveChat => archive_chat(engine, parse(args)?),
+        Tool::TurnChanges => turn_changes(engine, parse(args)?).await,
     }
 }
 
@@ -207,20 +212,81 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
         view.revision,
         label(view.chat.status),
     );
-    let read = (args.known.as_deref() != Some(version.as_str())).then(|| {
-        json!({
+    let read = if args.known.as_deref() == Some(version.as_str()) {
+        None
+    } else {
+        let runs = match engine.run_counts(&args.chat).await {
+            Ok(runs) => turn_changes_of(&view.page.messages, &runs),
+            // The chat still shows; it only loses its changes buttons.
+            Err(e) => {
+                eprintln!("reading chat {}'s run changes: {e:#}", args.chat);
+                Vec::new()
+            }
+        };
+        Some(json!({
             "total": view.page.total,
             "olderRemaining": view.page.older(),
             "pendingInput": view.question.as_ref().map(pending_input),
             "messages": view.page.messages,
-            "turnChanges": [],
-        })
-    });
+            "turnChanges": runs,
+        }))
+    };
     Ok(json!({
         "chat": summary(&view.chat, engine.config()),
         "version": version,
         "read": read,
     }))
+}
+
+/// The saved runs among `messages` that changed files, as
+/// `{turn, after, files, additions, deletions}`. `turn` names the run for
+/// `turn_changes`, and `after` is its last message, which the button
+/// follows. A run lasts until the next one starts, so steering messages
+/// stay in it.
+fn turn_changes_of(messages: &[Message], runs: &BTreeMap<i64, Counts>) -> Vec<Value> {
+    let starts = |m: &Message| m.role == Role::User && runs.contains_key(&m.created_at);
+    let mut out = Vec::new();
+    for (i, message) in messages.iter().enumerate() {
+        let Some(counts) = runs.get(&message.created_at).filter(|_| starts(message)) else {
+            continue;
+        };
+        if counts.files == 0 {
+            continue;
+        }
+        let end = messages[i + 1..]
+            .iter()
+            .position(starts)
+            .map_or(messages.len(), |n| i + 1 + n);
+        out.push(json!({
+            "turn": message.created_at.to_string(),
+            "after": messages[end - 1].id,
+            "files": counts.files,
+            "additions": counts.additions,
+            "deletions": counts.deletions,
+        }));
+    }
+    out
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TurnArgs {
+    chat: String,
+    /// A `turn` from `chat_view`'s `turnChanges`.
+    turn: String,
+}
+
+/// What one run changed: `{patch, files, additions, deletions, truncated}`.
+async fn turn_changes(engine: &Engine, args: TurnArgs) -> Result<Value> {
+    find(engine, &args.chat)?;
+    let key = args
+        .turn
+        .parse()
+        .with_context(|| format!("no run {}", args.turn))?;
+    match engine.run_changes(&args.chat, key).await? {
+        Some(diff) => Ok(json!(diff)),
+        None => bail!("this run's changes weren't kept"),
+    }
 }
 
 #[derive(Deserialize)]
