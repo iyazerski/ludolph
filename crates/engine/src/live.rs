@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -33,17 +34,34 @@ pub struct Live {
     follow_up: Vec<String>,
     /// The automatic retry pi is waiting on, if any.
     retry: Option<Retry>,
-    compacting: bool,
+    /// Why pi is compacting the context, while it does.
+    compacting: Option<String>,
     /// Why the run failed, when pi gave up retrying.
     failure: Option<String>,
 }
 
 /// An automatic retry after a provider error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Retry {
     pub attempt: u32,
     pub max_attempts: u32,
     pub error: Option<String>,
+    /// When the attempt starts.
+    pub at: Option<DateTime<Utc>>,
+}
+
+/// What a working chat's run is waiting on, besides the model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Run {
+    /// Messages pi gives the agent after its current step.
+    pub steering: Vec<String>,
+    /// Messages pi sends once the agent is done.
+    pub follow_up: Vec<String>,
+    pub retry: Option<Retry>,
+    /// Why pi is compacting the context: `manual`, `threshold` or `overflow`.
+    pub compacting: Option<String>,
 }
 
 impl Live {
@@ -113,6 +131,16 @@ impl Live {
         &self.tools
     }
 
+    /// What the run is waiting on, while one is going.
+    pub fn run(&self) -> Option<Run> {
+        self.working.then(|| Run {
+            steering: self.steering.clone(),
+            follow_up: self.follow_up.clone(),
+            retry: self.retry.clone(),
+            compacting: self.compacting.clone(),
+        })
+    }
+
     /// Why the last run failed, when pi gave up retrying.
     pub fn failure(&self) -> Option<&str> {
         self.failure.as_deref()
@@ -130,7 +158,11 @@ impl Live {
                 self.streaming = None;
                 self.tools.clear();
                 self.retry = None;
-                self.compacting = false;
+                self.compacting = None;
+                // pi sends the queue again when it changes, but not when an
+                // abort drops it.
+                self.steering.clear();
+                self.follow_up.clear();
             }
             Event::MessageStart { message } => {
                 if message["role"] != "assistant" {
@@ -199,13 +231,17 @@ impl Live {
             Event::AutoRetryStart {
                 attempt,
                 max_attempts,
+                delay_ms,
                 error_message,
             } => {
                 self.failure = None;
+                let delay =
+                    delay_ms.and_then(|ms| TimeDelta::try_milliseconds(i64::try_from(ms).ok()?));
                 self.retry = Some(Retry {
                     attempt: *attempt,
                     max_attempts: *max_attempts,
                     error: error_message.clone(),
+                    at: delay.map(|delay| Utc::now() + delay),
                 });
             }
             Event::AutoRetryEnd {
@@ -221,8 +257,10 @@ impl Live {
                     );
                 }
             }
-            Event::CompactionStart => self.compacting = true,
-            Event::CompactionEnd => self.compacting = false,
+            Event::CompactionStart { reason } => {
+                self.compacting = Some(reason.clone().unwrap_or_else(|| "manual".into()));
+            }
+            Event::CompactionEnd => self.compacting = None,
             _ => return false,
         }
         true

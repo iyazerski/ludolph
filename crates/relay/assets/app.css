@@ -306,6 +306,7 @@ a { color: inherit; text-decoration: none; }
 }
 @media (prefers-color-scheme: light) { .msg.user .bubble { box-shadow: 0 0 0 1px var(--hairline); } }
 .msg.user.pending { opacity: .6; }
+.msg.user.queued::after { content: "Queued"; font-size: 12px; color: var(--tertiary); margin-right: 6px; }
 .msg.user .shots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .msg.user .shots:first-child { margin-top: 0; }
 .chip {
@@ -503,13 +504,22 @@ a { color: inherit; text-decoration: none; }
 .send:disabled { opacity: .3; }
 .send .i { width: 19px; height: 19px; }
 .send.stop .i { width: 12px; height: 12px; }
-.mic {
+.mic, .attach {
   width: 34px; height: 34px; border-radius: 50%; flex: none;
   display: grid; place-items: center; color: var(--secondary);
   transition: background .15s, color .15s, transform .2s var(--ease);
 }
-.mic:active { transform: scale(.9); }
-.mic .i { width: 19px; height: 19px; }
+.mic:active, .attach:active { transform: scale(.9); }
+.mic .i, .attach .i { width: 19px; height: 19px; }
+.attach { margin-left: -9px; }
+.attachments { display: flex; gap: 8px; overflow-x: auto; padding: 2px 9px 6px 0; }
+.thumb { position: relative; flex: none; width: 60px; height: 60px; border-radius: 12px; overflow: hidden; background: var(--well); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb button {
+  position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center; background: rgb(0 0 0 / .6); color: #fff;
+}
+.thumb button .i { width: 12px; height: 12px; }
 /* Listening: a soft pulse until it stops. */
 .mic.on { color: var(--danger); background: rgb(from var(--danger) r g b / .14); animation: listen 1.4s ease-in-out infinite; }
 @keyframes listen { 50% { background: rgb(from var(--danger) r g b / .26); } }

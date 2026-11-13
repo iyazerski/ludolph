@@ -1047,8 +1047,9 @@ fn content_parts(content: &Content) -> Vec<Part> {
         .0
         .iter()
         .filter_map(|block| match block.kind.as_str() {
+            // An image sent alone comes with an empty text block.
             "text" => Some(Part::Text {
-                text: block.text.clone()?,
+                text: block.text.clone().filter(|text| !text.is_empty())?,
             }),
             "image" => Some(Part::Image {
                 index: images.next()?,

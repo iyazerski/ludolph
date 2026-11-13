@@ -18,7 +18,7 @@ use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 use crate::index::{self, Index};
-use crate::live::Live;
+use crate::live::{self, Live};
 use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
 use crate::runtime::Runtime;
@@ -272,6 +272,8 @@ pub struct View {
     pub revision: u64,
     /// The oldest dialog the chat's pi waits on.
     pub question: Option<Question>,
+    /// What the chat's run waits on, while one is going.
+    pub run: Option<live::Run>,
 }
 
 /// What a chat is doing.
@@ -480,7 +482,7 @@ impl Engine {
     ///
     /// Fails if there's no such chat, or its session file can't be read.
     pub async fn view(&self, id: &str, window: Window) -> Result<View> {
-        let (chat, path, messages, streaming, revision, question) = {
+        let (chat, path, messages, streaming, revision, question, run) = {
             let state = self.state();
             let chat = state.chats.get(id);
             let info = match state.index.find(id) {
@@ -501,8 +503,9 @@ impl Engine {
                 .map(|live| live.messages().to_vec())
                 .unwrap_or_default();
             let streaming = live.and_then(|live| live.streaming().cloned());
+            let run = live.and_then(Live::run);
             let revision = chat.map_or(0, |chat| *chat.changes.borrow());
-            (info, path, messages, streaming, revision, question)
+            (info, path, messages, streaming, revision, question, run)
         };
         let transcripts = self.0.transcripts.clone();
         let page = tokio::task::spawn_blocking(move || {
@@ -519,6 +522,7 @@ impl Engine {
             page,
             revision,
             question,
+            run,
         })
     }
 
@@ -584,14 +588,14 @@ impl Engine {
         Ok(id)
     }
 
-    /// Send `text` to a chat, with images as pi's `ImageContent` values. It
-    /// starts a run, or steers the one that's going.
+    /// Send `text` to a chat, with images. It starts a run, or steers the
+    /// one that's going.
     ///
     /// # Errors
     ///
     /// Fails if there's no such chat, its folder is gone, or pi refuses the
     /// message.
-    pub async fn send(&self, id: &str, text: &str, images: Vec<Value>) -> Result<Delivery> {
+    pub async fn send(&self, id: &str, text: &str, images: Vec<Image>) -> Result<Delivery> {
         let ops = self.ops(id)?;
         let stops = self.stops(id);
         let _ops = ops.lock().await;
@@ -665,12 +669,15 @@ impl Engine {
     }
 
     /// Send `text` to `pi` as a prompt, and return what pi did with it.
-    async fn prompt(&self, pi: &Pi, text: &str, images: Vec<Value>) -> Result<Delivery> {
+    async fn prompt(&self, pi: &Pi, text: &str, images: Vec<Image>) -> Result<Delivery> {
         // pi ignores `steer` when no run is going, so the answer says which
         // happened, even if a run started or ended meanwhile.
         let mut command = json!({"type": "prompt", "message": text, "streamingBehavior": "steer"});
         if !images.is_empty() {
-            command["images"] = Value::Array(images);
+            let images = images.into_iter().map(
+                |image| json!({"type": "image", "mimeType": image.mime_type, "data": image.data}),
+            );
+            command["images"] = Value::Array(images.collect());
         }
         let answer = pi.call(command).await?;
         match answer["disposition"].as_str() {
@@ -744,6 +751,10 @@ impl Engine {
             }
             let prompt = summary.and_then(|s| s.first_prompt.clone());
             let prompt = prompt.unwrap_or_else(|| text.to_owned());
+            // An image alone gives a title nothing to go on; the next text will.
+            if prompt.trim().is_empty() {
+                return;
+            }
             let Some(chat) = state.chats.get_mut(id) else {
                 return;
             };
