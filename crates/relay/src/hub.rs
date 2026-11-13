@@ -11,7 +11,7 @@ use anyhow::{Result, bail};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use ludolph_relay_proto::{Battery, Call, Engine, Notice, PROTOCOL, Up};
+use ludolph_relay_proto::{Battery, Call, Notice, PROTOCOL, Up};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -38,8 +38,6 @@ struct Link {
     calls: mpsc::Sender<Call>,
     pending: Pending,
     version: String,
-    /// Unknown until the Mac reports it, right after its hello.
-    engine: Option<Engine>,
     /// `None` until the Mac reports it, and on a Mac without a battery.
     battery: Option<Battery>,
 }
@@ -50,7 +48,6 @@ struct Link {
 pub struct Status {
     pub online: bool,
     pub version: Option<String>,
-    pub engine: Option<Engine>,
     pub battery: Option<Battery>,
 }
 
@@ -67,7 +64,6 @@ impl Hub {
             Some(link) => Status {
                 online: true,
                 version: Some(link.version.clone()),
-                engine: link.engine.clone(),
                 battery: link.battery,
             },
             None => Status::default(),
@@ -153,7 +149,6 @@ impl Hub {
                     calls: calls_tx,
                     pending: pending.clone(),
                     version: version.clone(),
-                    engine: None,
                     battery: None,
                 },
             );
@@ -221,9 +216,6 @@ impl Hub {
                 }
             }
             Up::Notify(notice) => notify(machine, notice),
-            Up::Engine(engine) => {
-                self.update_link(machine, conn, |link| link.engine = Some(engine))
-            }
             Up::Power { battery } => self.update_link(machine, conn, |link| link.battery = battery),
             Up::Hello { .. } => {}
         }

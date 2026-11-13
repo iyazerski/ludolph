@@ -1,7 +1,7 @@
 {
-  "name": "Zeron Remote",
-  "short_name": "Zeron",
-  "description": "Your Zeron chats, from anywhere",
+  "name": "Ludolph",
+  "short_name": "Ludolph",
+  "description": "Your pi chats, from anywhere",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -7,6 +7,8 @@ repos:
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: check-yaml
+        # The Kubernetes manifests hold several documents each.
+        args: [--allow-multiple-documents]
       - id: check-toml
 
   - repo: local
