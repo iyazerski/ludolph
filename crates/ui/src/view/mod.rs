@@ -1,4 +1,5 @@
-//! What the window draws, and its keys: the chat list or a chat's page,
+//! What the windows draw, and their keys: the quick window's chat list or
+//! chat page, the main window's sidebar and chat ([`main_window`]), each
 //! under the toast.
 
 mod breaks;
@@ -8,41 +9,34 @@ mod code;
 mod composer;
 mod icons;
 mod list;
+mod main_window;
+mod sidebar;
 mod widgets;
 
 use rune::{Color, Cx, El, Key, KeyEvent, SystemMaterial, Tx, col};
 use rune_kit::{Toast, ToastRegion};
 
-use super::app::{ChatPage, Overlay, Page, State, ToastKind};
+use rune_kit::Kit;
+
+use super::app::{ChatPage, Overlay, Page, State, ToastKind, Window};
 
 pub const CORNER: f32 = 14.0;
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
+    match s.window {
+        Window::Quick => quick(s, cx),
+        Window::Main => main_window::view(s, cx),
+    }
+}
+
+fn quick(s: &State, cx: &mut Cx<State>) -> El {
     let k = rune_theme_opencode::kit(cx.system_dark());
     let mut layer = Vec::new();
     let page = match &s.page {
         Page::List => list::view(s, k),
         Page::Chat(page) => chat::view(s, page, k, &mut layer),
     };
-    if let Some(t) = &s.toast {
-        let mut toast = Toast::new("toast", t.title.clone());
-        if !t.body.is_empty() {
-            toast = toast.description(t.body.clone());
-        }
-        if t.kind == ToastKind::Failure {
-            toast = toast.icon(k, &icons::ALERT);
-        }
-        layer.push(
-            ToastRegion::new()
-                .toast(
-                    toast
-                        .on_close(|s: &mut State| s.toast = None)
-                        .closable()
-                        .build(k),
-                )
-                .build(k),
-        );
-    }
+    layer.extend(toast(s, k));
     let (tint, edge) = if k.dark {
         // macOS draws dark windows' rims itself; a light line on top reads as a seam.
         (k.c.bg_base.alpha(0.72), Color::TRANSPARENT)
@@ -68,7 +62,43 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     rune_kit::root(body, layer)
 }
 
+/// The window's toast, if it shows one.
+fn toast(s: &State, k: &Kit) -> Option<El> {
+    let t = s.toast.as_ref()?;
+    let mut toast = Toast::new("toast", t.title.clone());
+    if !t.body.is_empty() {
+        toast = toast.description(t.body.clone());
+    }
+    if t.kind == ToastKind::Failure {
+        toast = toast.icon(k, &icons::ALERT);
+    }
+    Some(
+        ToastRegion::new()
+            .toast(
+                toast
+                    .on_close(|s: &mut State| s.toast = None)
+                    .closable()
+                    .build(k),
+            )
+            .build(k),
+    )
+}
+
 pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
+    if s.window == Window::Main {
+        if rune_kit::shell::is_sidebar_toggle(key) {
+            s.sidebar.toggle();
+            return true;
+        }
+        if key.is_command('f') {
+            s.sidebar.set_open(true);
+            if let Some(page) = s.chat_mut() {
+                page.composer.focused = false;
+            }
+            s.list.query.focused = true;
+            return true;
+        }
+    }
     if key.is_command('w') {
         s.hide();
         return true;
@@ -96,10 +126,13 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
     if key.key != Key::Escape {
         return false;
     }
+    let quick = s.window == Window::Quick;
     match s.chat_mut() {
         Some(page) if page.overlay != Overlay::Closed => page.overlay = Overlay::Closed,
         _ if changes => s.back(),
-        _ => s.hide(),
+        // Escape puts the floating window away; a regular window stays.
+        _ if quick => s.hide(),
+        _ => return false,
     }
     true
 }

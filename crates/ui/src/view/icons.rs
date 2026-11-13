@@ -4,6 +4,9 @@
 use std::sync::LazyLock;
 
 use rune::Icon;
+/// Expanding the quick window's chat into the main window, and popping the
+/// main window's chat out into the quick one. The phone has neither.
+pub use rune_theme_opencode::icons::{OUTLINE_EXPAND as EXPAND, SQUARE_ARROW_TOP_RIGHT as POP_OUT};
 
 const fn icon(name: &'static str, view: f32, body: &'static str) -> Icon {
     Icon { name, view, body }

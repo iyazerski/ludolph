@@ -1,6 +1,6 @@
-//! Ludolph's windows. For now that's the quick window: a small floating
-//! window with the chats, shown and hidden on a global shortcut. It talks to
-//! the engine over its socket.
+//! Ludolph's windows: the main window, with the chats in a sidebar beside
+//! the open chat, and the quick window, a small floating one shown and
+//! hidden on a global shortcut. Both talk to the engine over its socket.
 
 mod api;
 mod app;
@@ -12,14 +12,16 @@ mod message;
 mod prefs;
 mod view;
 
+use std::cell::RefCell;
 use std::fs::File;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use anyhow::{Context, Result, bail};
-use rune::{App, AppSpec, MacWindowOptions, RunOptions, WindowOptions, WindowSpec};
+use rune::{App, AppSpec, Chrome, MacWindowOptions, RunOptions, WindowOptions, WindowSpec};
 
-use self::api::Api;
-use self::app::State;
+use self::api::{Api, Shared};
+use self::app::{State, Window};
 use self::prefs::Prefs;
 use self::view::{CORNER, on_key, view};
 
@@ -30,6 +32,8 @@ const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
 const FLOATING: isize = 3;
 const SIZE: (f32, f32) = (420.0, 620.0);
 const MIN_SIZE: (f32, f32) = (340.0, 420.0);
+const MAIN_SIZE: (f32, f32) = (1120.0, 760.0);
+const MAIN_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 
 /// The shortcut that shows and hides the quick window, until it's a setting.
 pub const SHORTCUT: &str = "ctrl+alt+space";
@@ -43,11 +47,25 @@ fn top_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     Some((right - px(SIZE.0 + 24.0), display.position.1 + px(56.0)))
 }
 
+/// The main window's first spot: the middle of the primary display.
+fn centered(displays: &[rune::Display]) -> Option<(i32, i32)> {
+    let display = displays.iter().find(|d| d.primary).or(displays.first())?;
+    let px = |points: f32| (f64::from(points) * display.scale).round() as i32;
+    let (w, h) = (
+        i32::try_from(display.size.0).ok()?,
+        i32::try_from(display.size.1).ok()?,
+    );
+    Some((
+        display.position.0 + (w - px(MAIN_SIZE.0)) / 2,
+        display.position.1 + (h - px(MAIN_SIZE.1)) / 2,
+    ))
+}
+
 pub struct Opts {
     /// The engine's folder, with its socket; the app keeps its own state there too.
     pub state_dir: PathBuf,
-    /// Show the window at once, rather than on the shortcut.
-    pub show: bool,
+    /// Start with no window, as at login, rather than with the main window.
+    pub hidden: bool,
 }
 
 /// Run the app until it quits. It owns the main thread, as macOS needs;
@@ -73,31 +91,61 @@ pub fn run(opts: Opts) -> Result<()> {
         .context("starting the runtime")?;
     let socket = opts.state_dir.join("engine.sock");
     let prefs_path = opts.state_dir.join("ui.json");
-    let prefs = Prefs::load(&prefs_path);
-    let handle = rt.handle().clone();
+    let prefs = Rc::new(RefCell::new(Prefs::load(&prefs_path)));
+    let shared = Shared::start(rt.handle().clone(), socket, prefs_path);
 
-    let spec = AppSpec {
-        min_size: Some(MIN_SIZE),
+    let spec = |size, min_size| AppSpec {
+        min_size: Some(min_size),
         fonts: rune_theme_opencode::FONTS,
         families: rune_theme_opencode::FAMILIES,
         on_key: Some(on_key),
         setup: Some(|s, waker| s.images = Some(rune::ImageCache::new(waker))),
         ..AppSpec::new(
             "Ludolph",
-            SIZE,
+            size,
             || unreachable!("init() below builds the state"),
             view,
         )
     };
-    let app = App::new(spec).windowless();
-    let me = app.handle();
-    if opts.show {
-        me.update(|s, _| s.toggle_window());
+    // Both start windowless, so a window is made only once it first opens.
+    let quick = App::new(spec(SIZE, MIN_SIZE)).windowless();
+    let main = App::new(spec(MAIN_SIZE, MAIN_MIN_SIZE)).windowless();
+    let (quick_handle, main_handle) = (quick.handle(), main.handle());
+    if !opts.hidden {
+        main_handle.update(|s, _| s.open());
     }
-    let app = app
-        .init(move || State::new(Api::start(handle, socket, me, prefs_path), prefs))
-        .global_shortcut(SHORTCUT, |s, _| s.toggle_window())
-        .on_visibility(|s, shown, _| s.visibility_changed(shown));
+    let quick = {
+        let (shared, prefs) = (shared.clone(), prefs.clone());
+        let (me, peer) = (quick_handle, main_handle.clone());
+        quick
+            .init(move || State::new(Api::start(&shared, me, peer), Window::Quick, prefs))
+            .global_shortcut(SHORTCUT, |s, _| s.toggle_window())
+            .on_visibility(|s, shown, _| s.visibility_changed(shown))
+    };
+    let main = {
+        let peer = quick.handle();
+        main.init(move || State::new(Api::start(&shared, main_handle, peer), Window::Main, prefs))
+            .chrome(Chrome {
+                full_size_content: true,
+                // Centred in the toolbar band, as `SplitView` asks.
+                traffic_lights: Some((16.0, 17.0)),
+                drag_regions: true,
+            })
+            .on_visibility(|s, shown, _| {
+                // Only once it's on screen: an app that becomes regular while its window
+                // orders in gets the window back at a stray, tiny frame.
+                if shown {
+                    s.api.app().set_dock_icon(true);
+                }
+                s.visibility_changed(shown)
+            })
+            .on_close(State::closed)
+            // The Dock icon, or opening the app again from Finder or Spotlight.
+            .on_reopen(|s, _, _| {
+                s.open();
+                true
+            })
+    };
     rune::run_windows_with_args(RunOptions { accessory: true }, [], move |displays| {
         let options = WindowOptions {
             transparent: true,
@@ -117,7 +165,17 @@ pub fn run(opts: Opts) -> Result<()> {
                 .collection_behavior(ALL_SPACES | FULL_SCREEN_AUXILIARY)
                 .corner_radius(CORNER),
         );
-        vec![WindowSpec::from_app("quick", app).configured_options(options)]
+        let main_options = WindowOptions {
+            resizable: true,
+            visible: false,
+            position: centered(displays),
+            min_size: Some(MAIN_MIN_SIZE),
+            ..Default::default()
+        };
+        vec![
+            WindowSpec::from_app("quick", quick).configured_options(options),
+            WindowSpec::from_app("main", main).options(main_options),
+        ]
     });
     drop(rt);
     drop(lock);

@@ -127,7 +127,8 @@ impl State {
         // A run that ends may have changed the model, the context or the branch.
         let settled =
             chat.chat.as_ref().is_some_and(|c| c.is_working()) && !frame.chat.is_working();
-        if self.prefs.mark_seen(&frame.chat) {
+        let seen = self.prefs.borrow_mut().mark_seen(&frame.chat);
+        if seen {
             self.save_prefs();
         }
         if let Some(chat) = self.existing_at(nav) {
@@ -368,7 +369,7 @@ impl State {
                 Ok(_) if archive => {
                     s.notify("Chat archived");
                     if s.page_at(nav).is_some() {
-                        s.back();
+                        s.leave_chat();
                     }
                 }
                 Ok(_) => {}

@@ -12,20 +12,49 @@ use rune_kit::{
 use super::{breaks, code, icons};
 
 use super::widgets::{busy, dot, engine_note, head, head_titles, hide_button, tones};
-use crate::app::{Answer, ChatPage, Existing, Overlay, QuestionForm, State, Target};
+use crate::app::{Answer, ChatPage, Existing, Overlay, QuestionForm, State, Target, Window};
 use crate::data::{DialogKind, Message, MessageStatus, Part, Role, Run, ToolState};
 use crate::labels::{ToolCall, tool_summary};
 use crate::message::skill_words;
 use rune::Image;
 use rune_theme_opencode::file_icons;
 
+/// How wide the main window's transcript and composer get, so lines stay
+/// readable in a wide window.
+const READING_WIDTH: f32 = 780.0;
+
+/// The quick window's chat page: its header over the page.
 pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     if let Some(chat) = page.existing()
         && let Some(changes) = &chat.changes
     {
         return super::changes::page(s, chat, changes, k);
     }
+    col()
+        .w_full()
+        .h_full()
+        .child(header(page, k, layer))
+        .child(body(s, page, k, layer))
+}
+
+/// The main window's chat pane: the page without a header, as the
+/// window's toolbar has the title and actions.
+pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
+    if let Some(chat) = page.existing()
+        && let Some(changes) = &chat.changes
+    {
+        return super::changes::page(s, chat, changes, k);
+    }
+    body(s, page, k, layer)
+}
+
+/// The transcript, or a new chat's greeting, over the composer.
+fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
+    let wide = s.window == Window::Main;
     let mut body = col().key("transcript").w_full().px(14.0).py(10.0).gap(14.0);
+    if wide {
+        body = body.max_w(READING_WIDTH);
+    }
     let error = page.existing().and_then(|c| c.error.as_deref());
     if let Some(note) = engine_note(s, k) {
         body = body.child(note);
@@ -36,7 +65,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         Target::New(_) => body.child(hero(k)),
         Target::Existing(chat) => body.children(transcript(chat, k)),
     };
-    let scroll = col()
+    let mut scroll = col()
         .key("transcript")
         .w_full()
         .grow(1.0)
@@ -49,6 +78,9 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
             }
         })
         .child(body.key("messages"));
+    if wide {
+        scroll = scroll.items_center();
+    }
     let mut stack = rune::el().w_full().grow(1.0).min_h(0.0).child(scroll);
     if page.far_from_bottom {
         let jump = IconButton::new(&icons::CHEV_DOWN)
@@ -64,16 +96,24 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
                 .child(jump),
         );
     }
+    let mut composer = super::composer::view(s, page, k, layer);
+    if wide {
+        composer = row()
+            .w_full()
+            .justify_center()
+            .child(composer.max_w(READING_WIDTH));
+    }
     col()
         .w_full()
-        .h_full()
-        .child(header(page, k, layer))
+        .grow(1.0)
+        .min_h(0.0)
         .child(stack)
-        .child(super::composer::view(s, page, k, layer))
+        .child(composer)
 }
 
-fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
-    let (title, sub) = match &page.target {
+/// The page's title and subtitle: the chat's title and project.
+pub fn titles(page: &ChatPage) -> (String, String) {
+    match &page.target {
         Target::New(d) => {
             let project = d
                 .project
@@ -92,7 +132,11 @@ fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
                 .unwrap_or_default(),
         ),
         Target::Existing(_) => (String::new(), String::new()),
-    };
+    }
+}
+
+fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
+    let (title, sub) = titles(page);
     let back = IconButton::new(&icons::BACK)
         .variant(IconButtonVariant::Ghost)
         .label("Back")
@@ -114,14 +158,25 @@ fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
                 .truncate(),
         );
     let mut bar = head("chat-head").child(back).child(titles);
-    if page.existing().is_some() {
-        bar = bar.child(more_menu(page, k, layer));
+    if let Some(chat) = page.existing() {
+        let id = chat.id.clone();
+        bar = bar
+            .child(
+                IconButton::new(&icons::EXPAND)
+                    .variant(IconButtonVariant::Ghost)
+                    .label("Open in the main window")
+                    .help("Open in the main window")
+                    .on_press(move |s: &mut State| s.open_in_peer(id.clone()))
+                    .build(k),
+            )
+            .child(more_menu(page, k, layer));
     }
     bar = bar.child(hide_button(k));
     bar
 }
 
-fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
+/// The chat's menu: stop the agent, archive.
+pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let trigger = IconButton::new(&icons::MORE)
         .variant(IconButtonVariant::Ghost)
         .label("More")

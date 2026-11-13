@@ -1,5 +1,5 @@
-//! The window's state and what changes it: navigation and the engine's
-//! feeds here, a chat's actions in [`actions`], a new chat's picks in
+//! A window's state and what changes it: navigation, the engine's feeds
+//! and the windows' hand-offs here, a chat's actions in [`actions`], a new chat's picks in
 //! [`draft`], and images in [`attach`].
 
 mod actions;
@@ -7,17 +7,20 @@ mod attach;
 mod draft;
 mod page;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use rune::{ImageCache, TextEdit, Tx};
 use rune_kit::diff::DiffState;
+use rune_kit::shell::PaneState;
 use serde_json::{Value, json};
 
 use super::api::Api;
 use super::client::Subscription;
 use super::data::{Chat, Chats};
-use super::prefs::Prefs;
+use super::prefs::{Prefs, ProjectPick};
 
 pub use self::actions::Answer;
 pub use self::attach::Prep;
@@ -33,12 +36,26 @@ const LIST_LIMIT: usize = 200;
 pub const GROUP_CHATS: usize = 10;
 const TOAST_FOR: Duration = Duration::from_millis(3800);
 
+/// Which of the app's two windows a state belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Window {
+    /// The floating window on the global shortcut, which pages between the
+    /// list and a chat.
+    Quick,
+    /// The regular window, with the list in a sidebar beside the chat.
+    Main,
+}
+
 pub struct State {
     pub api: Api,
+    pub window: Window,
     /// Whether the app is connected to the engine.
     pub engine_up: bool,
-    pub prefs: Prefs,
+    /// Shared by both windows, which run on the same thread.
+    pub prefs: Rc<RefCell<Prefs>>,
     pub page: Page,
+    /// The main window's sidebar: its width, and whether it's open.
+    pub sidebar: PaneState,
     pub list: ListState,
     pub toast: Option<Toast>,
     /// pi's models and their thinking levels, loaded once.
@@ -121,12 +138,23 @@ pub enum ToastKind {
 }
 
 impl State {
-    pub fn new(api: Api, prefs: Prefs) -> Self {
+    pub fn new(api: Api, window: Window, prefs: Rc<RefCell<Prefs>>) -> Self {
+        let page = match window {
+            Window::Quick => Page::List,
+            // The main window opens on a new chat, as there's always a page beside the list.
+            Window::Main => Page::Chat(Box::new(ChatPage::new(
+                0,
+                Target::New(Draft::new(prefs.borrow().new_chat.clone())),
+                TextEdit::default(),
+            ))),
+        };
         Self {
             api,
+            window,
             engine_up: false,
             prefs,
-            page: Page::List,
+            page,
+            sidebar: PaneState::new(320.0).range(260.0, 480.0),
             list: ListState::default(),
             toast: None,
             catalog: Catalog::default(),
@@ -204,7 +232,13 @@ impl State {
     }
 
     pub fn save_prefs(&self) {
-        self.api.save_prefs(&self.prefs);
+        self.api.save_prefs(&self.prefs.borrow());
+    }
+
+    /// Whether the window shows the chat list now: the main window's
+    /// sidebar always does, the quick window only in place of a chat.
+    pub fn list_shown(&self) -> bool {
+        self.window == Window::Main || self.chat().is_none()
     }
 
     pub fn notify(&mut self, title: &str) {
@@ -261,7 +295,7 @@ impl State {
         }
         if self.list_feed.is_none() {
             self.list_feed = Some(self.api.subscribe("chats", json!({}), |s, _, _| {
-                if s.chat().is_none() {
+                if s.list_shown() {
                     s.load_chats();
                 } else {
                     // The list loads again once it shows.
@@ -306,6 +340,11 @@ impl State {
         if self.api.app().is_visible() {
             return self.hide();
         }
+        self.open();
+    }
+
+    /// Bring the window forward.
+    pub fn open(&mut self) {
         self.api.app().open();
         // Rune reports visibility changes only after the first frame, so the
         // first open must count itself.
@@ -315,10 +354,51 @@ impl State {
         }
     }
 
+    /// Put the window away: the quick window hides, and the main window
+    /// closes as its close button would, keeping its state.
     pub fn hide(&mut self) {
+        match self.window {
+            Window::Quick => {
+                self.stop_dictating();
+                self.api.app().hide();
+                self.visibility_changed(false);
+            }
+            Window::Main => self.api.app().close(),
+        }
+    }
+
+    /// The main window closed: it rests, and the app leaves the Dock, as
+    /// the quick window and the shortcut stay.
+    pub fn closed(&mut self, _: &mut Tx) {
         self.stop_dictating();
-        self.api.app().hide();
         self.visibility_changed(false);
+        self.api.app().set_dock_icon(false);
+        // Its transcript is most of its memory, and the app may stay hidden for
+        // days. It opens again on a new chat, keeping any unsent text.
+        self.new_chat();
+    }
+
+    /// Show chat `id` in the other window. Expanding the quick window into
+    /// the main one puts it away; the main window stays behind the quick one.
+    pub fn open_in_peer(&mut self, id: String) {
+        self.api.peer().update(move |s, _| s.present(&id));
+        if self.window == Window::Quick {
+            self.hide();
+        }
+    }
+
+    /// Bring the main window forward from the quick window's list, which hides.
+    pub fn open_main(&mut self) {
+        self.api.peer().update(|s, _| s.open());
+        self.hide();
+    }
+
+    /// Bring the window forward on chat `id`, keeping its page if it shows it.
+    pub fn present(&mut self, id: &str) {
+        if !self.shows_chat(id) {
+            self.open_chat(id.to_owned());
+        }
+        self.open();
     }
 
     /// The engine came or went. Feeds follow again on their own; what was
@@ -371,13 +451,14 @@ impl State {
             json!({ "limit": LIST_LIMIT }),
             |s, result: Result<Chats, String>, _| {
                 s.list.loading = false;
-                if s.list.stale && s.chat().is_none() {
+                if s.list.stale && s.list_shown() {
                     s.load_chats();
                 }
                 match result {
                     Ok(mut got) => {
                         got.chats.sort_by_key(|c| std::cmp::Reverse(c.active_at()));
-                        if s.prefs.prime(&got.chats) {
+                        let primed = s.prefs.borrow_mut().prime(&got.chats);
+                        if primed {
                             s.save_prefs();
                         }
                         s.list.chats = Some(got.chats);
@@ -402,21 +483,51 @@ impl State {
         self.load_info();
     }
 
-    pub fn new_chat(&mut self) {
-        self.show(Target::New(Draft::new(self.prefs.new_chat.clone())));
+    /// Whether the window shows chat `id`'s page.
+    pub fn shows_chat(&self, id: &str) -> bool {
+        self.chat()
+            .and_then(ChatPage::existing)
+            .is_some_and(|c| c.id == id)
+    }
+
+    /// Start a new chat in project `id`, with the last new chat's model.
+    pub fn new_chat_in(&mut self, id: String) {
+        let mut saved = self.prefs.borrow().new_chat.clone();
+        saved.project = ProjectPick::Project(id);
+        self.show(Target::New(Draft::new(saved)));
         self.load_draft();
     }
 
-    /// Close the changes page for its chat, else the chat for the list.
+    pub fn new_chat(&mut self) {
+        let saved = self.prefs.borrow().new_chat.clone();
+        self.show(Target::New(Draft::new(saved)));
+        self.load_draft();
+    }
+
+    /// Close the changes page for its chat, else, in the quick window, the
+    /// chat for the list. The main window's list is always beside the chat.
     pub fn back(&mut self) {
         if let Some(chat) = self.chat_mut().and_then(ChatPage::existing_mut)
             && chat.changes.take().is_some()
         {
             return;
         }
-        self.leave_page();
-        if self.list.stale {
-            self.load_chats();
+        if self.window == Window::Quick {
+            self.leave_chat();
+        }
+    }
+
+    /// Leave the chat: for the list in the quick window, for a new chat in
+    /// the main one.
+    pub fn leave_chat(&mut self) {
+        match self.window {
+            Window::Quick => {
+                self.leave_page();
+                if self.list.stale {
+                    self.load_chats();
+                }
+            }
+            Window::Main => self.new_chat(),
         }
     }
 

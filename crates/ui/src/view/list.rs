@@ -40,38 +40,16 @@ pub fn view(s: &State, k: &Kit) -> El {
                 .on_press(State::new_chat)
                 .build(k),
         )
+        .child(
+            IconButton::new(&icons::EXPAND)
+                .variant(IconButtonVariant::Ghost)
+                .label("Open the main window")
+                .on_press(State::open_main)
+                .build(k),
+        )
         .child(hide_button(k));
-    let search = TextInput::new(&s.list.query)
-        .width(None)
-        .height(SEARCH_HEIGHT)
-        .placeholder("Search")
-        .leading_icon(&icons::SEARCH)
-        .clear_button()
-        .on_edit(|s: &mut State| &mut s.list.query)
-        .on_key(|s: &mut State, key, tx: &mut Tx| {
-            // Return opens the first match.
-            if key.key != rune::Key::Enter {
-                return false;
-            }
-            let first = filtered(s).first().map(|c| c.id.clone());
-            if let Some(id) = first {
-                s.open_chat(id);
-                tx.blur();
-            }
-            true
-        })
-        .build(k)
-        .radius(SEARCH_HEIGHT / 2.0)
-        .pl(4.0)
-        .key("search");
-    let labels = ListFilter::ALL.map(ListFilter::label);
-    let picked = ListFilter::ALL.iter().position(|f| *f == s.list.filter);
-    let filter = SegmentedControl::new(&labels, picked)
-        .label("Show")
-        .width(None)
-        .on_pick(|s: &mut State, i, _: &mut Tx| s.list.filter = ListFilter::ALL[i])
-        .build(k)
-        .key("filter");
+    let search = search_field(s, k);
+    let filter = filter_control(s, k);
     let mut body = col().key("rows").w_full().px(8.0).pb(12.0).gap(1.0);
     if let Some(note) = engine_note(s, k) {
         body = body.child(note.mb(8.0));
@@ -108,7 +86,46 @@ pub fn view(s: &State, k: &Kit) -> El {
         )
 }
 
-fn empty(k: &Kit, why: &str) -> El {
+/// The search over titles, projects and previews; Return opens the first match.
+pub(super) fn search_field(s: &State, k: &Kit) -> El {
+    TextInput::new(&s.list.query)
+        .width(None)
+        .height(SEARCH_HEIGHT)
+        .placeholder("Search")
+        .leading_icon(&icons::SEARCH)
+        .clear_button()
+        .on_edit(|s: &mut State| &mut s.list.query)
+        .on_key(|s: &mut State, key, tx: &mut Tx| {
+            // Return opens the first match.
+            if key.key != rune::Key::Enter {
+                return false;
+            }
+            let first = filtered(s).first().map(|c| c.id.clone());
+            if let Some(id) = first {
+                s.open_chat(id);
+                tx.blur();
+            }
+            true
+        })
+        .build(k)
+        .radius(SEARCH_HEIGHT / 2.0)
+        .pl(4.0)
+        .key("search")
+}
+
+/// The filter by status.
+pub(super) fn filter_control(s: &State, k: &Kit) -> El {
+    let labels = ListFilter::ALL.map(ListFilter::label);
+    let picked = ListFilter::ALL.iter().position(|f| *f == s.list.filter);
+    SegmentedControl::new(&labels, picked)
+        .label("Show")
+        .width(None)
+        .on_pick(|s: &mut State, i, _: &mut Tx| s.list.filter = ListFilter::ALL[i])
+        .build(k)
+        .key("filter")
+}
+
+pub(super) fn empty(k: &Kit, why: &str) -> El {
     row()
         .w_full()
         .py(24.0)
@@ -117,7 +134,7 @@ fn empty(k: &Kit, why: &str) -> El {
 }
 
 /// The chats the search and the filter keep, in list order.
-fn filtered(s: &State) -> Vec<&Chat> {
+pub(super) fn filtered(s: &State) -> Vec<&Chat> {
     let q = s.list.query.text.trim().to_lowercase();
     let now = Utc::now();
     s.list
@@ -138,8 +155,8 @@ fn keeps(s: &State, c: &Chat, now: DateTime<Utc>) -> bool {
 }
 
 /// Whether `c` finished a turn since it was last opened.
-fn is_done(s: &State, c: &Chat) -> bool {
-    matches!(c.status, Status::Idle) && s.prefs.unseen(c)
+pub(super) fn is_done(s: &State, c: &Chat) -> bool {
+    matches!(c.status, Status::Idle) && s.prefs.borrow().unseen(c)
 }
 
 fn matches(c: &Chat, q: &str) -> bool {
@@ -152,32 +169,31 @@ fn matches(c: &Chat, q: &str) -> bool {
     hay.iter().any(|h| h.to_lowercase().contains(q))
 }
 
-fn rows(s: &State, k: &Kit, chats: &[Chat]) -> Vec<El> {
-    let q = s.list.query.text.trim();
-    let shown = filtered(s);
-    if !q.is_empty() {
-        let hits: Vec<El> = shown.into_iter().map(|c| chat_row(s, k, c, true)).collect();
-        return if hits.is_empty() {
-            vec![empty(k, "No chats match your search")]
-        } else {
-            hits
-        };
+/// Why the list shows no chats, if it shows none: `chats` loaded, of which
+/// the search and filter keep `shown`.
+pub(super) fn none_shown(s: &State, chats: &[Chat], shown: &[&Chat]) -> Option<&'static str> {
+    if !shown.is_empty() {
+        return None;
+    }
+    if !s.list.query.text.trim().is_empty() {
+        return Some("No chats match your search");
     }
     if chats.is_empty() {
-        return vec![empty(k, "No chats yet")];
+        return Some("No chats yet");
     }
-    if shown.is_empty() {
-        let why = match s.list.filter {
-            ListFilter::All => "No chats yet",
-            ListFilter::Working => "No chat is working",
-            ListFilter::Done => "No finished chats to look at",
-            ListFilter::Recent => "No chats active in the last 15 minutes",
-        };
-        return vec![empty(k, why)];
-    }
-    // Projects, most recently active first, like the sidebar.
+    Some(match s.list.filter {
+        ListFilter::All => "No chats yet",
+        ListFilter::Working => "No chat is working",
+        ListFilter::Done => "No finished chats to look at",
+        ListFilter::Recent => "No chats active in the last 15 minutes",
+    })
+}
+
+/// `chats` by project, keyed by project id (`home` for none), each
+/// project where its most recently active chat is.
+pub(super) fn groups(chats: Vec<&Chat>) -> Vec<(String, Vec<&Chat>)> {
     let mut groups: Vec<(String, Vec<&Chat>)> = Vec::new();
-    for c in shown {
+    for c in chats {
         let key = c
             .project
             .as_ref()
@@ -187,9 +203,20 @@ fn rows(s: &State, k: &Kit, chats: &[Chat]) -> Vec<El> {
             None => groups.push((key, vec![c])),
         }
     }
+    groups
+}
+
+fn rows(s: &State, k: &Kit, chats: &[Chat]) -> Vec<El> {
+    let shown = filtered(s);
+    if let Some(why) = none_shown(s, chats, &shown) {
+        return vec![empty(k, why)];
+    }
+    if !s.list.query.text.trim().is_empty() {
+        return shown.into_iter().map(|c| chat_row(s, k, c, true)).collect();
+    }
     let mut out = Vec::new();
-    for (key, items) in groups {
-        let collapsed = s.prefs.collapsed.contains(&key);
+    for (key, items) in groups(shown) {
+        let collapsed = s.prefs.borrow().collapsed.contains(&key);
         out.push(section(k, &key, &items, collapsed));
         if collapsed {
             continue;
@@ -251,7 +278,7 @@ fn section(k: &Kit, key: &str, items: &[&Chat], collapsed: bool) -> El {
     head.child(rune::spacer())
         .child(chevron)
         .on_press(move |s: &mut State| {
-            s.prefs.toggle_collapsed(&toggle);
+            s.prefs.borrow_mut().toggle_collapsed(&toggle);
             s.save_prefs();
         })
 }
