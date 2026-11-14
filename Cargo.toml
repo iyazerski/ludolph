@@ -64,6 +64,8 @@ plist = { version = "1", default-features = false, features = ["serde"] }
 # Finds inline code in the transcript's Markdown, to colour it, and writes
 # the HTML a copy puts beside the plain text.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# Compares the app's version with the latest release's.
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 # The relay's Web Push: rustls on ring, which also signs the VAPID tokens.

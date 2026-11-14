@@ -16,6 +16,8 @@ base64.workspace = true
 block2.workspace = true
 chrono.workspace = true
 image.workspace = true
+# Swaps the app for an update in one step.
+libc.workspace = true
 ludolph-json-file.workspace = true
 objc2.workspace = true
 objc2-av-foundation.workspace = true
@@ -26,7 +28,10 @@ pulldown-cmark.workspace = true
 qrcode.workspace = true
 rune.workspace = true
 rune-kit.workspace = true
+# Checks an update's checksum.
+ring.workspace = true
 rune-theme-opencode.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Writes an image opened from the transcript for Preview.

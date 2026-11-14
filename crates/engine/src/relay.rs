@@ -935,7 +935,7 @@ async fn dial(url: &str, token: Option<&str>) -> Result<Socket> {
 fn hello() -> Up {
     Up::Hello {
         protocol: PROTOCOL,
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: crate::VERSION.into(),
     }
 }
 

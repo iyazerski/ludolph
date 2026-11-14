@@ -1,0 +1,169 @@
+name: Release
+
+# Every push to main that changes the app publishes a release vX.Y.<n>, where
+# X.Y comes from Cargo.toml and n counts the earlier X.Y releases, so
+# these links always get the newest:
+#   https://github.com/<owner>/<repo>/releases/latest/download/Ludolph.dmg
+#   https://github.com/<owner>/<repo>/releases/latest/download/Ludolph.zip
+# Ludolph.zip feeds install.sh and the in-app updater; Ludolph.dmg is for people.
+# Each release also points the Homebrew cask in iyazerski/homebrew-tap at it.
+# The relay and the phone app ship on their own (deploy-relay.yml).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "crates/engine/**"
+      - "crates/ui/**"
+      - "crates/json-file/**"
+      - "crates/relay-proto/**"
+      - "build.rs"
+      - "assets/**"
+      - "scripts/bundle.sh"
+      - "scripts/dmg.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # A release reaches every user through the updater, so it ships only what passes CI.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # Builds while CI runs; only the release job below waits for CI.
+  build:
+    # Apple silicon only, like the Macs it runs on.
+    runs-on: macos-26
+    env:
+      TARGET: aarch64-apple-darwin
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tags, to count the earlier releases.
+          fetch-depth: 0
+      - name: Pick version
+        id: version
+        run: |
+          minor=$(sed -nE 's/^version = "([0-9]+\.[0-9]+)\..*"/\1/p' Cargo.toml)
+          patch=$(git tag --list "v$minor.*" | wc -l | tr -d ' ')
+          echo "version=$minor.$patch" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+      - uses: Swatinem/rust-cache@v2.9.3
+      - name: Build binary
+        env:
+          LUDOLPH_VERSION: ${{ steps.version.outputs.version }}
+        run: cargo build --release --locked --target "$TARGET" -p ludolph
+      - name: Check version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: strings "target/$TARGET/release/ludolph" | grep -q "<string>$VERSION</string>"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ludolph
+          path: target/${{ env.TARGET }}/release/ludolph
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: [ci, build]
+    runs-on: macos-26
+    permissions:
+      contents: write
+    env:
+      ASSET: Ludolph.zip
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The whole history and tags, to list the changes since the last release.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: ludolph
+          path: build
+      # Artifacts don't keep file modes.
+      - run: chmod +x build/ludolph
+      # A self-signed certificate, the same for every release, so macOS keeps
+      # the microphone, speech and Keychain grants when Ludolph updates.
+      - name: Import signing certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+      - name: Package app
+        env:
+          LUDOLPH_SIGN_IDENTITY: Ludolph Code Signing
+        run: |
+          mkdir dist
+          scripts/bundle.sh build/ludolph "$VERSION" dist
+          codesign --verify --strict -R "=identifier \"dev.iyazerski.ludolph\" and certificate leaf = H\"$(sed -nE 's/^leaf="([0-9a-f]+)"$/\1/p' install.sh)\"" dist/Ludolph.app
+          # Without extended attributes, which `codesign --verify --strict` refuses
+          # in install.sh and the updater.
+          ditto -c -k --norsrc --noextattr --keepParent dist/Ludolph.app "dist/$ASSET"
+          uvx dmgbuild -s scripts/dmg.py -D app=dist/Ludolph.app Ludolph dist/Ludolph.dmg
+          rm -rf dist/Ludolph.app
+          cd dist
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          shasum -a 256 Ludolph.dmg > Ludolph.dmg.sha256
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          changes=$(git log --no-merges --format='- %s' ${previous:+"$previous..HEAD"})
+          gh release create "v$VERSION" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "Ludolph v$VERSION" \
+            --notes-file - \
+            --latest <<EOF
+          ## What's new
+
+          $changes
+
+          ## Install
+
+          Ludolph needs [pi](https://pi.dev) and a Mac with Apple silicon.
+
+          - **Download:** get \`Ludolph.dmg\` below, open it, and drag Ludolph into Applications. The first time you open Ludolph, macOS blocks it because it isn't notarized: go to System Settings > Privacy & Security and click **Open Anyway**.
+          - **Homebrew:** \`brew install --cask iyazerski/tap/ludolph\`
+          - **Terminal:** \`curl -fsSL https://raw.githubusercontent.com/$GH_REPO/main/install.sh | sh\`
+          EOF
+      - name: Update Homebrew cask
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          sha=$(cut -d' ' -f1 "dist/$ASSET.sha256")
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          echo "$DEPLOY_KEY" > "$RUNNER_TEMP/tap_key"
+          chmod 600 "$RUNNER_TEMP/tap_key"
+          git clone --depth 1 git@github.com:iyazerski/homebrew-tap.git "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          sed -i '' -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 \".*\"/  sha256 \"$sha\"/" Casks/ludolph.rb
+          git diff --stat
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -am "Update Ludolph to $VERSION"
+          git push

@@ -10,6 +10,7 @@ mod dictation;
 mod labels;
 mod message;
 mod prefs;
+mod update;
 mod view;
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -69,6 +70,13 @@ fn centered(displays: &[rune::Display]) -> Option<(i32, i32)> {
         display.position.1 + (h - px(MAIN_SIZE.1)) / 2,
     ))
 }
+
+/// This build's version, by the engine's rule (`ludolph_engine::VERSION`):
+/// the release's, which CI sets in `LUDOLPH_VERSION`, else the crate's.
+pub const VERSION: &str = match option_env!("LUDOLPH_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 pub struct Opts {
     /// The engine's folder, with its socket; the app keeps its own state there too.

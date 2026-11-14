@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="360" viewBox="0 0 540 360">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8f8f8"/>
+      <stop offset="1" stop-color="#ececec"/>
+    </linearGradient>
+  </defs>
+  <rect width="540" height="360" fill="url(#bg)"/>
+  <text x="270" y="62" text-anchor="middle" font-family="-apple-system, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1d1d1f">Drag Ludolph into Applications</text>
+  <path d="M222 170 H312" stroke="#1d1d1f" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <path d="M302 159 L316 170 L302 181" stroke="#1d1d1f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

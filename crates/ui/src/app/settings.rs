@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use super::{Page, State, Window};
 use crate::data::{LinkStatus, Pairing, PhoneLink, RelayLink, Settings};
+use crate::update;
 
 /// The QR code's side in points.
 pub const QR_SIZE: f32 = 184.0;
@@ -23,8 +24,20 @@ pub struct SettingsPage {
     /// The sidecar model's picker.
     pub model: ComboboxState,
     pub phone: Phone,
+    pub update: Update,
     /// The chat shown before, which going back opens again.
     previous: Option<String>,
+}
+
+/// Where updating stands. Each visit to the settings checks again.
+pub enum Update {
+    Checking,
+    Latest,
+    /// This newer version can be installed.
+    Available(String),
+    /// This version is downloading, and the app restarts into it.
+    Installing(String),
+    Failed(String),
 }
 
 /// The phone's link, the relay field, and the QR code a phone scans.
@@ -107,8 +120,10 @@ impl State {
                     confirm_unlink: false,
                     error: None,
                 },
+                update: Update::Checking,
                 previous,
             }));
+            self.check_update();
             self.load_settings();
             self.load_phone();
             self.load_catalog();
@@ -135,6 +150,60 @@ impl State {
             Some(id) => self.open_chat(id),
             None => self.new_chat(),
         }
+    }
+
+    /// Look for a newer release, unless an install is under way.
+    pub fn check_update(&mut self) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        if matches!(page.update, Update::Installing(_)) {
+            return;
+        }
+        page.update = Update::Checking;
+        self.api.run(
+            |_| async { tokio::task::spawn_blocking(update::available).await },
+            |s, result, _| {
+                let Some(page) = s.settings_page_mut() else {
+                    return;
+                };
+                page.update = match result.map_err(anyhow::Error::from).and_then(|r| r) {
+                    Ok(Some(version)) => Update::Available(version),
+                    Ok(None) => Update::Latest,
+                    Err(e) => Update::Failed(format!("Couldn't check for updates: {e:#}")),
+                };
+            },
+        );
+    }
+
+    /// Download the newer release, put it in place, and restart into it.
+    pub fn install_update(&mut self) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        let Update::Available(version) = &page.update else {
+            return;
+        };
+        let version = version.clone();
+        page.update = Update::Installing(version.clone());
+        self.api.run(
+            move |_| async move { tokio::task::spawn_blocking(move || update::install(&version)).await },
+            |s, result, tx| {
+                let done = result
+                    .map_err(anyhow::Error::from)
+                    .and_then(|r| r)
+                    .and_then(|app| update::relaunch(&app));
+                match done {
+                    // The new app restarts the engine too.
+                    Ok(()) => tx.quit(),
+                    Err(e) => {
+                        if let Some(page) = s.settings_page_mut() {
+                            page.update = Update::Failed(format!("Couldn't update: {e:#}"));
+                        }
+                    }
+                }
+            },
+        );
     }
 
     fn load_settings(&mut self) {
