@@ -221,6 +221,11 @@ fn subscription(
         thinking: bool,
     }
     match topic {
+        "models" => Ok(Box::pin(push(
+            engine.subscribe_models(),
+            json!({"event": "models", "subscription": id}),
+            out,
+        ))),
         "chats" => Ok(Box::pin(push(
             engine.subscribe(),
             json!({"event": "chats", "subscription": id}),

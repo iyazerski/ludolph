@@ -81,8 +81,17 @@ MODELS = [
      "thinkingLevelMap": {"minimal": None, "xhigh": "xhigh"}},
     {"provider": "fake", "id": "quick", "name": "Quick", "reasoning": False, "contextWindow": 100000},
 ]
+# Each process snapshots this file, just as pi snapshots available providers.
+catalog_path = os.path.join(os.path.dirname(os.environ.get("FAKE_PI_SESSIONS", "")), "models.json")
+if os.path.isfile(catalog_path):
+    with open(catalog_path) as catalog_file:
+        MODELS = json.load(catalog_file)
 MODEL = MODELS[0]
 THINKING = "medium"
+settings_path = os.path.join(os.path.dirname(catalog_path), "settings.json")
+if os.path.isfile(settings_path):
+    with open(settings_path) as settings_file:
+        THINKING = json.load(settings_file).get("defaultThinkingLevel", "medium")
 TOKENS = None
 # What pi records before the first message, written with the file.
 PENDING = [({"provider": "fake", "modelId": "deep"}, "model_change"),

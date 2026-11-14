@@ -5,13 +5,17 @@
 //! list changes only when someone edits pi's settings or logs in. The same pi
 //! says which model it starts on (`get_state`): its default.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+mod sources;
+
+pub(crate) use sources::Sources;
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio::time::Instant;
 
 use crate::pi::Pi;
@@ -76,48 +80,65 @@ pub struct Catalog {
     cwd: PathBuf,
     grace: Duration,
     /// Held while fetching, so callers at the same time share one pi.
-    cached: Mutex<Option<(Instant, Fetched)>>,
+    cached: Mutex<Option<(Instant, Sources, Available)>>,
+    files: [PathBuf; 3],
+    observed: StdMutex<Sources>,
+    changes: watch::Sender<u64>,
 }
 
 impl Catalog {
-    /// A catalog that runs `program` in `cwd`, giving it `grace` to exit.
-    pub fn new(program: PathBuf, cwd: PathBuf, grace: Duration) -> Self {
-        Self {
+    /// Track pi's configuration in `agent` and ask `program` in `cwd` for its models.
+    pub fn new(program: PathBuf, cwd: PathBuf, agent: &Path, grace: Duration) -> Result<Self> {
+        let files = ["auth.json", "models.json", "settings.json"].map(|name| agent.join(name));
+        let observed = Sources::read(&files)?;
+        Ok(Self {
             program,
             cwd,
             grace,
             cached: Mutex::new(None),
+            files,
+            observed: StdMutex::new(observed),
+            changes: watch::channel(0).0,
+        })
+    }
+
+    /// Follow changes to pi's credentials and model configuration.
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    /// Read the configuration revision without reading any credentials.
+    pub(crate) fn sources(&self) -> Result<Sources> {
+        let sources = Sources::read(&self.files)?;
+        let mut observed = self.observed.lock().expect("lock poisoned");
+        if *observed != sources {
+            *observed = sources.clone();
+            self.changes.send_modify(|revision| *revision += 1);
         }
+        Ok(sources)
     }
 
-    /// The models, as pi lists them.
+    /// Whether a reported filesystem path can change the model list.
+    pub(crate) fn watches(&self, path: &Path) -> bool {
+        self.files.iter().any(|file| file == path)
+    }
+
+    /// Read the model list and defaults from one pi snapshot.
     ///
     /// # Errors
     ///
-    /// Fails if pi can't be started or doesn't answer.
-    pub async fn models(&self) -> Result<Arc<Vec<Model>>> {
-        Ok(self.fetched().await?.models)
-    }
-
-    /// The model pi starts a chat on when none is picked, as `provider/model`,
-    /// if it has one.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi can't be started or doesn't answer.
-    pub async fn default_model(&self) -> Result<Option<String>> {
-        Ok(self.fetched().await?.default)
-    }
-
-    async fn fetched(&self) -> Result<Fetched> {
+    /// Fail if pi cannot start or list its models.
+    pub async fn available(&self) -> Result<Available> {
         let mut cached = self.cached.lock().await;
-        if let Some((at, fetched)) = &*cached
+        let sources = self.sources()?;
+        if let Some((at, saved, fetched)) = &*cached
+            && *saved == sources
             && at.elapsed() < FRESH
         {
             return Ok(fetched.clone());
         }
         let fetched = self.fetch().await?;
-        *cached = Some((Instant::now(), fetched.clone()));
+        *cached = Some((Instant::now(), sources, fetched.clone()));
         Ok(fetched)
     }
 
@@ -127,12 +148,16 @@ impl Catalog {
     ///
     /// Fails if the models can't be fetched.
     pub async fn find(&self, id: &str) -> Result<Option<Model>> {
-        let models = self.models().await?;
-        Ok(models.iter().find(|model| model.id == id).cloned())
+        let available = self.available().await?;
+        Ok(available
+            .models
+            .iter()
+            .find(|model| model.id == id)
+            .cloned())
     }
 
     /// Ask a new pi for its models and the one it starts on.
-    async fn fetch(&self) -> Result<Fetched> {
+    async fn fetch(&self) -> Result<Available> {
         let commands = vec![
             json!({"type": "get_available_models"}),
             json!({"type": "get_state"}),
@@ -148,7 +173,12 @@ impl Catalog {
             .as_str()
             .zip(model["id"].as_str())
             .map(|(provider, id)| format!("{provider}/{id}"));
-        Ok(Fetched {
+        let reasoning = answers[1]["thinkingLevel"]
+            .as_str()
+            .unwrap_or("medium")
+            .to_owned();
+        Ok(Available {
+            reasoning,
             models: Arc::new(models.iter().filter_map(Model::from_pi).collect()),
             default,
         })
@@ -157,7 +187,11 @@ impl Catalog {
 
 /// What one pi said: its models, and the one it starts on.
 #[derive(Debug, Clone)]
-struct Fetched {
-    models: Arc<Vec<Model>>,
-    default: Option<String>,
+pub struct Available {
+    /// The default thinking level, Medium if pi omitted it.
+    pub reasoning: String,
+    /// The models available to this sign-in.
+    pub models: Arc<Vec<Model>>,
+    /// The model pi starts on.
+    pub default: Option<String>,
 }

@@ -87,6 +87,8 @@ pub struct State {
     scratch_diff: DiffState,
     /// The chat list's notices, while the window shows.
     list_feed: Option<Subscription>,
+    /// Model changes are followed only while this window is visible.
+    models_feed: Option<Subscription>,
     /// Whether the window is on screen.
     shown: bool,
 }
@@ -194,6 +196,7 @@ impl State {
             nav: 0,
             scratch_diff: DiffState::default(),
             list_feed: None,
+            models_feed: None,
             shown: false,
         }
     }
@@ -315,6 +318,7 @@ impl State {
                 self.load_phone();
             }
         } else {
+            self.models_feed = None;
             self.list_feed = None;
             if let Some(chat) = self.chat_mut().and_then(ChatPage::existing_mut) {
                 chat.feed = None;
@@ -327,6 +331,12 @@ impl State {
     fn follow(&mut self) {
         if !self.shown {
             return;
+        }
+        if self.models_feed.is_none() {
+            self.models_feed = Some(self.api.subscribe("models", json!({}), |s, _, _| {
+                s.refresh_catalog();
+            }));
+            self.refresh_catalog();
         }
         if self.list_feed.is_none() {
             self.list_feed = Some(self.api.subscribe("chats", json!({}), |s, _, _| {
@@ -468,6 +478,7 @@ impl State {
         }
         self.load_expand_tools();
         if self.shown {
+            self.refresh_catalog();
             self.load_chats();
         }
         // The first new chat is made before the engine answers, and a load that

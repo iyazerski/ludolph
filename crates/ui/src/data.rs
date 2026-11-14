@@ -327,10 +327,9 @@ pub enum Checkout {
     Worktree,
 }
 
-/// A chat's spent tokens, and their cost in US dollars.
+/// A chat's cumulative cost in US dollars.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Spent {
-    pub tokens: u64,
     pub cost: f64,
 }
 
@@ -350,10 +349,43 @@ pub struct Model {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Models {
     pub models: Vec<Model>,
     /// The model pi starts a chat on when none is picked.
     pub default: Option<String>,
+    pub default_reasoning: String,
+}
+
+impl Models {
+    /// Keep an available last pick, otherwise use pi's default pair.
+    pub fn fitted(
+        &self,
+        model: Option<&str>,
+        reasoning: Option<&str>,
+    ) -> (Option<String>, Option<String>) {
+        let previous = model.and_then(|id| self.models.iter().find(|model| model.id == id));
+        let chosen = previous.or_else(|| {
+            self.models
+                .iter()
+                .find(|model| Some(&model.id) == self.default.as_ref())
+        });
+        let Some(chosen) = chosen else {
+            return (None, None);
+        };
+        let supported = |level: &str| chosen.reasoning_levels.iter().any(|l| l == level);
+        let level = previous
+            .and(reasoning)
+            .filter(|level| supported(level))
+            .or_else(|| {
+                (Some(&chosen.id) == self.default.as_ref())
+                    .then_some(self.default_reasoning.as_str())
+                    .filter(|level| supported(level))
+            })
+            .or_else(|| supported("medium").then_some("medium"))
+            .or_else(|| chosen.reasoning_levels.first().map(String::as_str));
+        (Some(chosen.id.clone()), level.map(str::to_owned))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -410,6 +442,38 @@ pub fn levels_of<'a>(models: &'a [Model], model: &str) -> &'a [String] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_chat_picks_use_available_history_or_pis_defaults() {
+        let mut models: Models = serde_json::from_value(serde_json::json!({
+            "models": [
+                {"id":"openai/gpt","reasoningLevels":["off","medium","high"]},
+                {"id":"fake/quick","reasoningLevels":["off"]}
+            ],
+            "default":"openai/gpt","defaultReasoning":"medium"
+        }))
+        .unwrap();
+        for (model, level, expected) in [
+            (Some("openai/gpt"), Some("high"), ("openai/gpt", "high")),
+            (None, None, ("openai/gpt", "medium")),
+            (
+                Some("anthropic/opus"),
+                Some("high"),
+                ("openai/gpt", "medium"),
+            ),
+            (Some("fake/quick"), Some("high"), ("fake/quick", "off")),
+            (Some("openai/gpt"), None, ("openai/gpt", "medium")),
+        ] {
+            let got = models.fitted(model, level);
+            assert_eq!(
+                (got.0.as_deref(), got.1.as_deref()),
+                (Some(expected.0), Some(expected.1))
+            );
+        }
+        models.default_reasoning = "high".to_owned();
+        let got = models.fitted(None, None);
+        assert_eq!(got.1.as_deref(), Some("high"));
+    }
 
     #[test]
     fn answer_is_the_prose_after_the_last_tool_or_error() {

@@ -22,7 +22,7 @@ use tokio::time::Instant;
 use crate::index::{self, Index};
 use crate::live::{self, Live};
 use crate::login;
-use crate::models::{Catalog, Model};
+use crate::models::{Available, Catalog, Model, Sources};
 use crate::pi::{Event, Options, Pi, Session};
 pub use crate::relay::SecretStore;
 use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone, Phones};
@@ -235,6 +235,8 @@ struct Draft {
 #[derive(Debug)]
 struct Running {
     pi: Arc<Pi>,
+    /// The credentials and models this pi loaded at startup.
+    sources: Sources,
     live: Live,
     /// Its extensions' open dialogs, oldest first. They end with the process.
     questions: Vec<Question>,
@@ -382,7 +384,11 @@ impl Engine {
         std::fs::create_dir_all(&config.sessions_dir)
             .with_context(|| format!("creating {}", config.sessions_dir.display()))?;
         // Watching starts first, so writes during the refresh aren't missed.
-        let watcher = Watcher::start(&config.sessions_dir, WATCH_LATENCY)?;
+        let agent = config
+            .sessions_dir
+            .parent()
+            .context("pi's sessions folder has no parent")?;
+        let watcher = Watcher::start(agent, WATCH_LATENCY)?;
         let index_path = config.state_dir.join("index.json");
         let sessions_dir = config.sessions_dir.clone();
         let index = tokio::task::spawn_blocking(move || -> Result<Index> {
@@ -413,7 +419,12 @@ impl Engine {
         }
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
         // The engine's folder has no `.pi` settings to change the list.
-        let catalog = Catalog::new(config.pi.clone(), config.state_dir.clone(), config.grace);
+        let catalog = Catalog::new(
+            config.pi.clone(),
+            config.state_dir.clone(),
+            agent,
+            config.grace,
+        )?;
         let engine = Self(Arc::new_cyclic(|inner| Inner {
             turns,
             catalog,
@@ -667,7 +678,7 @@ impl Engine {
         images: Vec<Image>,
         stops: u64,
     ) -> Result<Delivery> {
-        let pi = self.process(id)?;
+        let pi = self.current_process(id).await?;
         // The last run's changes are taken before anything can change more.
         self.finish_run(id).await;
         let (working, cwd) = {
@@ -1215,17 +1226,13 @@ impl Engine {
     /// # Errors
     ///
     /// Fails if pi can't list them.
-    pub async fn models(&self) -> Result<Arc<Vec<Model>>> {
-        self.0.catalog.models().await
+    pub async fn models(&self) -> Result<Available> {
+        self.0.catalog.available().await
     }
 
-    /// The model pi starts a chat on when none is picked, if it has one.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi can't say.
-    pub async fn default_model(&self) -> Result<Option<String>> {
-        self.0.catalog.default_model().await
+    /// Follow changes to the available models, including terminal sign-ins.
+    pub fn subscribe_models(&self) -> watch::Receiver<u64> {
+        self.0.catalog.subscribe()
     }
 
     /// Switch chat `id` to `model` (`provider/model`) and the thinking level
@@ -1245,7 +1252,7 @@ impl Engine {
         let ops = self.ops(id)?;
         let _ops = ops.lock().await;
         self.refuse_elsewhere(id)?;
-        let pi = self.process(id)?;
+        let pi = self.current_process(id).await?;
         if let Some(model) = model {
             let (provider, model) = model
                 .split_once('/')
@@ -1493,6 +1500,30 @@ impl Engine {
         self.state().chats.get(id).map_or(0, |chat| chat.stops)
     }
 
+    /// Replace an idle pi whose credentials changed, without interrupting a run or dialog.
+    /// Callers hold the chat's `ops`.
+    async fn current_process(&self, id: &str) -> Result<Arc<Pi>> {
+        let sources = self.0.catalog.sources()?;
+        let stale = {
+            let state = self.state();
+            match state.chats.get(id).and_then(|chat| chat.process.as_ref()) {
+                Some(running)
+                    if running.sources != sources
+                        && !running.live.working()
+                        && running.questions.is_empty() =>
+                {
+                    Some(running.pi.clone())
+                }
+                _ => None,
+            }
+        };
+        if let Some(pi) = stale {
+            pi.stop(self.0.config.grace).await?;
+            self.detach(id, &pi)?;
+        }
+        self.process(id)
+    }
+
     /// The chat's pi, started if it has none. Callers hold the chat's `ops`.
     fn process(&self, id: &str) -> Result<Arc<Pi>> {
         let mut state = self.state();
@@ -1528,11 +1559,13 @@ impl Engine {
             extensions: Vec::new(),
             env: Vec::new(),
         };
+        let sources = self.0.catalog.sources()?;
         let (pi, events) = Pi::start(&options)?;
         let pi = Arc::new(pi);
         runtime.add(id, pi.pid())?;
         chat.process = Some(Running {
             pi: pi.clone(),
+            sources,
             live: Live::new(),
             questions: Vec::new(),
         });
@@ -1946,6 +1979,15 @@ async fn follow(engine: Weak<Inner>, watcher: Watcher) {
             return;
         };
         let engine = Engine(inner);
+        if (changes.rescan
+            || changes
+                .paths
+                .iter()
+                .any(|path| engine.0.catalog.watches(path)))
+            && let Err(error) = engine.0.catalog.sources()
+        {
+            eprintln!("following pi's model settings: {error:#}");
+        }
         if let Err(e) = tokio::task::spawn_blocking(move || engine.sync(changes)).await {
             eprintln!("following the sessions folder: {e:#}");
         }

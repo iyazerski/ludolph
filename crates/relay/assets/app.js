@@ -126,15 +126,25 @@ const reasoningName = level => ({ xhigh: "X-High" })[level] || (level ? level[0]
 /** pi's thinking levels, for a model it doesn't list, like a new chat's default. */
 const DEFAULT_LEVELS = ["off", "minimal", "low", "medium", "high"];
 
-/** Each Mac's models, loaded once. */
+/** Share requests per Mac, keeping the previous labels while a refresh runs. */
 const catalogs = new Map();
-function catalog(machine) {
-  if (!catalogs.has(machine)) {
-    const entry = { ready: null };
-    entry.promise = call(machine, "list_models").then(r => (entry.ready = r.models || []), e => { catalogs.delete(machine); throw e; });
+function catalog(machine, refresh = false) {
+  let entry = catalogs.get(machine);
+  if (!entry) {
+    entry = { ready: null, checked: 0, loading: false };
     catalogs.set(machine, entry);
   }
-  return catalogs.get(machine);
+  if (!entry.loading && (refresh || Date.now() - entry.checked >= 10000)) {
+    entry.loading = true;
+    entry.promise = call(machine, "list_models").then(result => {
+      entry.checked = Date.now();
+      entry.default = result.default;
+      entry.defaultReasoning = result.defaultReasoning;
+      return (entry.ready = result.models || []);
+    }, error => { entry.checked = Date.now(); throw error; })
+      .finally(() => { entry.loading = false; });
+  }
+  return entry;
 }
 
 /** The desktop's context ring: a faint track under the used arc. */
@@ -147,17 +157,12 @@ function ring(fraction, color) {
 }
 
 /** The desktop's context ring tooltip (labels::context_help), as one line per fact. */
-function contextDetails({ tokens, window: size }, spent) {
-  const n = v => v.toLocaleString("en-US");
-  const lines = [tokens != null
-    ? `${n(tokens)} of ${n(size)} tokens (${Math.round(tokens / size * 100)}%), ${n(Math.max(size - tokens, 0))} left`
-    // pi can't tell until the first answer after a compaction.
-    : `${n(size)} tokens, size known after the next answer`];
-  if (spent?.tokens > 0) {
-    const cost = spent.cost >= 0.01 ? `${spent.cost.toFixed(2)}` : "under $0.01";
-    lines.push(`This chat: ${n(spent.tokens)} tokens${spent.cost > 0 ? `, ${cost}` : ""}`);
-  }
-  return lines.map(line => h("div", {}, line));
+function contextReadout({ tokens, window: size }, spent) {
+  const k = value => (Math.round(value / 100) / 10) + "k";
+  const counts = (tokens == null ? "—" : k(tokens)) + "/" + k(size);
+  const cost = spent == null ? "—" : spent.cost > 0 && spent.cost < 0.01
+    ? "<$0.01" : "$" + (Math.round(spent.cost * 100) / 100).toFixed(2);
+  return [counts, cost];
 }
 
 // The desktop's project tones (project_icon.rs), indexed by FNV-1a of the
@@ -1236,7 +1241,7 @@ function chatView(machine, id, fromList) {
   let before = [], beforeChanges = [];
   // The composer's branch, context, and model (composer_info): re-read when the chat
   // moves, at most every few seconds.
-  let info = null, infoFor = "", infoAt = 0;
+  let info = null, infoFor = "", infoAt = 0, contextExpanded = false;
   const rendered = new Map();
   // Folds the user opened or closed, by key; the rest follow their default.
   const openGroups = new Map();
@@ -1826,7 +1831,28 @@ function chatView(machine, id, fromList) {
     const since = lastUser?.createdAt;
     secs.textContent = since ? `${Math.max(0, Math.round((Date.now() - since) / 1000))}s` : "";
   }
-  const clock = setInterval(() => { if (read && isWorking()) drawWorking(); }, 1000);
+  let gone = false, modelsPromise = null, redrawModels = null;
+  const clock = setInterval(() => {
+    if (read && isWorking()) drawWorking();
+    if (!document.hidden) refreshModels();
+  }, 1000);
+
+  /** Refresh visible options after terminal sign-ins, without starting a pi per poll. */
+  function refreshModels(force = false) {
+    if (!machine) return;
+    const entry = catalog(machine, force);
+    if (modelsPromise === entry.promise) return;
+    modelsPromise = entry.promise;
+    const from = machine, previousDefault = entry.default;
+    entry.promise.then(models => {
+      if (gone || from !== machine) return;
+      const previousModel = draft?.model;
+      if (isDraft) fitDraft(models);
+      if (isDraft && (previousModel !== draft.model || previousDefault !== entry.default)) loadInfo();
+      drawInfo();
+      redrawModels?.();
+    }, error => { if (!gone) console.warn("list_models", error); });
+  }
 
   // What a finished turn changed, opening its diff; kept per turn so redraws reuse it.
   const changeButtons = new Map();
@@ -1923,9 +1949,12 @@ function chatView(machine, id, fromList) {
     // A set `checkout` means a git project, the only place the branch shows.
     const left = info.checkout && h("span", { class: "branch-ref" }, icon("branch"), h("span", { class: "txt" }, info.branch || "No ref"));
     // A model without a known window gets no ring, as on the desktop.
+    const figures = usage?.window > 0 ? contextReadout(usage, info.spent) : [];
     const right = usage?.window > 0 && h("button", { class: "ctx", style: { color: fraction == null ? "var(--tertiary)" : tone },
-      "aria-label": "Context window", onclick: () => toast({ title: "Context window", body: contextDetails(usage, info.spent), kind: "info", timeout: 4000 }) },
-      ring(fraction || 0, tone), fraction == null ? "—" : `${Math.round(fraction * 100)}%`);
+      "aria-label": contextExpanded ? figures.join(", ") + ". Show context ring" : "Show context usage and cost",
+      onclick: () => { contextExpanded = !contextExpanded; drawInfo(); } },
+      contextExpanded ? figures.map(value => h("span", {}, value))
+        : [ring(fraction || 0, tone), fraction == null ? "—" : `${Math.round(fraction * 100)}%`]);
     meta.replaceChildren(projectChip || "", left || "");
     ctxSlot.replaceChildren(right || "");
     footer.classList.toggle("hide", !projectChip && !left && !right);
@@ -1949,16 +1978,17 @@ function chatView(machine, id, fromList) {
         try {
           const saved = await api("set_chat_model", change);
           info = { ...info, ...saved };
+          prefs.set({ ...prefs.get(), machine, model: saved.model, reasoning: saved.reasoning });
           drawInfo();
           draw();
         } catch (e) { toast({ title: "Couldn't change the model", body: e.message, kind: "error" }); }
       };
       let first = true;
       const draw = () => {
-        const { model: current, reasoning } = config();
         const models = catalog(machine).ready;
+        if (isDraft) fitDraft(models);
+        const { model: current, reasoning } = config();
         const levels = levelsOf(models, current);
-        if (isDraft) fitDraft(models, levels);
         const check = on => (on ? icon("check") : null);
         // Reasoning first, as pills: pi lists dozens of models.
         body.replaceChildren(
@@ -1973,18 +2003,26 @@ function chatView(machine, id, fromList) {
         first = false;
       };
       const load = () => {
-        catalog(machine).promise.then(draw,
+        const entry = catalog(machine, true);
+        entry.promise.then(draw,
           e => body.replaceChildren(h("div", { class: "note" }, `Couldn't load the models: ${e.message}`)));
       };
+      redrawModels = () => { if (body.isConnected) draw(); };
       load();
       return [title, body];
     });
   }
 
   /** Keep the new chat's model in its Mac's catalog and its reasoning on the model's levels. */
-  function fitDraft(models, levels) {
-    if (draft.model && !models.some(m => m.id === draft.model)) draft.model = "";
-    if (draft.reasoning && !levels.includes(draft.reasoning)) draft.reasoning = "";
+  function fitDraft(models) {
+    const entry = catalog(machine);
+    const previous = models.find(model => model.id === draft.model);
+    const chosen = previous || models.find(model => model.id === entry.default);
+    draft.model = chosen?.id || "";
+    const levels = levelsOf(models, draft.model);
+    const saved = previous && levels.includes(draft.reasoning) ? draft.reasoning : "";
+    const normal = draft.model === entry.default ? entry.defaultReasoning : "medium";
+    draft.reasoning = saved || (levels.includes(normal) ? normal : levels.includes("medium") ? "medium" : levels[0] || "");
   }
 
   /** Pick the new chat's project, and its Mac when there are several. */
@@ -2038,7 +2076,7 @@ function chatView(machine, id, fromList) {
       const from = machine;
       catalog(machine).promise.then(models => {
         if (from !== machine) return;
-        fitDraft(models, levelsOf(models, draft.model));
+        fitDraft(models);
         drawInfo();
       }, () => {});
     } catch (e) { toast({ title: "Couldn't load the options", body: e.message, kind: "error" }); }
@@ -2114,6 +2152,7 @@ function chatView(machine, id, fromList) {
     }
     frame = next;
     const was = chat?.status;
+    const configured = chat?.model !== frame.chat.model || chat?.reasoning !== frame.chat.reasoning;
     chat = frame.chat;
     elsewhere.classList.toggle("hide", !chat.openElsewhere);
     seen.mark(chat);
@@ -2121,7 +2160,7 @@ function chatView(machine, id, fromList) {
     const infoKey = `${chat.status}|${chat.lastMessageAt}`;
     // Each step of a run grows the context; its end always reads it again.
     const settled = was === "working" && chat.status !== "working";
-    if ((infoKey !== infoFor || chat.status === "working") && (settled || Date.now() - infoAt > 8000)) { infoFor = infoKey; loadInfo(); }
+    if (configured || ((infoKey !== infoFor || chat.status === "working") && (settled || Date.now() - infoAt > 8000))) { infoFor = infoKey; loadInfo(); }
     compose();
     drawMessages();
   }
@@ -2168,7 +2207,7 @@ function chatView(machine, id, fromList) {
       updateComposer();
       if (isDraft && machine) textarea.focus();
     },
-    destroy() { feed?.stop(); offline.stop(); dockSize.disconnect(); clearInterval(clock); stopDictation(); },
+    destroy() { gone = true; feed?.stop(); offline.stop(); dockSize.disconnect(); clearInterval(clock); stopDictation(); },
   };
 }
 
@@ -2474,6 +2513,7 @@ if ("serviceWorker" in navigator) {
   try {
     const { signedIn, hasPasskey } = await post("/auth/status");
     if (!signedIn) return showSignIn(hasPasskey);
+    if (location.hash.startsWith("#/new")) store.machines = (await post("/api/machines")).machines;
   } catch {
     // The relay is unreachable: show the cached shell; polling retries.
   }
