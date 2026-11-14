@@ -189,6 +189,10 @@ pub enum Part {
     Error {
         error: String,
     },
+    /// A note in a turn's work, like a compaction the agent went on after.
+    Note {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -238,7 +242,12 @@ impl Message {
         let tail = self
             .parts
             .iter()
-            .rposition(|p| matches!(p, Part::Tool { .. } | Part::Error { .. }))
+            .rposition(|p| {
+                matches!(
+                    p,
+                    Part::Tool { .. } | Part::Error { .. } | Part::Note { .. }
+                )
+            })
             .map_or(0, |i| i + 1);
         let texts: Vec<&str> = self.parts[tail..]
             .iter()

@@ -305,9 +305,10 @@ impl Existing {
                         || !m.parts.iter().any(|p| match p {
                             Part::Text { .. } => true,
                             Part::Tool { state, .. } => *state == ToolState::Running,
-                            Part::Thinking { .. } | Part::Image { .. } | Part::Error { .. } => {
-                                false
-                            }
+                            Part::Thinking { .. }
+                            | Part::Image { .. }
+                            | Part::Error { .. }
+                            | Part::Note { .. } => false,
                         })
                 })
             })

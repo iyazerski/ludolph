@@ -235,6 +235,57 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
 }
 
 #[test]
+fn a_compaction_the_agent_works_on_after_stays_in_its_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s1.jsonl");
+    std::fs::write(&path, format!("{HEADER}\n")).unwrap();
+    append(
+        &path,
+        &[
+            message("u1", None, user("ship it", 1)),
+            message(
+                "a1",
+                Some("u1"),
+                json!({"role": "assistant", "stopReason": "toolUse", "timestamp": 2, "content": [{"type": "text", "text": "Testing."}, bash("c1", "make test")]}),
+            ),
+            message(
+                "r1",
+                Some("a1"),
+                json!({"role": "toolResult", "toolCallId": "c1", "content": [], "timestamp": 3}),
+            ),
+            json!({"type": "compaction", "id": "k1", "parentId": "r1", "timestamp": "2026-05-01T10:00:01.000Z", "summary": "…", "firstKeptEntryId": "a1", "tokensBefore": 9}),
+            message(
+                "a2",
+                Some("k1"),
+                json!({"role": "assistant", "stopReason": "stop", "timestamp": 5, "content": [{"type": "text", "text": "Shipped."}]}),
+            ),
+        ],
+    );
+    let page = Transcripts::default()
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
+    assert_eq!(
+        shown(&page),
+        [
+            (Role::User, MessageStatus::Complete, vec![text("ship it")]),
+            (
+                Role::Assistant,
+                MessageStatus::Complete,
+                vec![
+                    text("Testing."),
+                    tool("c1", "bash", "make test", ToolState::Done),
+                    Part::Note {
+                        text: "Compacted the conversation.".into()
+                    },
+                    text("Shipped."),
+                ]
+            ),
+        ]
+    );
+    assert_eq!(page.messages[1].ended_at, 5);
+}
+
+#[test]
 fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("s1.jsonl");
