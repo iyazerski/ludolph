@@ -4,12 +4,12 @@ use std::sync::LazyLock;
 
 use rune::color::hex;
 use rune::{Color, Cycle, El, Span, TextStyle, col, el, icon, row, text};
-use rune_kit::{IconButton, IconButtonVariant, Kit};
+use rune_kit::{ComboboxOption, IconButton, IconButtonVariant, Kit};
 
 use super::icons;
 use crate::app::State;
-use crate::data::Project;
-use crate::labels::tone_index;
+use crate::data::{Model, Project};
+use crate::labels::{short_model, tone_index};
 use crate::markup::{self, Shade};
 
 /// The desktop's project tones (`project_icon.rs`): slate, blue, violet,
@@ -40,6 +40,26 @@ pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
                 Shade::Code => span.mono().color(k.c.text_muted),
                 Shade::Emphasis => span.italic(),
             }
+        })
+        .collect()
+}
+
+/// Label models the same way in settings and the composer, with their provider below.
+pub fn model_options(models: &[Model]) -> Vec<ComboboxOption> {
+    models
+        .iter()
+        .map(|model| {
+            let label = model
+                .label
+                .clone()
+                .unwrap_or_else(|| short_model(&model.id).to_owned());
+            let mut option = ComboboxOption::new(model.id.clone(), label);
+            option.detail = model
+                .id
+                .split_once('/')
+                .map_or("", |(provider, _)| provider)
+                .to_owned();
+            option
         })
         .collect()
 }

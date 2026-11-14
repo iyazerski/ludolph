@@ -13,10 +13,9 @@ use rune_kit::{
     Switch, TextInput, shortcut_error_message,
 };
 
-use super::widgets::{busy, dot};
+use super::widgets::{busy, dot, model_options};
 use crate::app::{QR_SIZE, SettingsPage, State, Update};
 use crate::data::{LinkStatus, Notify, Pairing, RelayLink};
-use crate::labels::short_model;
 
 /// The page's widest, so rows stay readable in a wide window.
 const MAX_WIDTH: f32 = 640.0;
@@ -150,15 +149,7 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
     });
     let mut options = vec![ComboboxOption::new(DEFAULT_MODEL, default)];
     if let Some(models) = s.catalog.ready() {
-        options.extend(models.iter().map(|m| {
-            let label = m
-                .label
-                .clone()
-                .unwrap_or_else(|| short_model(&m.id).to_owned());
-            let mut option = ComboboxOption::new(m.id.clone(), label);
-            option.detail = m.id.split_once('/').map_or("", |(p, _)| p).to_owned();
-            option
-        }));
+        options.extend(model_options(models));
     }
     let picker = Combobox::new("sidecar", &page.model, &options, |s: &mut State| {
         &mut s

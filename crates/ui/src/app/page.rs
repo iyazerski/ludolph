@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use rune::{Image, TextEdit};
+use rune_kit::ComboboxState;
 use rune_kit::diff::DiffState;
 
 use super::attach::Attached;
@@ -27,6 +28,9 @@ pub struct ChatPage {
     pub composer: TextEdit,
     pub info: Option<ComposerInfo>,
     pub overlay: Overlay,
+    /// Inline model and reasoning menus, shared by both windows.
+    pub model_picker: ComboboxState,
+    pub reasoning_picker: ComboboxState,
     pub skills: SkillMenu,
     /// Images in the composer, read as they're attached.
     pub attached: Vec<Attached>,
@@ -144,7 +148,6 @@ pub enum Overlay {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Sheet {
-    Model,
     Project,
 }
 
@@ -200,6 +203,8 @@ impl ChatPage {
             composer,
             info: None,
             overlay: Overlay::Closed,
+            model_picker: ComboboxState::default(),
+            reasoning_picker: ComboboxState::default(),
             skills: SkillMenu::default(),
             attached: Vec::new(),
             far_from_bottom: false,
