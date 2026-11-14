@@ -377,6 +377,7 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
             "olderRemaining": view.page.older(),
             "pendingInput": view.question.as_ref().map(pending_input),
             "run": view.run,
+            "failure": view.failure,
             "queued": view.queued,
             "messages": view.page.messages,
             "turnChanges": runs,

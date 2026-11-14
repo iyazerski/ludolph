@@ -196,6 +196,13 @@ def expand(text):
 
 
 def prompt(command):
+    if command["message"] == "compact-before-prompt":
+        log("compacting")
+        emit({"type": "compaction_start", "reason": "threshold"})
+        for line in sys.stdin:
+            control(json.loads(line))
+        log("exit")
+        sys.exit(0)
     respond(command, {"disposition": "started"})
     content = expand(command["message"])
     if command.get("images"):
@@ -244,6 +251,8 @@ def prompt(command):
     emit({"type": "message_end", "message": done})
     write(done)
     emit({"type": "compaction_start", "reason": "threshold"})
+    error = "Auto-compaction failed: monthly spend limit" if command["message"] == "compaction-budget" else None
+    emit({"type": "compaction_end", "aborted": False, "willRetry": False, "errorMessage": error})
     emit({"type": "agent_settled", "aborted": False})
 
 

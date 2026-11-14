@@ -92,9 +92,14 @@ impl Live {
         self.revision
     }
 
-    /// Whether a run is going: between `agent_start` and `agent_settled`.
+    /// Include compaction before pi accepts a prompt or emits `agent_start`.
     pub fn working(&self) -> bool {
-        self.working
+        self.working || self.compacting.is_some()
+    }
+
+    /// Whether pi is generating a context summary.
+    pub fn compacting(&self) -> bool {
+        self.compacting.is_some()
     }
 
     /// How many runs have settled.
@@ -133,7 +138,7 @@ impl Live {
 
     /// What the run is waiting on, while one is going.
     pub fn run(&self) -> Option<Run> {
-        self.working.then(|| Run {
+        self.working().then(|| Run {
             steering: self.steering.clone(),
             follow_up: self.follow_up.clone(),
             retry: self.retry.clone(),
@@ -258,9 +263,15 @@ impl Live {
                 }
             }
             Event::CompactionStart { reason } => {
+                self.failure = None;
                 self.compacting = Some(reason.clone().unwrap_or_else(|| "manual".into()));
             }
-            Event::CompactionEnd => self.compacting = None,
+            Event::CompactionEnd { error_message } => {
+                self.compacting = None;
+                if let Some(error) = error_message {
+                    self.failure = Some(error.clone());
+                }
+            }
             _ => return false,
         }
         true

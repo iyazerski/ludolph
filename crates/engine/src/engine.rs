@@ -306,6 +306,8 @@ pub struct View {
     pub question: Option<Question>,
     /// What the chat's run waits on, while one is going.
     pub run: Option<live::Run>,
+    /// A failure that may have no assistant message, such as a failed compaction.
+    pub failure: Option<String>,
     pub queued: Vec<Queued>,
 }
 
@@ -536,7 +538,7 @@ impl Engine {
     ///
     /// Fails if there's no such chat, or its session file can't be read.
     pub async fn view(&self, id: &str, window: Window) -> Result<View> {
-        let (chat, path, messages, streaming, revision, question, run, queued) = {
+        let (chat, path, messages, streaming, revision, question, run, failure, queued) = {
             let state = self.state();
             let chat = state.chats.get(id);
             let info = match state.index.find(id) {
@@ -558,10 +560,11 @@ impl Engine {
                 .unwrap_or_default();
             let streaming = live.and_then(|live| live.streaming().cloned());
             let run = live.and_then(Live::run);
+            let failure = live.and_then(Live::failure).map(str::to_owned);
             let revision = chat.map_or(0, |chat| *chat.changes.borrow());
             let queued = Self::queued(chat);
             (
-                info, path, messages, streaming, revision, question, run, queued,
+                info, path, messages, streaming, revision, question, run, failure, queued,
             )
         };
         let transcripts = self.0.transcripts.clone();
@@ -580,6 +583,7 @@ impl Engine {
             revision,
             question,
             run,
+            failure,
             queued,
         })
     }
@@ -1250,6 +1254,18 @@ impl Engine {
         thinking: Option<&str>,
     ) -> Result<Composer> {
         let ops = self.ops(id)?;
+        self.refuse_elsewhere(id)?;
+        let compacting = self.state().chats.get(id).and_then(|chat| {
+            chat.process
+                .as_ref()
+                .filter(|running| running.live.compacting() && running.questions.is_empty())
+                .map(|running| running.pi.clone())
+        });
+        if let Some(pi) = compacting {
+            // Prompt preflight may hold ops until compaction finishes, so stop outside it.
+            pi.stop(self.0.config.grace).await?;
+            self.detach(id, &pi)?;
+        }
         let _ops = ops.lock().await;
         self.refuse_elsewhere(id)?;
         let pi = self.current_process(id).await?;
@@ -1582,13 +1598,14 @@ impl Engine {
             tokio::select! {
                 event = events.recv() => {
                     let Some(event) = event else { break };
-                    match event {
-                        Event::AgentStart => deadline = None,
-                        Event::AgentSettled { .. } => deadline = Some(Instant::now() + idle),
-                        _ => {}
-                    }
                     if let Err(e) = self.apply(&id, &pi, &event) {
                         eprintln!("chat {id}: {e:#}");
+                    }
+                    if matches!(event, Event::AgentStart | Event::AgentSettled { .. }
+                        | Event::CompactionStart { .. } | Event::CompactionEnd { .. })
+                    {
+                        deadline = (self.live_of(&id, &pi, |live| live.working()) != Some(true))
+                            .then(|| Instant::now() + idle);
                     }
                 }
                 () = tokio::time::sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {
@@ -1643,6 +1660,9 @@ impl Engine {
         let mut list_changed = running.live.working() != working;
         match event {
             Event::AgentStart => runtime.set_running(id, true)?,
+            Event::CompactionStart { .. } | Event::CompactionEnd { .. } => {
+                runtime.set_running(id, running.live.working())?;
+            }
             Event::AgentSettled { aborted } => {
                 if !aborted {
                     let failed = running.live.failure().is_some();

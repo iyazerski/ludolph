@@ -148,12 +148,6 @@ pub enum Changes {
 pub enum Overlay {
     Closed,
     Menu,
-    Sheet(Sheet),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Sheet {
-    Project,
 }
 
 #[derive(Default)]

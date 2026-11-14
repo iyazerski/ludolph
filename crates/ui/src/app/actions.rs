@@ -61,7 +61,7 @@ impl State {
                 return;
             }
         };
-        chat.error = None;
+        chat.error = frame.failure;
         // A streaming reply grows every frame, and springing the page to each new
         // size keeps the window drawing at the display's rate for the whole reply.
         if !frame.reset
@@ -144,6 +144,22 @@ impl State {
             }
         }
         self.sync_tick();
+    }
+
+    /// Resume writing here after a terminal pi changed the session.
+    pub fn take_over(&mut self) {
+        let Some(chat) = self.chat().and_then(|page| page.existing()) else {
+            return;
+        };
+        self.api.call(
+            "take_over_chat",
+            json!({"chat": chat.id}),
+            |s, result: Result<Value, String>, _| {
+                if let Err(error) = result {
+                    s.fail("Couldn't continue here", error);
+                }
+            },
+        );
     }
 
     /// Open the diff of the chat's run `turn` in place of its transcript.

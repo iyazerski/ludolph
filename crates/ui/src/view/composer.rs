@@ -4,15 +4,12 @@
 
 use rune::{El, Image, Key, KeyEvent, SurfaceFit, Tx, auto_grow, col, icon, row, text, text_input};
 use rune_kit::{
-    Combobox, ComboboxOption, Dialog, IconButton, IconButtonVariant, Kit, Placement, PopupItem,
-    PopupList,
+    Combobox, ComboboxOption, IconButton, IconButtonVariant, Kit, Placement, PopupItem, PopupList,
 };
 
 use super::icons;
-use super::widgets::{busy, markdown_spans, model_options, tile};
-use crate::app::{
-    Catalog, ChatPage, Config, LEVELS_KEPT, Overlay, Pick, Prep, Sheet, SkillList, State, Voice,
-};
+use super::widgets::{busy, markdown_spans, model_options};
+use crate::app::{Catalog, ChatPage, Config, LEVELS_KEPT, Pick, Prep, SkillList, State, Voice};
 use crate::data::{Skill, levels_of};
 use crate::labels::{context_readout, reasoning_name};
 use crate::markup;
@@ -121,10 +118,9 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .gap(12.0)
         .px(6.0)
         .center_y()
-        .child(meta(page, k))
+        .child(meta(page, k, layer))
         .child(rune::spacer())
         .child(context(page, k));
-    sheets(page, k, layer);
     dock.child(footer)
 }
 
@@ -445,44 +441,24 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
     if levels.len() > 1 {
         out = out.child(reason);
     }
-    if page.is_working() {
+    if !page.can_send() {
+        out = out.help("Use Continue here after stopping terminal pi to change models.");
+    } else if page
+        .existing()
+        .and_then(|chat| chat.run.as_ref())
+        .is_some_and(|run| run.compacting.is_some())
+    {
+        out = out.help("Changing models stops compaction. Retry any message that was not sent.");
+    } else if page.is_working() {
         out = out.help("Changes apply from the next turn.");
     }
     out
 }
 
-fn open_sheet(s: &mut State, sheet: Sheet) {
-    if let Some(page) = s.chat_mut() {
-        page.overlay = Overlay::Sheet(sheet);
-    }
-}
-
-fn meta(page: &ChatPage, k: &Kit) -> El {
+fn meta(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let mut out = row().gap(8.0).center_y().min_w(0.0).shrink();
-    if let Some(d) = page.draft() {
-        let project = d
-            .project
-            .as_ref()
-            .and_then(|id| d.projects.iter().find(|p| &p.id == id));
-        let chip = row()
-            .gap(5.0)
-            .px(6.0)
-            .py(3.0)
-            .radius(7.0)
-            .center_y()
-            .child(tile(k, project, 13.0))
-            .child(
-                text(project.map_or("No project", |p| p.name.as_str()))
-                    .font(k.ty.small)
-                    .color(k.c.text_muted)
-                    .truncate(),
-            );
-        out = out.child(
-            k.interactive(chip)
-                .key("project-chip")
-                .label("Project")
-                .on_press(|s: &mut State| open_sheet(s, Sheet::Project)),
-        );
+    if page.draft().is_some() {
+        out = out.child(super::project::picker(page, k, layer));
     }
     let Some(info) = &page.info else { return out };
     // A set checkout means a git project, the only place the branch shows.
@@ -564,106 +540,4 @@ fn context(page: &ChatPage, k: &Kit) -> El {
                 page.context_details = !page.context_details;
             }
         })
-}
-
-fn sheets(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
-    let close = |s: &mut State| {
-        if let Some(p) = s.chat_mut() {
-            p.overlay = Overlay::Closed;
-        }
-    };
-    match page.overlay {
-        Overlay::Sheet(Sheet::Project) => {
-            Dialog::new("project-sheet", "Project")
-                .width(360.0)
-                .open(true)
-                .on_close(close)
-                .child(project_body(page, k))
-                .build(k, layer);
-        }
-        Overlay::Closed | Overlay::Menu => {}
-    }
-}
-
-fn list_row(
-    k: &Kit,
-    lead: Option<El>,
-    label: String,
-    on: bool,
-    key: String,
-    f: impl Fn(&mut State) + 'static,
-) -> El {
-    let mut item = row()
-        .w_full()
-        .gap(8.0)
-        .px(8.0)
-        .py(7.0)
-        .radius(8.0)
-        .center_y();
-    if let Some(lead) = lead {
-        item = item.child(lead);
-    }
-    item = item
-        .child(
-            text(label)
-                .font(k.ty.ui)
-                .color(k.c.text_base)
-                .truncate()
-                .grow(1.0)
-                .min_w(0.0),
-        )
-        .child(if on {
-            icon(&icons::CHECK, 13.0).color(k.c.text_base)
-        } else {
-            rune::el().size(13.0, 13.0)
-        });
-    k.interactive(item).key(key).on_press(f)
-}
-
-fn sheet_scroll(body: El) -> El {
-    col()
-        .key("sheet-scroll")
-        .w_full()
-        .grow(1.0)
-        .min_h(0.0)
-        .px(16.0)
-        .pb(16.0)
-        .scroll(rune::ScrollSpec {
-            stick_bottom: false,
-        })
-        .child(body)
-}
-
-fn project_body(page: &ChatPage, k: &Kit) -> El {
-    let Some(d) = page.draft() else {
-        return rune::el();
-    };
-    let pick = |project: Option<String>| {
-        move |s: &mut State| {
-            s.pick_project(project.clone());
-            if let Some(p) = s.chat_mut() {
-                p.overlay = Overlay::Closed;
-            }
-        }
-    };
-    let mut body = col().w_full().gap(2.0).child(list_row(
-        k,
-        Some(tile(k, None, 16.0)),
-        "No project".into(),
-        d.project.is_none(),
-        "project-none".into(),
-        pick(None),
-    ));
-    body = body.children(d.projects.iter().map(|p| {
-        let on = d.project.as_ref() == Some(&p.id);
-        list_row(
-            k,
-            Some(tile(k, Some(p), 16.0)),
-            p.name.clone(),
-            on,
-            format!("project-{}", p.id),
-            pick(Some(p.id.clone())),
-        )
-    }));
-    sheet_scroll(body)
 }

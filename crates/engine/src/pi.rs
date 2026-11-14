@@ -135,7 +135,9 @@ pub enum Event {
         /// `manual`, `threshold` or `overflow`.
         reason: Option<String>,
     },
-    CompactionEnd,
+    CompactionEnd {
+        error_message: Option<String>,
+    },
     /// An extension asking something, or telling something (`notify` and
     /// the other fire-and-forget methods).
     ExtensionUiRequest {
