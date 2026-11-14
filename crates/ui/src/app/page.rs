@@ -117,7 +117,7 @@ pub struct Existing {
     /// The folds the user opened (`true`) or closed, by key; the rest show
     /// as their kind does by default.
     pub open_groups: HashMap<String, bool>,
-    /// Opened scripts and outputs, kept only while their disclosure is open.
+    /// Opened wrapper outputs, kept only while their disclosure is open.
     pub tool_outputs: HashMap<String, Option<Result<crate::data::ToolOutput, String>>>,
     pub question: Option<QuestionForm>,
     /// The shown messages' images, by message and index, decoded once.

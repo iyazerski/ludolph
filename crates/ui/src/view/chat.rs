@@ -923,20 +923,7 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
             k.c.border_muted,
         );
         for call in tool.calls {
-            let mut line = row().w_full().center_y().child(
-                tool_row(k, &ToolCall::from(call), false)
-                    .min_w(0.0)
-                    .grow(1.0),
-            );
-            if let Some(ms) = call.duration_ms {
-                line = line.child(
-                    text(format!("{:.2}s", ms / 1000.0))
-                        .font(rail_text(k))
-                        .color(k.c.text_faint)
-                        .pr(8.0),
-                );
-            }
-            children = children.child(line);
+            children = children.child(tool_row(k, &ToolCall::from(call), false));
             let detail = call.error.clone().or_else(|| {
                 (call.state == ToolState::Cancelled).then(|| "Cancelled or unfinished".to_owned())
             });
@@ -956,67 +943,60 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
                 );
             }
         }
-        let call = tool.id.to_owned();
-        let opened = page.tool_outputs.contains_key(tool.id);
-        let label = if tool.name == "codemode" {
-            "Script & combined output"
-        } else {
-            "Arguments & output"
-        };
-        let details = rail_row(k, true, chevron(k, opened), label, k.c.text_faint, el());
-        children = children.child(
-            k.interactive(details)
-                .on_press(move |s: &mut State| s.toggle_tool_output(&call)),
-        );
-        if let Some(output) = page.tool_outputs.get(tool.id) {
-            let body = match output {
-                None => busy(12.0, k),
-                Some(Err(error)) => text(error.clone())
-                    .font(rail_text(k))
-                    .color(tones(k).failed)
-                    .wrap(),
-                Some(Ok(output)) => {
-                    let args = output.args["code"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| {
-                            serde_json::to_string_pretty(&output.args).unwrap_or_default()
-                        });
-                    let mut body = col()
-                        .w_full()
-                        .gap(8.0)
-                        .child(
-                            text(args)
-                                .font(rail_text(k))
-                                .color(k.c.text_faint)
-                                .wrap()
-                                .selectable(true),
-                        )
-                        .child(
-                            text(output.text.clone())
-                                .font(rail_text(k))
-                                .color(k.c.text_muted)
-                                .wrap()
-                                .selectable(true),
-                        );
-                    if output.truncated {
-                        body = body.child(
-                            text("Output truncated")
-                                .font(rail_text(k))
-                                .color(k.c.text_faint),
-                        );
+        if tool.name != "codemode" {
+            let call = tool.id.to_owned();
+            let opened = page.tool_outputs.contains_key(tool.id);
+            let label = "Arguments & output";
+            let details = rail_row(k, true, chevron(k, opened), label, k.c.text_faint, el());
+            children = children.child(
+                k.interactive(details)
+                    .on_press(move |s: &mut State| s.toggle_tool_output(&call)),
+            );
+            if let Some(output) = page.tool_outputs.get(tool.id) {
+                let body = match output {
+                    None => busy(12.0, k),
+                    Some(Err(error)) => text(error.clone())
+                        .font(rail_text(k))
+                        .color(tones(k).failed)
+                        .wrap(),
+                    Some(Ok(output)) => {
+                        let args = serde_json::to_string_pretty(&output.args).unwrap_or_default();
+                        let mut body = col()
+                            .w_full()
+                            .gap(8.0)
+                            .child(
+                                text(args)
+                                    .font(rail_text(k))
+                                    .color(k.c.text_faint)
+                                    .wrap()
+                                    .selectable(true),
+                            )
+                            .child(
+                                text(output.text.clone())
+                                    .font(rail_text(k))
+                                    .color(k.c.text_muted)
+                                    .wrap()
+                                    .selectable(true),
+                            );
+                        if output.truncated {
+                            body = body.child(
+                                text("Output truncated")
+                                    .font(rail_text(k))
+                                    .color(k.c.text_faint),
+                            );
+                        }
+                        if tool.state == ToolState::Running {
+                            body = body.child(
+                                text("Live snapshot. Close and reopen to refresh.")
+                                    .font(rail_text(k))
+                                    .color(k.c.text_faint),
+                            );
+                        }
+                        body
                     }
-                    if tool.state == ToolState::Running {
-                        body = body.child(
-                            text("Live snapshot. Close and reopen to refresh.")
-                                .font(rail_text(k))
-                                .color(k.c.text_faint),
-                        );
-                    }
-                    body
-                }
-            };
-            children = children.child(col().w_full().pl(RAIL_TEXT_X).pb(8.0).child(body));
+                };
+                children = children.child(col().w_full().pl(RAIL_TEXT_X).pb(8.0).child(body));
+            }
         }
         out = out.child(children);
     }

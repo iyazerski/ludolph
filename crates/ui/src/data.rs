@@ -223,11 +223,10 @@ pub struct NestedCall {
     pub name: String,
     pub subject: Option<String>,
     pub state: ToolState,
-    pub duration_ms: Option<f64>,
     pub error: Option<String>,
 }
 
-/// A script and its combined output, loaded only when opened.
+/// A wrapper tool's arguments and output, loaded only when opened.
 #[derive(Deserialize)]
 pub struct ToolOutput {
     pub args: serde_json::Value,

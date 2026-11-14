@@ -246,7 +246,7 @@ impl State {
         );
     }
 
-    /// Open a script's details on demand, or drop its output when closing it.
+    /// Open a wrapper tool's details, or drop its output when closing it.
     pub fn toggle_tool_output(&mut self, call: &str) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
