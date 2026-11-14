@@ -741,9 +741,10 @@ function route() {
   const fromList = previous?.kind === "list" || (previous?.kind === "new" && previous.fromList);
   if (parts[1] === "pair") view = pairView(parts[2], parts[3]);
   else if (parts[1] === "new") view = chatView(null, null, fromList);
-  else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "changes") view = changesView(parts[2], parts[4], parts[6], previous?.kind === "chat", previous?.fromList);
-  // Back from the changes, the chat goes back the way it came.
-  else if (parts[1] === "m" && parts[3] === "chat") view = chatView(parts[2], parts[4], previous?.kind === "changes" ? previous.chatFromList : fromList);
+  else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "details") view = detailsView(parts[2], parts[4], !!previous, previous?.fromList ?? previous?.chatFromList);
+  else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "changes") view = changesView(parts[2], parts[4], parts[6], !!previous, previous?.fromList ?? previous?.chatFromList);
+  // Returning from a chat page keeps the chat's original back destination.
+  else if (parts[1] === "m" && parts[3] === "chat") view = chatView(parts[2], parts[4], ["changes", "details"].includes(previous?.kind) ? previous.chatFromList : fromList);
   else view = listView();
   current = view;
   if (previous) {
@@ -751,7 +752,7 @@ function route() {
     previous.el.classList.add("leave");
     setTimeout(() => previous.el.remove(), 220);
     view.el.classList.add("enter");
-    if (view.kind === "list" || (view.kind === "chat" && previous.kind === "changes")) view.el.classList.add("back");
+    if (view.kind === "list" || (view.kind === "chat" && ["changes", "details"].includes(previous.kind))) view.el.classList.add("back");
   }
   $("#app").append(view.el);
   view.mounted?.();
@@ -1197,6 +1198,7 @@ function chatView(machine, id, fromList) {
   const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card glass" },
     h("button", { class: "circle", "aria-label": "Back", onclick: () => { haptic(5); fromList ? history.back() : go("#/"); } }, icon("back")),
     h("div", { class: "grow" }, titleEl, subEl),
+    !isDraft && h("a", { class: "circle", "aria-label": "Chat details", href: `${chatHash(machine, id)}/details` }, icon("info")),
     isDraft ? h("div", { class: "circle" }) : h("button", { class: "circle", "aria-label": "More", onclick: () => menu() }, icon("more"))));
   const older = h("button", { class: "older hide", onclick: () => loadEarlier() }, "Load earlier messages");
   const started = !isDraft && handoff?.chat === id ? handoff.text : null;
@@ -2308,22 +2310,61 @@ function diffFile(file) {
   return el;
 }
 
-/** A turn of the chat as a unified diff, in place of the chat; back returns to it. */
-function changesView(machine, id, turn, fromChat, chatFromList) {
+/** Details occupy their own page; only this page refreshes working-tree counts. */
+function detailsView(machine, id, fromChat, chatFromList) {
   const cached = store.chats?.find(c => c.id === id && c.machine === machine);
   const back = () => { haptic(5); fromChat ? history.back() : go(chatHash(machine, id)); };
   const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card glass" },
     h("button", { class: "circle", "aria-label": "Back", onclick: back }, icon("back")),
-    h("div", { class: "grow" }, h("div", { class: "t" }, "Turn changes"), h("div", { class: "s" }, cached?.title || " ")),
+    h("div", { class: "grow" }, h("div", { class: "t" }, "Chat details"), h("div", { class: "s" }, cached?.title || " ")),
+    h("div", { class: "circle" })));
+  const body = h("div", { class: "chat-details" }, h("div", { class: "skeleton", style: { height: "120px" } }));
+  const offline = offlineBanner();
+  const el = h("div", { class: "view" }, h("div", { class: "scroll" }, body), bar, offline.el);
+  let gone = false;
+  const poll = poller(async () => {
+    try {
+      const d = await call(machine, "chat_details", { chat: id });
+      if (gone) return;
+      const cost = d.spent.cost > 0 && d.spent.cost < 0.01 ? "<$0.01" : `$${d.spent.cost.toFixed(2)}`;
+      body.replaceChildren(
+        h("section", {},
+          h("h2", {}, "Uncommitted changes"),
+          d.changes ? h("a", { class: "turn-changes", href: `${chatHash(machine, id)}/changes/working` }, icon("diff"),
+            plural(d.changes.files, "file", "files"),
+            h("span", { class: "plus" }, `+${d.changes.additions}`),
+            h("span", { class: "minus" }, `−${d.changes.deletions}`), icon("chevRight", "chev"))
+            : h("p", {}, d.changesError || "Not a Git repository")),
+        h("section", {}, h("h2", {}, "Pull requests"), d.pullRequests.length
+          ? d.pullRequests.map(pr => h("a", { class: "pr-link", href: pr.url, target: "_blank", rel: "noopener noreferrer" }, icon("fetch"), pr.label))
+          : h("p", {}, "No PR links yet")),
+        h("section", {}, h("h2", {}, "Session totals"),
+          h("p", {}, `${plural(d.compactions, "compaction", "compactions")} · ${(d.spent.tokens / 1_000_000).toFixed(2)}M tokens · ${cost}`)));
+    } catch (e) {
+      if (!gone) body.replaceChildren(h("div", { class: "dempty" }, `Couldn't load details: ${e.message}`));
+      throw e;
+    }
+  }, () => 8000);
+  return { kind: "details", chatFromList, el, destroy() { gone = true; poll.stop(); offline.stop(); } };
+}
+
+/** Saved turn changes or the current working tree, using the same diff viewer. */
+function changesView(machine, id, turn, fromChat, chatFromList) {
+  const working = turn === "working";
+  const cached = store.chats?.find(c => c.id === id && c.machine === machine);
+  const back = () => { haptic(5); fromChat ? history.back() : go(chatHash(machine, id)); };
+  const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card glass" },
+    h("button", { class: "circle", "aria-label": "Back", onclick: back }, icon("back")),
+    h("div", { class: "grow" }, h("div", { class: "t" }, working ? "Uncommitted changes" : "Turn changes"), h("div", { class: "s" }, cached?.title || " ")),
     h("div", { class: "circle" })));
   const body = h("div", { class: "diff" }, h("div", { class: "skeleton", style: { height: "120px" } }));
   const offline = offlineBanner();
   const el = h("div", { class: "view" }, h("div", { class: "scroll" }, body), bar, offline.el);
   let gone = false;
-  call(machine, "turn_changes", { chat: id, turn }).then(d => {
+  call(machine, working ? "working_changes" : "turn_changes", working ? { chat: id } : { chat: id, turn }).then(d => {
     if (gone) return;
     const files = parsePatch(d.patch || "");
-    const notes = [!files.length && "No changes this turn", d.truncated && "The diff is too large to show whole."];
+    const notes = [!files.length && (working ? "No uncommitted changes" : "No changes this turn"), d.truncated && "The diff is too large to show whole."];
     body.replaceChildren(...notes.filter(Boolean).map(n => h("div", { class: "dempty" }, n)), ...files.map(diffFile));
   }, e => !gone && body.replaceChildren(h("div", { class: "dempty" }, `Couldn't load the changes: ${e.message}`)));
   return { kind: "changes", chatFromList: fromChat && chatFromList, el, destroy() { gone = true; offline.stop(); } };

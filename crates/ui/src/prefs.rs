@@ -28,7 +28,7 @@ pub struct Prefs {
     pub shortcut: Option<String>,
     /// Where the main window was last, to open it there next run.
     pub main_frame: Option<Frame>,
-    /// Show the chat details card beside the transcript.
+    /// Show the main window's chat details card beside the transcript.
     pub show_details: bool,
 }
 

@@ -132,6 +132,7 @@ pub struct Existing {
     pub changes: Option<Changes>,
     /// The turn the changes page shows: the user message that started it.
     pub changes_of: ChangeTarget,
+    pub details_open: bool,
     pub details: Option<Result<crate::data::ChatDetails, String>>,
     pub(super) details_loading: bool,
     pub(super) details_at: Option<Instant>,
@@ -365,6 +366,7 @@ impl Existing {
             copied: None,
             changes: None,
             changes_of: ChangeTarget::WorkingTree,
+            details_open: false,
             details: None,
             details_loading: false,
             details_at: None,

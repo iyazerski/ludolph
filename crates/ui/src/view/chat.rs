@@ -29,6 +29,9 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     {
         return super::changes::page(s, chat, changes, k);
     }
+    if let Some(chat) = page.existing().filter(|chat| chat.details_open) {
+        return super::details::page(chat, k);
+    }
     col()
         .w_full()
         .h_full()
@@ -50,25 +53,19 @@ pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
 /// The transcript, or a new chat's greeting, over the composer.
 fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let chat = chat_body(s, page, k, layer);
-    let Some(existing) = page.existing().filter(|_| s.prefs.borrow().show_details) else {
+    let Some(existing) = page
+        .existing()
+        .filter(|_| s.window == Window::Main && s.prefs.borrow().show_details)
+    else {
         return chat;
     };
     let card = super::details::card(existing, k);
-    if s.window == Window::Main {
-        row()
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .child(chat.min_w(0.0))
-            .child(col().w(280.0).shrink().pt(12.0).pr(12.0).child(card))
-    } else {
-        col()
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .child(col().w_full().px(14.0).pt(10.0).child(card))
-            .child(chat)
-    }
+    row()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(chat.min_w(0.0))
+        .child(col().w(280.0).shrink().pt(12.0).pr(12.0).child(card))
 }
 
 /// Keep the transcript and composer together when the details card is shown.

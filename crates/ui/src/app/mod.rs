@@ -383,12 +383,7 @@ impl State {
                 || c.run.as_ref().is_some_and(|r| r.retry.is_some())
         });
         let linking = self.settings_page().is_some_and(SettingsPage::connecting);
-        let details = self.engine_up
-            && self.prefs.borrow().show_details
-            && self
-                .chat()
-                .and_then(ChatPage::existing)
-                .is_some_and(|chat| chat.changes.is_none());
+        let details = self.engine_up && self.details_visible();
         self.api
             .tick(self.shown && (toast || chat || linking || details));
     }
@@ -592,13 +587,19 @@ impl State {
         self.load_draft();
     }
 
-    /// Close the changes page for its chat, else, in the quick window, the
-    /// chat for the list. The main window's list is always beside the chat.
+    /// Return from changes to details or chat, then to the quick-window list.
     pub fn back(&mut self) {
         if let Some(chat) = self.chat_mut().and_then(ChatPage::existing_mut)
             && chat.changes.take().is_some()
         {
             self.load_details();
+            self.sync_tick();
+            return;
+        }
+        if let Some(chat) = self.chat_mut().and_then(ChatPage::existing_mut)
+            && chat.details_open
+        {
+            chat.details_open = false;
             self.sync_tick();
             return;
         }
