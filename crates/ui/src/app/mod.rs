@@ -1,18 +1,19 @@
 //! A window's state and what changes it: navigation, the engine's feeds
 //! and the windows' hand-offs here, a chat's actions in [`actions`], a new chat's picks in
-//! [`draft`], and images in [`attach`].
+//! [`draft`], images in [`attach`], and the settings page in [`settings`].
 
 mod actions;
 mod attach;
 mod draft;
 mod page;
+mod settings;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use rune::{ImageCache, TextEdit, Tx};
+use rune::{ImageCache, ShortcutId, TextEdit, Tx};
 use rune_kit::diff::DiffState;
 use rune_kit::shell::PaneState;
 use serde_json::{Value, json};
@@ -29,6 +30,7 @@ pub use self::page::{
     Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending, QuestionForm, Sheet,
     SkillList, Target, Voice,
 };
+pub use self::settings::SettingsPage;
 
 /// The most chats the list loads, for its search.
 const LIST_LIMIT: usize = 200;
@@ -53,6 +55,9 @@ pub struct State {
     pub engine_up: bool,
     /// Shared by both windows, which run on the same thread.
     pub prefs: Rc<RefCell<Prefs>>,
+    /// The quick window's global shortcut while it's registered, shared too:
+    /// the main window's settings change it.
+    pub hotkey: Rc<Cell<Option<ShortcutId>>>,
     pub page: Page,
     /// The main window's sidebar: its width, and whether it's open.
     pub sidebar: PaneState,
@@ -77,6 +82,8 @@ pub struct State {
 pub enum Page {
     List,
     Chat(Box<ChatPage>),
+    /// Only the main window shows the settings.
+    Settings(Box<SettingsPage>),
 }
 
 #[derive(Default)]
@@ -138,7 +145,12 @@ pub enum ToastKind {
 }
 
 impl State {
-    pub fn new(api: Api, window: Window, prefs: Rc<RefCell<Prefs>>) -> Self {
+    pub fn new(
+        api: Api,
+        window: Window,
+        prefs: Rc<RefCell<Prefs>>,
+        hotkey: Rc<Cell<Option<ShortcutId>>>,
+    ) -> Self {
         let page = match window {
             Window::Quick => Page::List,
             // The main window opens on a new chat, as there's always a page beside the list.
@@ -153,6 +165,7 @@ impl State {
             window,
             engine_up: false,
             prefs,
+            hotkey,
             page,
             sidebar: PaneState::new(320.0).range(260.0, 480.0),
             list: ListState::default(),
@@ -170,21 +183,21 @@ impl State {
     pub fn chat(&self) -> Option<&ChatPage> {
         match &self.page {
             Page::Chat(page) => Some(page),
-            Page::List => None,
+            Page::List | Page::Settings(_) => None,
         }
     }
 
     pub fn chat_mut(&mut self) -> Option<&mut ChatPage> {
         match &mut self.page {
             Page::Chat(page) => Some(page),
-            Page::List => None,
+            Page::List | Page::Settings(_) => None,
         }
     }
 
     pub fn composer_field(&mut self) -> &mut TextEdit {
         match &mut self.page {
             Page::Chat(page) => &mut page.composer,
-            Page::List => &mut self.list.query,
+            Page::List | Page::Settings(_) => &mut self.list.query,
         }
     }
 
@@ -197,7 +210,7 @@ impl State {
                 }) => &mut form.field,
                 _ => &mut page.scratch,
             },
-            Page::List => &mut self.list.query,
+            Page::List | Page::Settings(_) => &mut self.list.query,
         }
     }
 
@@ -215,7 +228,7 @@ impl State {
     pub fn diff_mut(&mut self) -> &mut DiffState {
         let changes = match &mut self.page {
             Page::Chat(page) => page.existing_mut().and_then(|c| c.changes.as_mut()),
-            Page::List => None,
+            Page::List | Page::Settings(_) => None,
         };
         match changes {
             Some(Changes::Ready { diff, .. }) => diff,
@@ -321,7 +334,8 @@ impl State {
     }
 
     /// Tick each second while something on screen counts: a toast's time,
-    /// the working clock, a copy's check, a retry's countdown.
+    /// the working clock, a copy's check, a retry's countdown, a phone link
+    /// connecting.
     pub(super) fn sync_tick(&mut self) {
         let toast = self
             .toast
@@ -332,7 +346,8 @@ impl State {
                 || c.copied.is_some()
                 || c.run.as_ref().is_some_and(|r| r.retry.is_some())
         });
-        self.api.tick(self.shown && (toast || chat));
+        let linking = self.settings_page().is_some_and(SettingsPage::connecting);
+        self.api.tick(self.shown && (toast || chat || linking));
     }
 
     /// Show or hide the window; it opens where it was left.
@@ -429,6 +444,9 @@ impl State {
         {
             self.toast = None;
             changed = true;
+        }
+        if self.settings_page().is_some_and(SettingsPage::connecting) {
+            self.load_phone();
         }
         if let Some(chat) = self.chat_mut().and_then(|p| p.existing_mut()) {
             changed |= chat.expire_copied();

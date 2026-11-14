@@ -1,5 +1,5 @@
 //! The tools the app and the phone call, by name, with JSON arguments and
-//! answers. The settings tools are the app's alone.
+//! answers. The settings and phone link tools are the app's alone.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -55,13 +55,24 @@ pub enum Tool {
     PolishDictation,
     GetSettings,
     SetSettings,
+    GetPhoneLink,
+    LinkPhone,
+    UnlinkPhone,
 }
 
 impl Tool {
-    /// Whether the phone may call it. The phone can't change settings, so a
-    /// relay can't, say, point dictation at a model of its choosing.
+    /// Whether the phone may call it. The phone can't change settings or
+    /// the link, so a relay can't, say, point dictation at a model of its
+    /// choosing, or the Mac at another relay.
     pub fn for_phone(self) -> bool {
-        !matches!(self, Self::GetSettings | Self::SetSettings)
+        !matches!(
+            self,
+            Self::GetSettings
+                | Self::SetSettings
+                | Self::GetPhoneLink
+                | Self::LinkPhone
+                | Self::UnlinkPhone
+        )
     }
 }
 
@@ -91,6 +102,9 @@ impl FromStr for Tool {
             "polish_dictation" => Self::PolishDictation,
             "get_settings" => Self::GetSettings,
             "set_settings" => Self::SetSettings,
+            "get_phone_link" => Self::GetPhoneLink,
+            "link_phone" => Self::LinkPhone,
+            "unlink_phone" => Self::UnlinkPhone,
             _ => bail!("no tool {name}"),
         })
     }
@@ -136,6 +150,15 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::SetSettings => Ok(serde_json::to_value(
             engine.set_settings(parse(args)?).await?,
         )?),
+        Tool::GetPhoneLink => Ok(serde_json::to_value(engine.phone())?),
+        Tool::LinkPhone => {
+            let args: LinkArgs = parse(args)?;
+            Ok(serde_json::to_value(engine.link_phone(&args.code).await?)?)
+        }
+        Tool::UnlinkPhone => {
+            engine.unlink_phone()?;
+            Ok(Value::Null)
+        }
     }
 }
 
@@ -143,6 +166,13 @@ fn parse<T: DeserializeOwned>(args: Value) -> Result<T> {
     // A tool called without arguments gets none.
     let args = if args.is_null() { json!({}) } else { args };
     serde_json::from_value(args).context("invalid arguments")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkArgs {
+    /// From the phone's "Add a Mac".
+    code: String,
 }
 
 #[derive(Deserialize)]

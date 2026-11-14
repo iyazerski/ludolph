@@ -14,7 +14,6 @@ workspace = true
 anyhow.workspace = true
 libc.workspace = true
 ludolph-engine = { path = "crates/engine" }
-ludolph-relay-proto.workspace = true
 ludolph-ui.workspace = true
 plist.workspace = true
 serde.workspace = true

@@ -318,7 +318,7 @@ function selectedMac() {
 function macNote(m) {
   if (macState(m) === "offline") {
     return h("div", { class: "offline-note" }, h("span", {}, h("b", {}, `${m.name} is offline.`),
-      " It may be asleep, or its engine isn't running: run ludolph install on it."));
+      " It may be asleep, or its engine isn't running: open Ludolph on it."));
   }
   return null;
 }
@@ -2095,7 +2095,7 @@ function settingsSheet() {
 
 /** One Mac's page: its state, and removing it. */
 function macPage(m, close) {
-  const sub = macState(m) === "ready" ? versions(m) : "Offline. Run ludolph install on it.";
+  const sub = macState(m) === "ready" ? versions(m) : "Offline. Open Ludolph on it.";
   return [
     h("h2", {}, m.name),
     h("div", { class: "note", style: { marginTop: "-8px" } }, withBattery(m, sub)),
@@ -2107,7 +2107,7 @@ function macPage(m, close) {
   ];
 }
 
-/** The "Add a Mac" step: name it, then show the command that links it. */
+/** The "Add a Mac" step: name it, then show the code that links it. */
 function addMac(close) {
   const name = h("input", { class: "field", placeholder: "Name, like Work MacBook", maxlength: 60, autocomplete: "off" });
   const create = h("button", { class: "btn solid full" }, "Create");
@@ -2117,12 +2117,11 @@ function addMac(close) {
     create.disabled = true;
     try {
       const { code } = await post("/api/machines/add", { name: name.value.trim() });
-      const command = `ludolph link ${code}`;
       body.replaceChildren(
         h("h2", {}, "Connect the Mac"),
-        h("div", { class: "note", style: { margin: "-6px 4px 12px" } }, "Run this on the Mac, after ludolph install. Its engine stays connected in the background from then on. The code is shown only once."),
-        h("div", { class: "command" }, command),
-        h("button", { class: "btn full", style: { marginBottom: "8px" }, onclick: () => { copyText(command); toast({ title: "Command copied", kind: "done", timeout: 1600 }); } }, icon("copy"), "Copy command"),
+        h("div", { class: "note", style: { margin: "-6px 4px 12px" } }, "In Ludolph on the Mac, open Settings, then paste this code under Phone. The Mac stays connected in the background from then on. The code is shown only once."),
+        h("div", { class: "command" }, code),
+        h("button", { class: "btn full", style: { marginBottom: "8px" }, onclick: () => { copyText(code); toast({ title: "Code copied", kind: "done", timeout: 1600 }); } }, icon("copy"), "Copy code"),
         // Not `onclick: close`: the click event would count as `fromHistory`.
         h("button", { class: "btn solid full", onclick: () => close() }, "Done"));
     } catch (e) { toast({ title: "Couldn't add the Mac", body: e.message, kind: "error" }); create.disabled = false; }

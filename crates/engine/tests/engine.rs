@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, Status};
-use ludolph_engine::relay::{self, Link};
 use ludolph_engine::server;
 use ludolph_engine::settings::{Notify, Settings};
 use ludolph_engine::transcript::{Part, Role, ToolState, Window};
+use ludolph_relay_proto::LinkCode;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixStream};
@@ -1024,20 +1024,30 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         tcp.write_all(refusal).await.unwrap();
     });
     let token = "t0ken".to_owned();
-    // Without TLS, the token only goes to a relay on this Mac.
-    let plain = Link {
-        relay: "http://relay.example.com".into(),
-        token: token.clone(),
+    let code = |relay: &str| {
+        let code = LinkCode {
+            relay: relay.into(),
+            token: token.clone(),
+        };
+        json!({"code": code.encode()})
     };
-    let plain = relay::verify(&plain).await.unwrap_err();
-    assert!(format!("{plain:#}").contains("https://"), "{plain:#}");
-    let refused = relay::verify(&Link {
-        relay,
-        token: token.clone(),
-    })
-    .await
-    .unwrap_err();
-    assert!(format!("{refused:#}").contains("rejected"), "{refused:#}");
+    assert_eq!(
+        tool(&engine, "get_phone_link", json!({})).await.unwrap(),
+        Value::Null
+    );
+    let bad = tool(&engine, "link_phone", json!({"code": "nope"})).await;
+    assert!(format!("{:#}", bad.unwrap_err()).contains("isn't a link code"));
+    // Without TLS, the token only goes to a relay on this Mac.
+    let plain = tool(&engine, "link_phone", code("http://relay.example.com")).await;
+    let plain = format!("{:#}", plain.unwrap_err());
+    assert!(plain.contains("https://"), "{plain}");
+    let refused = tool(&engine, "link_phone", code(&relay)).await;
+    let refused = format!("{:#}", refused.unwrap_err());
+    assert!(refused.contains("rejected"), "{refused}");
+    assert_eq!(
+        tool(&engine, "get_phone_link", json!({})).await.unwrap(),
+        Value::Null
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = format!("http://{}", listener.local_addr().unwrap());
@@ -1045,14 +1055,31 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     tool(&engine, "set_settings", json!({"notify": "always"}))
         .await
         .unwrap();
-    tokio::spawn(relay::run(engine.clone(), Link { relay, token }));
-    let (tcp, _) = listener.accept().await.unwrap();
+    let linking = tokio::spawn({
+        let (engine, code) = (engine.clone(), code(&relay));
+        async move { tool(&engine, "link_phone", code).await }
+    });
+    // Linking checks the token on a visit of its own, then connects to stay.
     let mut bearer = None;
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut visit = tokio_tungstenite::accept_hdr_async(tcp, Bearer(&mut bearer))
+        .await
+        .unwrap();
+    assert_eq!(bearer.take().as_deref(), Some("Bearer t0ken"));
+    assert_eq!(from_mac(&mut visit).await["type"], "hello");
+    let (tcp, _) = listener.accept().await.unwrap();
     let mut socket = tokio_tungstenite::accept_hdr_async(tcp, Bearer(&mut bearer))
         .await
         .unwrap();
     assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
+    assert_eq!(linking.await.unwrap().unwrap()["relay"], relay);
     assert_eq!(from_mac(&mut socket).await["protocol"], 5);
+    let linked = tool(&engine, "get_phone_link", json!({})).await.unwrap();
+    assert_eq!(
+        linked,
+        json!({"relay": relay, "status": "connected", "error": null})
+    );
+    assert!(dir.path().join("state/relay.json").exists());
     // A Mac without a battery, like a CI machine, reports none.
     let power = from_mac(&mut socket).await;
     let battery = &power["battery"];
@@ -1153,5 +1180,23 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         (&cut["kind"], &cut["body"]),
         (&json!("interrupted"), &json!("The run stopped: pi exited."))
     );
+
+    // Unlinking drops the connection and forgets the link.
+    tool(&engine, "unlink_phone", json!({})).await.unwrap();
+    let closed = async {
+        while let Some(Ok(message)) = socket.next().await {
+            if message.is_close() {
+                break;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), closed)
+        .await
+        .unwrap();
+    assert_eq!(
+        tool(&engine, "get_phone_link", json!({})).await.unwrap(),
+        Value::Null
+    );
+    assert!(!dir.path().join("state/relay.json").exists());
     engine.shutdown().await.unwrap();
 }

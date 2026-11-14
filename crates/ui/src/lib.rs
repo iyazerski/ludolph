@@ -12,7 +12,7 @@ mod message;
 mod prefs;
 mod view;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -34,9 +34,6 @@ const SIZE: (f32, f32) = (420.0, 620.0);
 const MIN_SIZE: (f32, f32) = (340.0, 420.0);
 const MAIN_SIZE: (f32, f32) = (1120.0, 760.0);
 const MAIN_MIN_SIZE: (f32, f32) = (720.0, 480.0);
-
-/// The shortcut that shows and hides the quick window, until it's a setting.
-pub const SHORTCUT: &str = "ctrl+alt+space";
 
 /// The first spot: the primary display's top right, under the menu bar. It's an
 /// initial position, not a placement, so later opens keep where the user dragged it.
@@ -93,6 +90,7 @@ pub fn run(opts: Opts) -> Result<()> {
     let prefs_path = opts.state_dir.join("ui.json");
     let prefs = Rc::new(RefCell::new(Prefs::load(&prefs_path)));
     let shared = Shared::start(rt.handle().clone(), socket, prefs_path);
+    let hotkey = Rc::new(Cell::new(None));
 
     let spec = |size, min_size| AppSpec {
         min_size: Some(min_size),
@@ -111,40 +109,44 @@ pub fn run(opts: Opts) -> Result<()> {
     let quick = App::new(spec(SIZE, MIN_SIZE)).windowless();
     let main = App::new(spec(MAIN_SIZE, MAIN_MIN_SIZE)).windowless();
     let (quick_handle, main_handle) = (quick.handle(), main.handle());
+    // Registered once the app runs, so the settings can change it.
+    quick_handle.update(|s, _| s.register_saved_shortcut());
     if !opts.hidden {
         main_handle.update(|s, _| s.open());
     }
     let quick = {
-        let (shared, prefs) = (shared.clone(), prefs.clone());
+        let (shared, prefs, hotkey) = (shared.clone(), prefs.clone(), hotkey.clone());
         let (me, peer) = (quick_handle, main_handle.clone());
         quick
-            .init(move || State::new(Api::start(&shared, me, peer), Window::Quick, prefs))
-            .global_shortcut(SHORTCUT, |s, _| s.toggle_window())
+            .init(move || State::new(Api::start(&shared, me, peer), Window::Quick, prefs, hotkey))
             .on_visibility(|s, shown, _| s.visibility_changed(shown))
     };
     let main = {
         let peer = quick.handle();
-        main.init(move || State::new(Api::start(&shared, main_handle, peer), Window::Main, prefs))
-            .chrome(Chrome {
-                full_size_content: true,
-                // Centred in the toolbar band, as `SplitView` asks.
-                traffic_lights: Some((16.0, 17.0)),
-                drag_regions: true,
-            })
-            .on_visibility(|s, shown, _| {
-                // Only once it's on screen: an app that becomes regular while its window
-                // orders in gets the window back at a stray, tiny frame.
-                if shown {
-                    s.api.app().set_dock_icon(true);
-                }
-                s.visibility_changed(shown)
-            })
-            .on_close(State::closed)
-            // The Dock icon, or opening the app again from Finder or Spotlight.
-            .on_reopen(|s, _, _| {
-                s.open();
-                true
-            })
+        main.init(move || {
+            let api = Api::start(&shared, main_handle, peer);
+            State::new(api, Window::Main, prefs, hotkey)
+        })
+        .chrome(Chrome {
+            full_size_content: true,
+            // Centred in the toolbar band, as `SplitView` asks.
+            traffic_lights: Some((16.0, 17.0)),
+            drag_regions: true,
+        })
+        .on_visibility(|s, shown, _| {
+            // Only once it's on screen: an app that becomes regular while its window
+            // orders in gets the window back at a stray, tiny frame.
+            if shown {
+                s.api.app().set_dock_icon(true);
+            }
+            s.visibility_changed(shown)
+        })
+        .on_close(State::closed)
+        // The Dock icon, or opening the app again from Finder or Spotlight.
+        .on_reopen(|s, _, _| {
+            s.open();
+            true
+        })
     };
     rune::run_windows_with_args(RunOptions { accessory: true }, [], move |displays| {
         let options = WindowOptions {

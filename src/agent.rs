@@ -69,20 +69,6 @@ pub fn stop() -> Result<bool> {
     Ok(true)
 }
 
-/// Restart the engine, so it reads its files again. Returns whether it's
-/// loaded.
-///
-/// # Errors
-///
-/// Fails if launchd can't restart it.
-pub fn restart() -> Result<bool> {
-    if !loaded() {
-        return Ok(false);
-    }
-    launchctl(&["kickstart", "-k", &target()])?;
-    Ok(true)
-}
-
 fn loaded() -> bool {
     launchctl(&["print", &target()]).is_ok()
 }

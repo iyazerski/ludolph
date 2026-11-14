@@ -20,7 +20,7 @@ use ludolph_relay_proto::{CONNECT_PATH, Down, Notice, NoticeKind, PROTOCOL, Up};
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::{AbortHandle, JoinSet};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -85,6 +85,26 @@ impl fmt::Debug for Link {
     }
 }
 
+/// How this Mac's link to the relay stands, as Settings shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Phone {
+    pub relay: String,
+    pub status: LinkStatus,
+    /// Why the last try to connect failed, while it tries again.
+    pub error: Option<String>,
+}
+
+/// Whether the engine is connected to the relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkStatus {
+    Connecting,
+    Connected,
+    /// The relay refused the token, so the Mac must be added again.
+    Rejected,
+}
+
 impl Link {
     /// Where the link is kept in the engine's folder.
     pub fn path(state_dir: &Path) -> PathBuf {
@@ -111,13 +131,22 @@ impl Link {
 }
 
 /// Stay connected to the relay, answer its calls, and pass alerts on as
-/// the settings allow, reconnecting when the link drops. It returns only
-/// when the relay rejects the token, since trying again can't help then.
-pub async fn run(engine: Engine, link: Link) {
+/// the settings allow, reconnecting when the link drops, and keep `phone`
+/// up to date. It returns only when the relay rejects the token, since
+/// trying again can't help then.
+pub(crate) async fn run(engine: Engine, link: Link, phone: watch::Sender<Option<Phone>>) {
+    let report = |status, error: Option<String>| {
+        phone.send_replace(Some(Phone {
+            relay: link.relay.clone(),
+            status,
+            error,
+        }));
+    };
     let url = match socket_url(&link.relay) {
         Ok(url) => url,
         Err(e) => {
             eprintln!("relay: {e:#}");
+            report(LinkStatus::Connecting, Some(e.root_cause().to_string()));
             return;
         }
     };
@@ -131,6 +160,7 @@ pub async fn run(engine: Engine, link: Link) {
         let result = async {
             let socket = dial(&url, &link.token).await?;
             eprintln!("relay: connected to {url}");
+            report(LinkStatus::Connected, None);
             connected = Some(Instant::now());
             serve(socket, &engine, &slots, &mut power).await
         }
@@ -139,12 +169,19 @@ pub async fn run(engine: Engine, link: Link) {
             backoff = MIN_BACKOFF;
         }
         match result {
-            Ok(()) => eprintln!("relay: the relay closed the link; reconnecting"),
+            Ok(()) => {
+                eprintln!("relay: the relay closed the link; reconnecting");
+                report(LinkStatus::Connecting, None);
+            }
             Err(e) if rejected(&e) => {
                 eprintln!("relay: the relay rejected this Mac's token; add the Mac again");
+                report(LinkStatus::Rejected, None);
                 return;
             }
-            Err(e) => eprintln!("relay: {e:#}"),
+            Err(e) => {
+                eprintln!("relay: {e:#}");
+                report(LinkStatus::Connecting, Some(e.root_cause().to_string()));
+            }
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);

@@ -2,7 +2,7 @@
 //! (`ludolph_engine::tools`, `ludolph_engine::feed`).
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A chat as `list_chats` and the feed summarize it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -417,4 +417,44 @@ mod tests {
             assert_eq!(m.answer().as_deref(), want);
         }
     }
+}
+
+/// The engine's settings, as `get_settings` answers and `set_settings`
+/// takes them, all at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    /// The model for titles and dictation cleanup; pi's default if `None`.
+    pub sidecar_model: Option<String>,
+    pub notify: Notify,
+    pub open_at_login: bool,
+}
+
+/// When the phone gets notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Notify {
+    /// Only while nobody uses the Mac.
+    Away,
+    Always,
+}
+
+/// The Mac's link to the relay, as `get_phone_link` and `link_phone`
+/// answer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneLink {
+    pub relay: String,
+    pub status: LinkStatus,
+    /// Why the last try to connect failed, while it tries again.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkStatus {
+    Connecting,
+    Connected,
+    /// The relay refused the token, so the Mac must be added again.
+    Rejected,
 }

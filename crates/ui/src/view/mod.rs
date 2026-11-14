@@ -10,6 +10,7 @@ mod composer;
 mod icons;
 mod list;
 mod main_window;
+mod settings;
 mod sidebar;
 mod widgets;
 
@@ -33,7 +34,8 @@ fn quick(s: &State, cx: &mut Cx<State>) -> El {
     let k = rune_theme_opencode::kit(cx.system_dark());
     let mut layer = Vec::new();
     let page = match &s.page {
-        Page::List => list::view(s, k),
+        // The quick window hands the settings to the main one.
+        Page::List | Page::Settings(_) => list::view(s, k),
         Page::Chat(page) => chat::view(s, page, k, &mut layer),
     };
     layer.extend(toast(s, k));
@@ -85,6 +87,24 @@ fn toast(s: &State, k: &Kit) -> Option<El> {
 }
 
 pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
+    if let Some(page) = s.settings_page_mut() {
+        // The recorder takes every key while it records, Escape included.
+        if page.shortcut.is_recording() {
+            return false;
+        }
+        if key.key == Key::Escape && page.model.is_open() {
+            page.model.close();
+            return true;
+        }
+        if key.key == Key::Escape || key.is_command('[') {
+            s.close_settings();
+            return true;
+        }
+    }
+    if key.is_command(',') {
+        s.open_settings();
+        return true;
+    }
     if s.window == Window::Main {
         if rune_kit::shell::is_sidebar_toggle(key) {
             s.sidebar.toggle();

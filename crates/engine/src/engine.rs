@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
+use ludolph_relay_proto::LinkCode;
 use serde_json::{Value, json};
 use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
 use tokio::task::AbortHandle;
@@ -22,6 +23,7 @@ use crate::live::{self, Live};
 use crate::login;
 use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
+use crate::relay::{self, Link, LinkStatus, Phone};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
 use crate::settings::Settings;
@@ -103,11 +105,17 @@ struct Inner {
     settings: Mutex<Settings>,
     turns: Arc<Turns>,
     catalog: Catalog,
+    /// The task that keeps the relay link, if this Mac has one.
+    relay: Mutex<Option<AbortHandle>>,
+    phone: watch::Sender<Option<Phone>>,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
         self.watching.abort();
+        if let Some(relay) = self.relay.get_mut().ok().and_then(Option::take) {
+            relay.abort();
+        }
     }
 }
 
@@ -387,7 +395,8 @@ impl Engine {
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
         // The engine's folder has no `.pi` settings to change the list.
         let catalog = Catalog::new(config.pi.clone(), config.state_dir.clone(), config.grace);
-        Ok(Self(Arc::new_cyclic(|inner| Inner {
+        let link = Link::load(&config.state_dir)?;
+        let engine = Self(Arc::new_cyclic(|inner| Inner {
             turns,
             catalog,
             state: Mutex::new(state),
@@ -397,8 +406,14 @@ impl Engine {
             watching: tokio::spawn(follow(inner.clone(), watcher)).abort_handle(),
             titler: Arc::new(Titler::new(config.pi.clone())),
             settings: Mutex::new(settings),
+            relay: Mutex::default(),
+            phone: watch::channel(None).0,
             config,
-        })))
+        }));
+        if let Some(link) = link {
+            engine.connect(link);
+        }
+        Ok(engine)
     }
 
     /// Every chat, most recently active first.
@@ -938,6 +953,74 @@ impl Engine {
         Ok(settings)
     }
 
+    /// How this Mac's link to the relay stands, if it has one.
+    pub fn phone(&self) -> Option<Phone> {
+        self.0.phone.borrow().clone()
+    }
+
+    /// Link this Mac to the relay in `code`, from the phone's "Add a Mac",
+    /// in place of any link it had, once the relay takes its token.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the code is bad, the relay can't be reached or refuses the
+    /// token, or the link can't be saved.
+    pub async fn link_phone(&self, code: &str) -> Result<Phone> {
+        let LinkCode { relay, token } = LinkCode::decode(code.trim())
+            .context("that isn't a link code: copy it again from Add a Mac on the phone")?;
+        let link = Link { relay, token };
+        relay::verify(&link).await?;
+        link.save(&self.0.config.state_dir)?;
+        let relay = link.relay.clone();
+        self.connect(link);
+        Ok(self.phone().unwrap_or(Phone {
+            relay,
+            status: LinkStatus::Connecting,
+            error: None,
+        }))
+    }
+
+    /// Disconnect from the relay and forget the link.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the saved link can't be removed.
+    pub fn unlink_phone(&self) -> Result<()> {
+        self.disconnect();
+        let path = Link::path(&self.0.config.state_dir);
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {}", path.display()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Keep `link` to the relay from now on, in place of any other.
+    fn connect(&self, link: Link) {
+        self.disconnect();
+        self.0.phone.send_replace(Some(Phone {
+            relay: link.relay.clone(),
+            status: LinkStatus::Connecting,
+            error: None,
+        }));
+        let task = tokio::spawn(relay::run(self.clone(), link, self.0.phone.clone()));
+        *self.0.relay.lock().expect("the relay lock isn't poisoned") = Some(task.abort_handle());
+    }
+
+    fn disconnect(&self) {
+        let task = self
+            .0
+            .relay
+            .lock()
+            .expect("the relay lock isn't poisoned")
+            .take();
+        if let Some(task) = task {
+            task.abort();
+        }
+        self.0.phone.send_replace(None);
+    }
+
     /// The models pi can use.
     ///
     /// # Errors
@@ -1145,6 +1228,7 @@ impl Engine {
     /// Fails if the index can't be saved.
     pub async fn shutdown(&self) -> Result<()> {
         self.0.watching.abort();
+        self.disconnect();
         let (processes, working): (Vec<Arc<Pi>>, Vec<String>) = {
             let mut state = self.state();
             state.stopping = true;

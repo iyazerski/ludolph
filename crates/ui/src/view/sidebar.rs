@@ -32,7 +32,16 @@ pub fn view(s: &State, k: &Kit) -> El {
                 .key("new"),
         )
         .header(list::search_field(s, k).mt(6.0))
-        .header(list::filter_control(s, k).mt(4.0));
+        .header(list::filter_control(s, k).mt(4.0))
+        .footer(
+            SidebarRow::new("Settings")
+                .icon(&icons::SETTINGS)
+                .detail("⌘,")
+                .selected(s.settings_page().is_some())
+                .on_select(|s: &mut State, _| s.open_settings())
+                .build(k)
+                .key("settings"),
+        );
     if let Some(note) = engine_note(s, k) {
         bar = bar.child(note.mb(8.0));
     }
