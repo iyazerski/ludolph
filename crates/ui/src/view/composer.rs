@@ -4,11 +4,12 @@
 
 use rune::{El, Image, Key, KeyEvent, SurfaceFit, Tx, auto_grow, col, icon, row, text, text_input};
 use rune_kit::{
-    Button, ButtonVariant, Dialog, IconButton, IconButtonVariant, Kit, PopupItem, PopupList,
+    Combobox, ComboboxOption, Dialog, IconButton, IconButtonVariant, Kit, Placement, PopupItem,
+    PopupList,
 };
 
 use super::icons;
-use super::widgets::{busy, markdown_spans, tile};
+use super::widgets::{busy, markdown_spans, model_options, tile};
 use crate::app::{
     Catalog, ChatPage, Config, LEVELS_KEPT, Overlay, Pick, Prep, Sheet, SkillList, State, Voice,
 };
@@ -83,7 +84,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .w_full()
         .gap(8.0)
         .center_y()
-        .child(model_chip(s, k))
+        .child(model_picker(s, page, k, layer))
         .child(rune::spacer())
         .child(dictate)
         .child(send);
@@ -123,7 +124,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(meta(page, k))
         .child(rune::spacer())
         .child(context(page, k));
-    sheets(s, page, k, layer);
+    sheets(page, k, layer);
     dock.child(footer)
 }
 
@@ -348,40 +349,106 @@ fn skill_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
-fn model_chip(s: &State, k: &Kit) -> El {
+/// Use the settings combobox in place, so choosing a model never covers the chat.
+fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let Config { model, reasoning } = s.config();
-    // A chat with no model picked runs on pi's default, so name that one.
     let model = model.or(s.catalog.default_model());
-    let label = model.map_or("Default model".to_owned(), |m| s.catalog.label(m));
-    let mut chip = row()
-        .gap(5.0)
-        .px(6.0)
-        .py(3.0)
-        .radius(7.0)
-        .center_y()
-        .min_w(0.0)
-        .child(icon(icons::mark(model.unwrap_or_default()), 13.0).color(k.c.icon_muted))
-        .child(
-            text(label)
-                .font(k.ty.small_medium)
-                .color(k.c.text_muted)
-                .truncate(),
-        );
-    if let Some(r) = reasoning {
-        chip = chip.child(
-            text(reasoning_name(r))
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
+    let label = model.map_or("Default model".to_owned(), |id| s.catalog.label(id));
+    let models = s.catalog.ready().unwrap_or_default();
+    let options = model_options(models);
+    let trigger = k.interactive(
+        row()
+            .gap(5.0)
+            .px(6.0)
+            .py(3.0)
+            .radius(7.0)
+            .center_y()
+            .min_w(0.0)
+            .max_w(210.0)
+            .child(icon(icons::mark(model.unwrap_or_default()), 13.0).color(k.c.icon_muted))
+            .child(
+                text(label)
+                    .font(k.ty.small_medium)
+                    .color(k.c.text_muted)
+                    .truncate(),
+            )
+            .child(icon(k.glyph.chevron_down, 10.0).color(k.c.icon_faint)),
+    );
+    let picker = Combobox::new(
+        "composer-model",
+        &page.model_picker,
+        &options,
+        |s: &mut State| {
+            &mut s
+                .chat_mut()
+                .expect("the model picker is on a chat")
+                .model_picker
+        },
+    )
+    .trigger(trigger)
+    .label("Model")
+    .current(model)
+    .search_placeholder("Search models")
+    .empty_message(match &s.catalog {
+        Catalog::Ready(_) => "No matching models".to_owned(),
+        Catalog::Failed(error) => {
+            format!("Couldn't load models: {error}. Reopen the chat to retry.")
+        }
+        Catalog::Unloaded | Catalog::Loading => "Loading models…".to_owned(),
+    })
+    .placement(Placement::TopStart)
+    .width(320.0)
+    .disabled(!page.can_send())
+    .on_choose(|s: &mut State, id, _| s.pick(Pick::Model(id.to_owned())))
+    .build(k, layer);
+    let levels = levels_of(models, model.unwrap_or_default());
+    let options: Vec<_> = levels
+        .iter()
+        .map(|level| ComboboxOption::new(level.clone(), reasoning_name(level)))
+        .collect();
+    let chosen = reasoning.filter(|level| levels.iter().any(|l| l == level));
+    let reason = Combobox::new(
+        "composer-reasoning",
+        &page.reasoning_picker,
+        &options,
+        |s: &mut State| {
+            &mut s
+                .chat_mut()
+                .expect("the reasoning picker is on a chat")
+                .reasoning_picker
+        },
+    )
+    .label("Reasoning")
+    .current(chosen)
+    .trigger(
+        k.interactive(
+            row()
+                .gap(4.0)
+                .px(4.0)
+                .py(3.0)
+                .radius(7.0)
+                .center_y()
+                .child(
+                    text(chosen.map_or("Default".to_owned(), reasoning_name))
+                        .font(k.ty.small)
+                        .color(k.c.text_faint),
+                )
+                .child(icon(k.glyph.chevron_down, 10.0).color(k.c.icon_faint)),
+        ),
+    )
+    .placement(Placement::TopStart)
+    .width(180.0)
+    .disabled(!page.can_send())
+    .on_choose(|s: &mut State, level, _| s.pick(Pick::Reasoning(level.to_owned())))
+    .build(k, layer);
+    let mut out = row().gap(2.0).center_y().min_w(0.0).shrink().child(picker);
+    if levels.len() > 1 {
+        out = out.child(reason);
     }
-    k.interactive(chip)
-        .key("model-chip")
-        .label("Model")
-        .on_press(|s: &mut State| {
-            open_sheet(s, Sheet::Model);
-            // Retry a catalog that failed to load.
-            s.load_catalog();
-        })
+    if page.is_working() {
+        out = out.help("Changes apply from the next turn.");
+    }
+    out
 }
 
 fn open_sheet(s: &mut State, sheet: Sheet) {
@@ -484,21 +551,13 @@ fn context(page: &ChatPage, k: &Kit) -> El {
         ))
 }
 
-fn sheets(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
+fn sheets(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
     let close = |s: &mut State| {
         if let Some(p) = s.chat_mut() {
             p.overlay = Overlay::Closed;
         }
     };
     match page.overlay {
-        Overlay::Sheet(Sheet::Model) => {
-            Dialog::new("model-sheet", "Model")
-                .width(360.0)
-                .open(true)
-                .on_close(close)
-                .child(model_body(s, page, k))
-                .build(k, layer);
-        }
         Overlay::Sheet(Sheet::Project) => {
             Dialog::new("project-sheet", "Project")
                 .width(360.0)
@@ -509,28 +568,6 @@ fn sheets(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
         }
         Overlay::Closed | Overlay::Menu => {}
     }
-}
-
-fn group_label(k: &Kit, s: &str) -> El {
-    text(s.to_owned())
-        .font(k.ty.text_xsmall_medium)
-        .color(k.c.text_faint)
-        .pt(6.0)
-}
-
-fn pill(k: &Kit, label: String, on: bool, f: impl Fn(&mut State) + 'static) -> El {
-    Button::new(label)
-        .variant(if on {
-            ButtonVariant::Contrast
-        } else {
-            ButtonVariant::Outline
-        })
-        .on_press(move |s: &mut State| {
-            if !on {
-                f(s)
-            }
-        })
-        .build(k)
 }
 
 fn list_row(
@@ -580,77 +617,6 @@ fn sheet_scroll(body: El) -> El {
             stick_bottom: false,
         })
         .child(body)
-}
-
-/// Thinking levels first, as pills: pi lists dozens of models.
-fn model_body(s: &State, page: &ChatPage, k: &Kit) -> El {
-    let Config {
-        model: current,
-        reasoning,
-    } = s.config();
-    let models = match &s.catalog {
-        Catalog::Ready(got) => &got.models,
-        Catalog::Failed(e) => {
-            return text(format!("Couldn't load the models: {e}"))
-                .font(k.ty.small)
-                .color(k.c.text_muted)
-                .wrap()
-                .padding(16.0);
-        }
-        Catalog::Loading | Catalog::Unloaded => {
-            return row()
-                .w_full()
-                .py(24.0)
-                .justify_center()
-                .child(busy(18.0, k));
-        }
-    };
-    let current = current.or(s.catalog.default_model());
-    let mut body = col().w_full().gap(6.0);
-    let levels = levels_of(models, current.unwrap_or_default());
-    if !levels.is_empty() {
-        body = body.child(group_label(k, "Thinking")).child(
-            row()
-                .w_full()
-                .gap(6.0)
-                .flex_wrap()
-                .children(levels.iter().map(|l| {
-                    let level = l.clone();
-                    pill(
-                        k,
-                        reasoning_name(l),
-                        reasoning == Some(l.as_str()),
-                        move |s| s.pick(Pick::Reasoning(level.clone())),
-                    )
-                })),
-        );
-    }
-    if page.is_working() {
-        body = body.child(
-            text("Changes apply from the next turn.")
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
-    }
-    body = body
-        .child(group_label(k, "Model"))
-        .children(models.iter().map(|m| {
-            let id = m.id.clone();
-            let on = current == Some(m.id.as_str());
-            list_row(
-                k,
-                None,
-                m.label.clone().unwrap_or_else(|| m.id.clone()),
-                on,
-                format!("model-{}", m.id),
-                move |s| {
-                    if !on {
-                        s.pick(Pick::Model(id.clone()));
-                    }
-                },
-            )
-        }));
-    sheet_scroll(body)
 }
 
 fn project_body(page: &ChatPage, k: &Kit) -> El {
