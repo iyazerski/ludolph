@@ -15,7 +15,7 @@ use rune_kit::{
 
 use super::widgets::{busy, dot, model_options};
 use crate::app::{QR_SIZE, SettingsPage, State, Update};
-use crate::data::{LinkStatus, Notify, Pairing, RelayLink};
+use crate::data::{LinkStatus, Notify, Pairing, RelayLink, SendBehavior};
 
 /// The page's widest, so rows stay readable in a wide window.
 const MAX_WIDTH: f32 = 640.0;
@@ -114,6 +114,19 @@ fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
                 .build(k),
         ),
         tools,
+        with_hint(
+            wide(k, "Send while working",
+                SegmentedControl::new(&["Queue", "Steer"], Some(usize::from(
+                    page.settings.as_ref().is_some_and(|settings| settings.send_behavior == SendBehavior::Steer)
+                )))
+                    .width(Some(CONTROL))
+                    .on_pick(|s: &mut State, index, _| s.change_settings(|settings| {
+                        settings.send_behavior = if index == 0 { SendBehavior::Queue } else { SendBehavior::Steer };
+                    }))
+                    .build(k)
+            ), k,
+            "Queue waits for a new turn and keeps messages editable. Steer sends instructions after the current tool step.",
+        ),
     ]
     .into_iter()
     .chain(unregistered(s, page, k))

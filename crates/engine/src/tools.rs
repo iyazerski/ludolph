@@ -41,6 +41,9 @@ pub enum Tool {
     ToolOutput,
     ChatImage,
     SendMessage,
+    EditQueuedMessage,
+    DeleteQueuedMessage,
+    ResumeQueue,
     CreateChat,
     InterruptChat,
     TakeOverChat,
@@ -90,6 +93,9 @@ impl FromStr for Tool {
             "tool_output" => Self::ToolOutput,
             "chat_image" => Self::ChatImage,
             "send_message" => Self::SendMessage,
+            "edit_queued_message" => Self::EditQueuedMessage,
+            "delete_queued_message" => Self::DeleteQueuedMessage,
+            "resume_queue" => Self::ResumeQueue,
             "create_chat" => Self::CreateChat,
             "interrupt_chat" => Self::InterruptChat,
             "take_over_chat" => Self::TakeOverChat,
@@ -136,6 +142,27 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
             Ok(serde_json::to_value(image)?)
         }
         Tool::SendMessage => send_message(engine, parse(args)?).await,
+        Tool::EditQueuedMessage => {
+            let args: QueueArgs = parse(args)?;
+            engine
+                .edit_queued(
+                    &args.chat,
+                    &args.id,
+                    args.text.as_deref().context("text is required")?,
+                )
+                .await?;
+            Ok(json!({}))
+        }
+        Tool::DeleteQueuedMessage => {
+            let args: QueueArgs = parse(args)?;
+            engine.delete_queued(&args.chat, &args.id).await?;
+            Ok(json!({}))
+        }
+        Tool::ResumeQueue => {
+            let args: ChatArgs = parse(args)?;
+            engine.resume_queue(&args.chat).await?;
+            Ok(json!({}))
+        }
         Tool::CreateChat => create_chat(engine, parse(args)?).await,
         Tool::InterruptChat => interrupt_chat(engine, parse(args)?).await,
         Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
@@ -350,6 +377,7 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
             "olderRemaining": view.page.older(),
             "pendingInput": view.question.as_ref().map(pending_input),
             "run": view.run,
+            "queued": view.queued,
             "messages": view.page.messages,
             "turnChanges": runs,
         }))
@@ -540,6 +568,15 @@ fn settings(composer: &Composer) -> Value {
     })
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueueArgs {
+    chat: String,
+    id: String,
+    text: Option<String>,
+}
+
+/// A prompt to send, with optional images.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SendArgs {
@@ -754,7 +791,7 @@ fn checked(images: Vec<Image>) -> Result<Vec<Image>> {
 fn delivery_name(delivery: Delivery) -> &'static str {
     match delivery {
         Delivery::Started => "run",
-        Delivery::Queued => "steer",
+        Delivery::Queued => "queued",
         Delivery::Handled => "handled",
     }
 }

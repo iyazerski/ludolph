@@ -109,13 +109,11 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         })
         .child(tools);
     skill_menu(page, k, layer);
-    let dock = col()
-        .key("dock")
-        .w_full()
-        .px(10.0)
-        .pb(6.0)
-        .gap(6.0)
-        .child(field_box);
+    let mut dock = col().key("dock").w_full().px(10.0).pb(6.0).gap(6.0);
+    if let Some(waiting) = super::queue::view(page, k) {
+        dock = dock.child(waiting);
+    }
+    dock = dock.child(field_box);
     let footer = row()
         .w_full()
         .gap(12.0)

@@ -14,7 +14,8 @@ use super::attach::Attached;
 use super::draft::Draft;
 use crate::client::Subscription;
 use crate::data::{
-    Chat, ComposerInfo, Dialog, DialogKind, Message, Part, Role, Run, Skill, ToolState, TurnChanges,
+    Chat, ComposerInfo, Dialog, DialogKind, Message, Part, Queued, Role, Run, Skill, ToolState,
+    TurnChanges,
 };
 use crate::dictation::Listening;
 /// The composer's branch and context change slowly; re-read them at most this often.
@@ -32,6 +33,7 @@ pub struct ChatPage {
     pub model_picker: ComboboxState,
     pub reasoning_picker: ComboboxState,
     pub skills: SkillMenu,
+    pub queue_edit: Option<QueueEdit>,
     /// Images in the composer, read as they're attached.
     pub attached: Vec<Attached>,
     pub far_from_bottom: bool,
@@ -104,6 +106,7 @@ pub struct Existing {
     pub turn_changes: Vec<TurnChanges>,
     pub before_changes: Vec<TurnChanges>,
     pub run: Option<Run>,
+    pub queued: Vec<Queued>,
     pub error: Option<String>,
     /// Sent messages not in the transcript yet.
     pub pending: Vec<Pending>,
@@ -179,6 +182,13 @@ impl SkillList {
     }
 }
 
+/// The waiting prompt being edited, separate from a new composer's draft.
+pub struct QueueEdit {
+    pub id: String,
+    pub field: TextEdit,
+    pub saving: bool,
+}
+
 /// A message sent but not in the transcript yet.
 pub struct Pending {
     pub text: String,
@@ -206,6 +216,7 @@ impl ChatPage {
             model_picker: ComboboxState::default(),
             reasoning_picker: ComboboxState::default(),
             skills: SkillMenu::default(),
+            queue_edit: None,
             attached: Vec::new(),
             far_from_bottom: false,
             voice: Voice::Idle,
@@ -331,6 +342,7 @@ impl Existing {
             turn_changes: Vec::new(),
             before_changes: Vec::new(),
             run: None,
+            queued: Vec::new(),
             error: None,
             pending: Vec::new(),
             open_groups: HashMap::new(),

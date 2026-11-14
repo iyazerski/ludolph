@@ -92,11 +92,21 @@ pub struct Frame {
     pub reset: bool,
     pub chat: Chat,
     pub run: Option<Run>,
+    pub queued: Vec<Queued>,
     pub pending_input: Option<Dialog>,
     pub turn_changes: Vec<TurnChanges>,
     pub older_remaining: usize,
     pub ids: Vec<String>,
     pub messages: Vec<Message>,
+}
+
+/// An unsent prompt waiting for its own turn, without its image payloads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Queued {
+    pub id: String,
+    pub text: String,
+    pub images: usize,
+    pub error: Option<String>,
 }
 
 /// What a working chat's run waits on, besides the model.
@@ -453,6 +463,15 @@ pub struct Settings {
     pub open_at_login: bool,
     /// Whether the work under way shows open while the agent runs.
     pub expand_tools: bool,
+    pub send_behavior: SendBehavior,
+}
+
+/// What Send does while a chat is working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SendBehavior {
+    Queue,
+    Steer,
 }
 
 /// When the phone gets notifications.

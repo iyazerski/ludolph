@@ -5,6 +5,8 @@
 //! chat first needs one and stops after a few idle minutes (`docs/design.md`,
 //! "pi processes").
 
+mod queue;
+
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -27,12 +29,14 @@ use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone, Phones
 use crate::runtime::Runtime;
 use crate::seal;
 use crate::session::{Outcome, Spent, Summary};
-use crate::settings::Settings;
+use crate::settings::{SendBehavior, Settings};
+
 use crate::skills::{self, Skill};
 use crate::title::Titler;
 use crate::transcript::{self, Image, Page, Tail, ToolOutput, Transcripts, Window};
 use crate::turns::{Counts, Diff, Snapshot, Turns};
 use crate::watch::{Changes, Watcher};
+pub use queue::Queued;
 
 /// How long FSEvents waits for more changes to merge with one. pi writes a
 /// line per message, so this only merges bursts, like a compaction's.
@@ -153,6 +157,8 @@ struct Chat {
     stops: u64,
     /// The `timestamp`s of the user messages the chat's own pi reported.
     sent: VecDeque<i64>,
+    /// Unsent prompts that wait for the current run to finish.
+    waiting: VecDeque<queue::Waiting>,
     /// Another pi wrote a prompt to the session, so sending waits for a
     /// take-over.
     elsewhere: bool,
@@ -176,6 +182,7 @@ impl Default for Chat {
             process: None,
             stops: 0,
             sent: VecDeque::new(),
+            waiting: VecDeque::new(),
             elsewhere: false,
             named: None,
             titling: false,
@@ -297,6 +304,7 @@ pub struct View {
     pub question: Option<Question>,
     /// What the chat's run waits on, while one is going.
     pub run: Option<live::Run>,
+    pub queued: Vec<Queued>,
 }
 
 /// What a chat is doing.
@@ -337,7 +345,7 @@ pub enum AlertKind {
 pub enum Delivery {
     /// It started a run.
     Started,
-    /// It queued the message to steer the running one.
+    /// It held the message for a new turn, or gave it to pi to steer the current one.
     Queued,
     /// An extension command or input handler took it, and no run started.
     Handled,
@@ -517,7 +525,7 @@ impl Engine {
     ///
     /// Fails if there's no such chat, or its session file can't be read.
     pub async fn view(&self, id: &str, window: Window) -> Result<View> {
-        let (chat, path, messages, streaming, revision, question, run) = {
+        let (chat, path, messages, streaming, revision, question, run, queued) = {
             let state = self.state();
             let chat = state.chats.get(id);
             let info = match state.index.find(id) {
@@ -540,7 +548,10 @@ impl Engine {
             let streaming = live.and_then(|live| live.streaming().cloned());
             let run = live.and_then(Live::run);
             let revision = chat.map_or(0, |chat| *chat.changes.borrow());
-            (info, path, messages, streaming, revision, question, run)
+            let queued = Self::queued(chat);
+            (
+                info, path, messages, streaming, revision, question, run, queued,
+            )
         };
         let transcripts = self.0.transcripts.clone();
         let page = tokio::task::spawn_blocking(move || {
@@ -558,6 +569,7 @@ impl Engine {
             revision,
             question,
             run,
+            queued,
         })
     }
 
@@ -623,8 +635,7 @@ impl Engine {
         Ok(id)
     }
 
-    /// Send `text` to a chat, with images. It starts a run, or steers the
-    /// one that's going.
+    /// Send `text` to a chat, with images. While working, queue or steer as Settings chooses.
     ///
     /// # Errors
     ///
@@ -635,6 +646,27 @@ impl Engine {
         let stops = self.stops(id);
         let _ops = ops.lock().await;
         self.refuse_elsewhere(id)?;
+        let hold = self.settings().send_behavior == SendBehavior::Queue && {
+            let state = self.state();
+            state.chats.get(id).is_some_and(|chat| {
+                !chat.waiting.is_empty() || chat.process.as_ref().is_some_and(|r| r.live.working())
+            })
+        };
+        if hold {
+            self.enqueue(id, text, images)?;
+            return Ok(Delivery::Queued);
+        }
+        self.send_locked(id, text, images, stops).await
+    }
+
+    /// Send while holding the chat's command lock, bypassing the waiting queue.
+    async fn send_locked(
+        &self,
+        id: &str,
+        text: &str,
+        images: Vec<Image>,
+        stops: u64,
+    ) -> Result<Delivery> {
         let pi = self.process(id)?;
         // The last run's changes are taken before anything can change more.
         self.finish_run(id).await;
@@ -1367,6 +1399,8 @@ impl Engine {
             let chat = state.chats.get_mut(id);
             let running = chat.and_then(|chat| {
                 chat.stops += 1;
+                chat.waiting.clear();
+                chat.changed();
                 chat.process.as_mut()
             });
             match running {
@@ -1579,11 +1613,13 @@ impl Engine {
             Event::AgentSettled { aborted } => {
                 if !aborted {
                     let failed = running.live.failure().is_some();
-                    alert = Some(if failed {
-                        AlertKind::Failed
-                    } else {
-                        AlertKind::Finished
-                    });
+                    if failed || chat.waiting.is_empty() {
+                        alert = Some(if failed {
+                            AlertKind::Failed
+                        } else {
+                            AlertKind::Finished
+                        });
+                    }
                 }
                 runtime.set_running(id, false)?;
                 if let Some(run) = chat.run.as_mut() {
@@ -1666,6 +1702,11 @@ impl Engine {
         }
         if settled {
             self.save_index()?;
+            if matches!(event, Event::AgentSettled { aborted: false })
+                && self.live_of(id, pi, |live| live.failure().is_none()) == Some(true)
+            {
+                self.queue_soon(id);
+            }
         }
         if list_changed {
             self.changed();

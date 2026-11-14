@@ -127,7 +127,7 @@ def answer(text, stop, tokens):
                       "cost": {"total": tokens / 4000}}}
 
 
-def spent():
+def spent() -> tuple[dict[str, int], float]:
     """The session's spent tokens and cost, summed over its file like pi's
     getSessionStats."""
     tokens, cost = 0, 0.0
@@ -248,6 +248,7 @@ def ask(briefly):
     emit({"type": "extension_ui_request", "id": "n1", "method": "notify", "message": "hi"})
     emit(request)
     picked = "nothing"
+    steered = []
     if briefly:
         time.sleep(0.6)
     else:
@@ -256,7 +257,16 @@ def ask(briefly):
             if command["type"] == "extension_ui_response":
                 picked = "cancelled" if command.get("cancelled") else command["value"]
                 break
-            respond(command)
+            if control(command):
+                continue
+            if command["type"] == "prompt":
+                steered.append(command)
+                respond(command, {"disposition": "queued"})
+                emit({"type": "queue_update", "steering": [c["message"] for c in steered], "followUp": []})
+            else:
+                if command["type"] == "clear_queue":
+                    steered.clear()
+                respond(command)
         else:
             # Input ended: pi aborts the run on its way out, as for a stop.
             aborted = {"role": "assistant", "content": [], "stopReason": "aborted", "timestamp": now()}
@@ -264,6 +274,10 @@ def ask(briefly):
             write(aborted)
             emit({"type": "agent_settled", "aborted": True})
             sys.exit(0)
+    for queued in steered:
+        message = {"role": "user", "content": queued["message"], "timestamp": now()}
+        write(message)
+        emit({"type": "message_end", "message": message})
     done = {"role": "assistant", "content": [{"type": "text", "text": f"You picked {picked}."}],
             "stopReason": "stop", "timestamp": now()}
     emit({"type": "message_end", "message": done})
@@ -271,8 +285,50 @@ def ask(briefly):
     emit({"type": "agent_settled", "aborted": False})
 
 
-def main():
+def control(command: dict[str, object]) -> bool:
+    """Handle RPC metadata and settings even while an extension waits for input."""
     global NAME, MODEL
+    kind = command["type"]
+    if kind == "get_state":
+        # pi accepts CRLF too.
+        emit({"id": command["id"], "type": "response", "command": kind, "success": True,
+              "data": {"args": sys.argv[1:], "cwd": os.getcwd(), "sessionId": SESSION_ID,
+                       "sessionFile": SESSION_FILE, "sessionName": NAME,
+                       "model": MODEL, "thinkingLevel": THINKING}}, end="\r\n")
+    elif kind == "get_commands":
+        respond(command, {"commands": [
+            {"name": "skill:review", "description": "Review the diff", "source": "skill"},
+            {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt"},
+        ]})
+    elif kind == "get_available_models":
+        respond(command, {"models": MODELS})
+    elif kind == "set_model":
+        found = [m for m in MODELS if (m["provider"], m["id"]) == (command["provider"], command["modelId"])]
+        if not found:
+            emit({"id": command["id"], "type": "response", "command": kind, "success": False,
+                  "error": f"Model not found: {command['provider']}/{command['modelId']}"})
+            return True
+        MODEL = found[0]
+        record({"provider": MODEL["provider"], "modelId": MODEL["id"]}, "model_change")
+        set_thinking(THINKING)
+        respond(command, MODEL)
+    elif kind == "set_thinking_level":
+        set_thinking(command["level"])
+        respond(command)
+    elif kind == "get_session_stats":
+        usage = {"tokens": TOKENS, "contextWindow": MODEL["contextWindow"]}
+        tokens, cost = spent()
+        respond(command, {"sessionId": SESSION_ID, "contextUsage": usage, "tokens": tokens, "cost": cost})
+    elif kind == "set_session_name":
+        NAME = command["name"]
+        write({"name": NAME}, "session_info")
+        respond(command)
+    else:
+        return False
+    return True
+
+
+def main():
     if os.environ.get("FAKE_PI_STUBBORN"):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     log("start " + " ".join(sys.argv[1:]))
@@ -280,41 +336,9 @@ def main():
     for line in sys.stdin:
         command = json.loads(line)
         kind = command["type"]
-        if kind == "get_state":
-            # pi accepts CRLF too.
-            emit({"id": command["id"], "type": "response", "command": kind, "success": True,
-                  "data": {"args": sys.argv[1:], "cwd": os.getcwd(), "sessionId": SESSION_ID,
-                           "sessionFile": SESSION_FILE, "sessionName": NAME,
-                           "model": MODEL, "thinkingLevel": THINKING}}, end="\r\n")
-        elif kind == "get_commands":
-            respond(command, {"commands": [
-                {"name": "skill:review", "description": "Review the diff", "source": "skill"},
-                {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt"},
-            ]})
-        elif kind == "get_available_models":
-            respond(command, {"models": MODELS})
-        elif kind == "set_model":
-            found = [m for m in MODELS if (m["provider"], m["id"]) == (command["provider"], command["modelId"])]
-            if not found:
-                emit({"id": command["id"], "type": "response", "command": kind, "success": False,
-                      "error": f"Model not found: {command['provider']}/{command['modelId']}"})
-                continue
-            MODEL = found[0]
-            record({"provider": MODEL["provider"], "modelId": MODEL["id"]}, "model_change")
-            set_thinking(THINKING)
-            respond(command, MODEL)
-        elif kind == "set_thinking_level":
-            set_thinking(command["level"])
-            respond(command)
-        elif kind == "get_session_stats":
-            usage = {"tokens": TOKENS, "contextWindow": MODEL["contextWindow"]}
-            tokens, cost = spent()
-            respond(command, {"sessionId": SESSION_ID, "contextUsage": usage, "tokens": tokens, "cost": cost})
-        elif kind == "set_session_name":
-            NAME = command["name"]
-            write({"name": NAME}, "session_info")
-            respond(command)
-        elif kind == "prompt":
+        if control(command):
+            continue
+        if kind == "prompt":
             prompt(command)
         elif kind == "spawn_child":
             respond(command, {"pid": subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL).pid})

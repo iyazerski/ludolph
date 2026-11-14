@@ -300,6 +300,179 @@ async fn an_extensions_dialog_waits_for_an_answer() {
     engine.shutdown().await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    assert_eq!(
+        tool(&engine, "get_settings", json!({})).await.unwrap()["sendBehavior"],
+        "queue"
+    );
+    let id = engine.create(dir.path()).await.unwrap();
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    let image = ludolph_engine::transcript::Image {
+        mime_type: "image/png".into(),
+        data: "aGk=".into(),
+    };
+    assert_eq!(
+        tool(
+            &engine,
+            "send_message",
+            json!({"chat": id, "text": "first", "images": [image]})
+        )
+        .await
+        .unwrap()["delivery"],
+        "queued"
+    );
+    engine.send(&id, "remove this", Vec::new()).await.unwrap();
+    engine.send(&id, "last", Vec::new()).await.unwrap();
+    let mut feed = ludolph_engine::feed::Feed::new(engine.clone(), id.clone(), true);
+    let frame = feed.frame().await.unwrap();
+    let queued = frame["queued"].as_array().unwrap();
+    assert_eq!(queued.len(), 3);
+    assert_eq!(queued[0]["images"], 1);
+    let first = queued[0]["id"].clone();
+    let removed = queued[1]["id"].clone();
+    tool(
+        &engine,
+        "edit_queued_message",
+        json!({"chat": id, "id": first, "text": "revised"}),
+    )
+    .await
+    .unwrap();
+    tool(
+        &engine,
+        "delete_queued_message",
+        json!({"chat": id, "id": removed}),
+    )
+    .await
+    .unwrap();
+    let view = engine.view(&id, Window::Latest(40)).await.unwrap();
+    assert_eq!(
+        view.queued
+            .iter()
+            .map(|q| q.text.as_str())
+            .collect::<Vec<_>>(),
+        ["revised", "last"]
+    );
+    assert_eq!(
+        view.page
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .count(),
+        1,
+        "waiting prompts aren't transcript messages"
+    );
+    assert!(
+        tool(
+            &engine,
+            "delete_queued_message",
+            json!({"chat": id, "id": removed})
+        )
+        .await
+        .is_err()
+    );
+    tool(
+        &engine,
+        "respond_to_input",
+        json!({"chat": id, "id": "d1", "value": "blue"}),
+    )
+    .await
+    .unwrap();
+    until(&engine, |c| {
+        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("last")
+    })
+    .await;
+    let view = engine.view(&id, Window::Latest(40)).await.unwrap();
+    assert!(view.queued.is_empty());
+    let prompts: Vec<_> = view
+        .page
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .map(|m| {
+            m.parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+        })
+        .collect();
+    assert_eq!(prompts, ["ask", "revised", "last"]);
+    let revised = view
+        .page
+        .messages
+        .iter()
+        .find(|m| {
+            m.role == Role::User
+                && matches!(m.parts.first(), Some(Part::Text { text }) if text == "revised")
+        })
+        .unwrap();
+    assert_eq!(engine.image(&id, &revised.id, 0).await.unwrap(), image);
+    assert!(
+        tool(
+            &engine,
+            "edit_queued_message",
+            json!({"chat": id, "id": first, "text": "too late"})
+        )
+        .await
+        .is_err()
+    );
+
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    engine.send(&id, "never send", Vec::new()).await.unwrap();
+    engine.interrupt(&id).await.unwrap();
+    until(&engine, |c| c[0].status == Status::Idle).await;
+    assert!(
+        engine
+            .view(&id, Window::Latest(40))
+            .await
+            .unwrap()
+            .queued
+            .is_empty()
+    );
+
+    tool(&engine, "set_settings", json!({"sendBehavior": "steer"}))
+        .await
+        .unwrap();
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    assert_eq!(
+        engine
+            .send(&id, "change direction", Vec::new())
+            .await
+            .unwrap(),
+        Delivery::Queued
+    );
+    let mut changes = engine.subscribe_chat(&id).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let view = engine.view(&id, Window::Latest(40)).await.unwrap();
+            if view
+                .run
+                .as_ref()
+                .is_some_and(|run| run.steering == ["change direction"])
+            {
+                assert!(
+                    view.queued.is_empty(),
+                    "steering goes to pi, not the waiting queue"
+                );
+                break;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    engine.interrupt(&id).await.unwrap();
+    engine.shutdown().await.unwrap();
+}
+
 /// The ids `list_chats` returns with `args`, newest first.
 async fn listed(engine: &Engine, args: Value) -> Vec<String> {
     let chats = tool(engine, "list_chats", args).await.unwrap();
@@ -548,7 +721,7 @@ async fn chats_are_titled_as_soon_as_they_start() {
         format!("{refused:#}").contains("no model fake/none"),
         "{refused:#}"
     );
-    let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true});
+    let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true, "sendBehavior": "queue"});
     let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
     assert_eq!(saved, picked);
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
