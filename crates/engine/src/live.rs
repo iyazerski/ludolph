@@ -5,13 +5,14 @@
 //! messages until the file has them, matched by role and timestamp
 //! (`docs/design.md`, "Live view and the file").
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::pi::Event;
+use crate::transcript::{self, NestedCall, ToolState};
 
 /// What pi has done since the run started, and whether it's still going.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -30,6 +31,8 @@ pub struct Live {
     /// Tools that are running, by tool call id: their name, arguments and
     /// latest partial result.
     tools: BTreeMap<String, Value>,
+    /// Small child rows retained until the parent result is written.
+    calls: HashMap<String, Vec<NestedCall>>,
     steering: Vec<String>,
     follow_up: Vec<String>,
     /// The automatic retry pi is waiting on, if any.
@@ -136,6 +139,11 @@ impl Live {
         &self.tools
     }
 
+    /// The nested calls of running tools, without their output.
+    pub fn calls(&self) -> &HashMap<String, Vec<NestedCall>> {
+        &self.calls
+    }
+
     /// What the run is waiting on, while one is going.
     pub fn run(&self) -> Option<Run> {
         self.working().then(|| Run {
@@ -162,6 +170,7 @@ impl Live {
                 self.settled += 1;
                 self.streaming = None;
                 self.tools.clear();
+                self.calls.clear();
                 self.retry = None;
                 self.compacting = None;
                 // pi sends the queue again when it changes, but not when an
@@ -202,13 +211,25 @@ impl Live {
                         _ => {}
                     }
                 }
+                if message["role"] == "toolResult"
+                    && let Some(id) = message["toolCallId"].as_str()
+                {
+                    self.calls.remove(id);
+                }
                 self.messages.push(slim(message));
             }
             Event::ToolExecutionStart {
                 tool_call_id,
                 tool_name,
                 args,
+                parent_tool_call_id,
             } => {
+                if let Some(parent) = parent_tool_call_id {
+                    self.calls
+                        .entry(parent.clone())
+                        .or_default()
+                        .push(NestedCall::running(tool_call_id, tool_name, args));
+                }
                 self.tools.insert(
                     tool_call_id.clone(),
                     json!({"toolName": tool_name, "args": args, "partialResult": null}),
@@ -222,8 +243,46 @@ impl Live {
                     return false;
                 };
                 tool["partialResult"] = partial_result.clone();
+                let calls = if tool["toolName"] == "codemode" {
+                    transcript::call_progress(&partial_result["details"])
+                } else {
+                    Vec::new()
+                };
+                if !calls.is_empty() {
+                    transcript::merge_calls(
+                        self.calls.entry(tool_call_id.clone()).or_default(),
+                        calls,
+                    );
+                }
             }
-            Event::ToolExecutionEnd { tool_call_id, .. } => {
+            Event::ToolExecutionEnd {
+                tool_call_id,
+                parent_tool_call_id,
+                is_error,
+                duration_ms,
+                result,
+            } => {
+                if let Some(parent) = parent_tool_call_id
+                    && let Some(call) = self
+                        .calls
+                        .get_mut(parent)
+                        .and_then(|calls| calls.iter_mut().find(|call| call.id == *tool_call_id))
+                {
+                    call.state = if *is_error {
+                        ToolState::Failed
+                    } else {
+                        ToolState::Done
+                    };
+                    call.duration_ms = *duration_ms;
+                    if *is_error {
+                        call.error = result["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|block| block["text"].as_str())
+                            .find_map(|text| crate::text::one_line(text, 500));
+                    }
+                }
                 return self.tools.remove(tool_call_id).is_some();
             }
             Event::QueueUpdate {

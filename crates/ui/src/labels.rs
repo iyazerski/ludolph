@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::data::{Spent, ToolState};
+use crate::data::{NestedCall, Spent, ToolState};
 
 /// Compact age, like the desktop sidebar: now, 34m, 4h, 2d, 3w.
 pub fn ago(when: DateTime<Utc>, now: DateTime<Utc>) -> String {
@@ -79,13 +79,26 @@ pub fn tone_index(path: &str) -> usize {
 }
 
 /// One tool call, as a message's tool part has it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ToolCall<'a> {
     pub id: &'a str,
     /// pi's name for the tool.
     pub name: &'a str,
     pub subject: &'a str,
     pub state: ToolState,
+    pub calls: &'a [NestedCall],
+}
+
+impl<'a> From<&'a NestedCall> for ToolCall<'a> {
+    fn from(call: &'a NestedCall) -> Self {
+        Self {
+            id: &call.id,
+            name: &call.name,
+            subject: call.subject.as_deref().unwrap_or_default(),
+            state: call.state,
+            calls: &[],
+        }
+    }
 }
 
 impl ToolCall<'_> {
@@ -135,10 +148,25 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 
 /// A tool group's one-line summary, as the phone words it.
 pub fn tool_summary(tools: &[ToolCall]) -> String {
+    let scripts = tools.iter().filter(|tool| tool.name == "codemode").count();
+    let tools: Vec<_> = tools
+        .iter()
+        .flat_map(|tool| {
+            std::iter::once(*tool)
+                .filter(|tool| tool.calls.is_empty() && tool.name != "codemode")
+                .chain(tool.calls.iter().map(ToolCall::from))
+        })
+        .collect();
+    if tools.is_empty() && scripts > 0 {
+        return format!("Ran {}", plural(scripts, "script", "scripts"));
+    }
     let mut edited: Vec<&str> = Vec::new();
     let (mut commands, mut reads, mut searches, mut fetches, mut todos, mut other) =
         (0, 0, 0, 0, 0, 0);
-    for t in tools {
+    for t in &tools {
+        if t.state == ToolState::Cancelled {
+            continue;
+        }
         match t.name {
             "bash" => commands += 1,
             "write" | "edit" => {
@@ -158,6 +186,10 @@ pub fn tool_summary(tools: &[ToolCall]) -> String {
             _ => other += 1,
         }
     }
+    let cancelled = tools
+        .iter()
+        .filter(|t| t.state == ToolState::Cancelled)
+        .count();
     let failed = tools
         .iter()
         .filter(|t| t.state == ToolState::Failed)
@@ -181,6 +213,9 @@ pub fn tool_summary(tools: &[ToolCall]) -> String {
     }
     if failed > 0 {
         parts.push(format!("{failed} failed"));
+    }
+    if cancelled > 0 {
+        parts.push(format!("{cancelled} cancelled"));
     }
     let s = parts.join(" · ");
     let mut chars = s.chars();
@@ -215,6 +250,7 @@ mod tests {
             name,
             subject,
             state,
+            calls: &[],
         };
         let tools = [
             call("bash", "ls", ToolState::Done),
@@ -226,7 +262,35 @@ mod tests {
         ];
         assert_eq!(
             tool_summary(&tools),
-            "Ran 2 commands · edited 1 file · read 1 file · called 1 tool · 1 failed"
+            "Ran 2 commands · edited 1 file · read 1 file"
+        );
+        let children = [
+            NestedCall {
+                id: "c/1".into(),
+                name: "bash".into(),
+                subject: Some("cargo test".into()),
+                state: ToolState::Done,
+                duration_ms: None,
+                error: None,
+            },
+            NestedCall {
+                id: "c/2".into(),
+                name: "mcp__check".into(),
+                subject: None,
+                state: ToolState::Failed,
+                duration_ms: None,
+                error: Some("denied".into()),
+            },
+        ];
+        let mut wrapper = call("codemode", "", ToolState::Failed);
+        wrapper.calls = &children;
+        assert_eq!(
+            tool_summary(&[wrapper]),
+            "Ran 1 command · called 1 tool · 1 failed"
+        );
+        assert_eq!(
+            tool_summary(&[call("codemode", "", ToolState::Done)]),
+            "Ran 1 script"
         );
         assert_eq!(tools[5].arg(), "codemode");
         assert_eq!(call("mcp", "x", ToolState::Done).arg(), "mcp · x");

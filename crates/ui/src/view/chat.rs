@@ -520,11 +520,13 @@ fn pieces(parts: &[Part]) -> Vec<Piece<'_>> {
                 name,
                 subject,
                 state,
+                calls,
             } => Step::Tool(ToolCall {
                 id,
                 name,
                 subject: subject.as_deref().unwrap_or_default(),
                 state: *state,
+                calls,
             }),
             Part::Thinking { text } => Step::Thought(i, text),
             // The transcript shows a reply's images nowhere, so they don't split the work.
@@ -839,7 +841,7 @@ fn tool_group(
     if open {
         let last = steps.len().saturating_sub(1);
         let rail = steps.iter().enumerate().map(|(n, step)| match step {
-            Step::Tool(tool) => tool_row(k, tool, n == last),
+            Step::Tool(tool) => tool_step(page, k, tool, n == last),
             Step::Thought(i, text) => {
                 let key = format!("{key}:{i}");
                 let open = is_open(page, &key, false);
@@ -849,6 +851,143 @@ fn tool_group(
         group = group.child(col().w_full().ml(RAIL_X).children(rail));
     }
     group
+}
+
+/// Nest actual calls under their wrapper, expanded independently of the outer work.
+fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
+    if tool.calls.is_empty() && tool.name != "codemode" {
+        return tool_row(k, tool, last);
+    }
+    let key = format!("{}#calls", tool.id);
+    let open = is_open(page, &key, true);
+    let tint = if tool.state == ToolState::Failed {
+        tones(k).failed
+    } else {
+        k.c.text_muted
+    };
+    let lead = if tool.state == ToolState::Running {
+        busy(12.0, k)
+    } else {
+        icon(icons::tool(tool.name), 14.0).color(tint)
+    };
+    let subject = row().center_y().gap(6.0).child(chevron(k, open)).child(
+        text(format!("{} calls", tool.calls.len()))
+            .font(rail_text(k))
+            .color(tint),
+    );
+    let title = if tool.name == "codemode" {
+        "Codemode"
+    } else {
+        tool.name
+    };
+    let head = k
+        .interactive(rail_row(k, last && !open, lead, title, tint, subject))
+        .on_press(move |s: &mut State| toggle_group(s, &key, open));
+    let mut out = col().w_full().child(head);
+    if open {
+        let mut children = col().w_full().pl(RAIL_TEXT_X).border_sides(
+            [0.0, 0.0, 0.0, if last { 0.0 } else { 1.0 }],
+            k.c.border_muted,
+        );
+        for call in tool.calls {
+            let mut line = row().w_full().center_y().child(
+                tool_row(k, &ToolCall::from(call), false)
+                    .min_w(0.0)
+                    .grow(1.0),
+            );
+            if let Some(ms) = call.duration_ms {
+                line = line.child(
+                    text(format!("{:.2}s", ms / 1000.0))
+                        .font(rail_text(k))
+                        .color(k.c.text_faint)
+                        .pr(8.0),
+                );
+            }
+            children = children.child(line);
+            let detail = call.error.clone().or_else(|| {
+                (call.state == ToolState::Cancelled).then(|| "Cancelled or unfinished".to_owned())
+            });
+            if let Some(detail) = detail {
+                children = children.child(
+                    text(detail)
+                        .font(rail_text(k))
+                        .color(if call.error.is_some() {
+                            tones(k).failed
+                        } else {
+                            k.c.text_faint
+                        })
+                        .wrap()
+                        .selectable(true)
+                        .pl(RAIL_TEXT_X)
+                        .border_sides([0.0, 0.0, 0.0, 1.0], k.c.border_muted),
+                );
+            }
+        }
+        let call = tool.id.to_owned();
+        let opened = page.tool_outputs.contains_key(tool.id);
+        let label = if tool.name == "codemode" {
+            "Script & combined output"
+        } else {
+            "Arguments & output"
+        };
+        let details = rail_row(k, true, chevron(k, opened), label, k.c.text_faint, el());
+        children = children.child(
+            k.interactive(details)
+                .on_press(move |s: &mut State| s.toggle_tool_output(&call)),
+        );
+        if let Some(output) = page.tool_outputs.get(tool.id) {
+            let body = match output {
+                None => busy(12.0, k),
+                Some(Err(error)) => text(error.clone())
+                    .font(rail_text(k))
+                    .color(tones(k).failed)
+                    .wrap(),
+                Some(Ok(output)) => {
+                    let args = output.args["code"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            serde_json::to_string_pretty(&output.args).unwrap_or_default()
+                        });
+                    let mut body = col()
+                        .w_full()
+                        .gap(8.0)
+                        .child(
+                            text(args)
+                                .font(rail_text(k))
+                                .color(k.c.text_faint)
+                                .wrap()
+                                .selectable(true),
+                        )
+                        .child(
+                            text(output.text.clone())
+                                .font(rail_text(k))
+                                .color(k.c.text_muted)
+                                .wrap()
+                                .selectable(true),
+                        );
+                    if output.truncated {
+                        body = body.child(
+                            text("Output truncated")
+                                .font(rail_text(k))
+                                .color(k.c.text_faint),
+                        );
+                    }
+                    if tool.state == ToolState::Running {
+                        body = body.child(
+                            text("Live snapshot. Close and reopen to refresh.")
+                                .font(rail_text(k))
+                                .color(k.c.text_faint),
+                        );
+                    }
+                    body
+                }
+            };
+            children = children.child(col().w_full().pl(RAIL_TEXT_X).pb(8.0).child(body));
+        }
+        out = out.child(children);
+    }
+    out
 }
 
 /// Where the rail's trunk runs, from the group's left edge.
@@ -870,7 +1009,9 @@ fn tool_row(k: &Kit, tool: &ToolCall, last: bool) -> El {
     };
     let lead = match tool.state {
         ToolState::Running => busy(12.0, k),
-        _ => icon(icons::tool(tool.name), 14.0).color(tint),
+        ToolState::Done => icon(icons::tool(tool.name), 14.0).color(tones(k).done),
+        ToolState::Cancelled => icon(&icons::STOP, 14.0).color(k.c.text_faint),
+        ToolState::Failed => icon(icons::tool(tool.name), 14.0).color(tint),
     };
     let subject = if tool.on_file() {
         file_badge(k, tool.subject, failed)

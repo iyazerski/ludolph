@@ -157,6 +157,7 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
                         name: "bash".into(),
                         subject: Some("ls".into()),
                         state: ToolState::Done,
+                        calls: Vec::new(),
                     },
                     text("Done.")
                 ]

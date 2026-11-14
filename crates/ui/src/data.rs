@@ -192,6 +192,7 @@ pub enum Part {
         /// What it works on, like a command or a path.
         subject: Option<String>,
         state: ToolState,
+        calls: Vec<NestedCall>,
     },
     /// The message's `index`th image, which `chat_image` loads.
     Image {
@@ -212,6 +213,26 @@ pub enum ToolState {
     Running,
     Done,
     Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestedCall {
+    pub id: String,
+    pub name: String,
+    pub subject: Option<String>,
+    pub state: ToolState,
+    pub duration_ms: Option<f64>,
+    pub error: Option<String>,
+}
+
+/// A script and its combined output, loaded only when opened.
+#[derive(Deserialize)]
+pub struct ToolOutput {
+    pub args: serde_json::Value,
+    pub text: String,
+    pub truncated: bool,
 }
 
 impl Message {
@@ -484,6 +505,7 @@ mod tests {
             name: "bash".into(),
             subject: Some("ls".into()),
             state: ToolState::Done,
+            calls: Vec::new(),
         };
         let thinking = || Part::Thinking { text: "hm".into() };
         let error = || Part::Error {

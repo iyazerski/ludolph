@@ -560,6 +560,7 @@ impl Engine {
             queued,
             latest_turn,
             turns_revision,
+            calls,
         ) = {
             let state = self.state();
             let chat = state.chats.get(id);
@@ -597,6 +598,7 @@ impl Engine {
                 queued,
                 chat.and_then(|c| c.latest_turn),
                 chat.map_or(0, |c| c.turns_revision),
+                live.map(|live| live.calls().clone()).unwrap_or_default(),
             )
         };
         let transcripts = self.0.transcripts.clone();
@@ -604,6 +606,7 @@ impl Engine {
             let tail = Tail {
                 messages: &messages,
                 streaming: streaming.as_ref(),
+                calls: Some(&calls),
             };
             let mut transcripts = transcripts.lock().expect("lock poisoned");
             transcripts.page(path.as_deref().filter(|p| p.exists()), tail, &window)

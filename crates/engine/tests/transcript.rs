@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::path::Path;
 
+use ludolph_engine::live::Live;
+use ludolph_engine::pi::Event;
 use ludolph_engine::transcript::{
     Image, Message, MessageStatus, Page, Part, Role, Tail, ToolState, Transcripts, Window,
 };
@@ -46,6 +48,7 @@ fn tool(id: &str, name: &str, subject: &str, state: ToolState) -> Part {
         name: name.into(),
         subject: Some(subject.into()),
         state,
+        calls: Vec::new(),
     }
 }
 
@@ -55,6 +58,125 @@ fn shown(page: &Page) -> Vec<(Role, MessageStatus, Vec<Part>)> {
         .iter()
         .map(|m: &Message| (m.role, m.status, m.parts.clone()))
         .collect()
+}
+
+#[test]
+fn nested_calls_show_live_and_reopen_without_losing_their_own_outcomes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    std::fs::write(&path, format!("{HEADER}\n")).unwrap();
+    let call = json!({"type": "toolCall", "id": "c1", "name": "codemode", "arguments": {"code": "await Promise.all([tools.bash({command: 'cargo test'}), tools.mcp__check({})])"}});
+    append(
+        &path,
+        &[
+            message("u1", None, user("check", 1)),
+            message(
+                "a1",
+                Some("u1"),
+                json!({"role": "assistant", "content": [call], "timestamp": 2, "stopReason": "toolUse"}),
+            ),
+        ],
+    );
+    let mut transcripts = Transcripts::default();
+    let original = transcripts
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
+    let mut live = Live::new();
+    for event in [
+        json!({"type": "tool_execution_start", "toolCallId": "c1", "toolName": "codemode", "args": {}}),
+        json!({"type": "tool_execution_update", "toolCallId": "c1", "partialResult": {"details": {"calls": [
+            {"id": "c1/?", "name": "bash", "args": "{truncated", "status": "running"},
+            {"id": "c1/?", "name": "mcp__check", "args": "{}", "status": "running"}
+        ]}}}),
+        json!({"type": "tool_execution_start", "toolCallId": "c1/1", "parentToolCallId": "c1", "toolName": "bash", "args": {"command": "cargo test"}}),
+        json!({"type": "tool_execution_start", "toolCallId": "c1/2", "parentToolCallId": "c1", "toolName": "mcp__check", "args": {"query": "diagnostics"}}),
+        json!({"type": "tool_execution_end", "toolCallId": "c1/2", "parentToolCallId": "c1", "isError": true, "durationMs": 4, "result": {"content": [{"type": "text", "text": "permission denied"}]}}),
+    ] {
+        live.apply(&serde_json::from_value::<Event>(event).unwrap());
+    }
+    let running = transcripts
+        .page(
+            Some(&path),
+            Tail {
+                calls: Some(live.calls()),
+                ..Tail::default()
+            },
+            &Window::Latest(40),
+        )
+        .unwrap();
+    let Part::Tool { calls, state, .. } = &running.messages[1].parts[0] else {
+        panic!("expected a tool")
+    };
+    assert_eq!(*state, ToolState::Running);
+    assert_eq!(
+        calls.len(),
+        2,
+        "provisional ids must not duplicate actual calls"
+    );
+    assert_eq!(calls[0].state, ToolState::Running);
+    assert_eq!(calls[0].subject.as_deref(), Some("cargo test"));
+    assert_eq!(calls[1].state, ToolState::Failed);
+    assert_eq!(calls[1].error.as_deref(), Some("permission denied"));
+    assert_eq!(
+        transcripts
+            .page(Some(&path), Tail::default(), &Window::Latest(40))
+            .unwrap(),
+        original,
+        "live overlays must not alter the cached page"
+    );
+
+    let result = json!({
+        "role": "toolResult", "toolName": "codemode", "toolCallId": "c1", "timestamp": 3,
+        "isError": true, "content": [{"type": "text", "text": "Script failed"}],
+        "nestedCalls": {"calls": [
+            {"id": "c1/1", "name": "bash", "arguments": {"command": "cargo test"}, "status": "ok", "durationMs": 10},
+            {"id": "c1/2", "name": "mcp__check", "arguments": {"query": "diagnostics"}, "status": "error", "error": "permission denied"},
+            {"id": "c1/3", "name": "read", "arguments": {"path": "src/lib.rs"}, "status": "unfinished"}
+        ]},
+        "details": {"calls": [
+            {"id": "c1/1", "name": "bash", "args": "{truncated", "status": "ok"},
+            {"id": "c1/2", "name": "mcp__check", "args": "{}", "status": "error"},
+            {"id": "c1/model1", "name": "models.classify", "args": "{truncated", "status": "ok", "durationMs": 20},
+            {"id": "c1/3", "name": "read", "args": "{}", "status": "cancelled"}
+        ]}
+    });
+    live.apply(&Event::MessageEnd {
+        message: result.clone(),
+    });
+    assert!(live.calls().is_empty(), "the result replaces live metadata");
+    append(&path, &[message("r1", Some("a1"), result)]);
+    let saved = transcripts
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
+    let Part::Tool { calls, state, .. } = &saved.messages[1].parts[0] else {
+        panic!("expected a tool")
+    };
+    assert_eq!(*state, ToolState::Failed);
+    assert_eq!(
+        calls.iter().map(|call| call.state).collect::<Vec<_>>(),
+        [
+            ToolState::Done,
+            ToolState::Failed,
+            ToolState::Done,
+            ToolState::Cancelled
+        ]
+    );
+    assert_eq!(
+        calls[0].subject.as_deref(),
+        Some("cargo test"),
+        "prefer recorded arguments over truncated display JSON"
+    );
+    assert_eq!(calls[1].error.as_deref(), Some("permission denied"));
+    assert_eq!(calls[3].subject.as_deref(), Some("src/lib.rs"));
+    assert_eq!(
+        calls[2].name, "models.classify",
+        "preserve helper launch order"
+    );
+    assert_eq!(calls[2].subject.as_deref(), Some("{truncated"));
+    let reopened = Transcripts::default()
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
+    assert_eq!(saved, reopened);
 }
 
 #[test]
@@ -88,7 +210,7 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
             message(
                 "r1",
                 Some("a1"),
-                json!({"role": "toolResult", "toolCallId": "c1", "toolName": "bash", "isError": true, "content": [{"type": "text", "text": "1 failed"}], "timestamp": 4}),
+                json!({"role": "toolResult", "toolCallId": "c1", "toolName": "bash", "isError": true, "details": [{"calls": "not nested metadata"}], "content": [{"type": "text", "text": "1 failed"}], "timestamp": 4}),
             ),
             message(
                 "r2",
@@ -306,6 +428,7 @@ fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
     let tail = Tail {
         messages: &messages,
         streaming: Some(&streaming),
+        ..Tail::default()
     };
 
     let mut transcripts = Transcripts::default();

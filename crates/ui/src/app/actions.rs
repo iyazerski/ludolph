@@ -247,6 +247,32 @@ impl State {
         );
     }
 
+    /// Open a script's details on demand, or drop its output when closing it.
+    pub fn toggle_tool_output(&mut self, call: &str) {
+        let Some(page) = self.chat_mut() else { return };
+        let nav = page.nav;
+        let Some(chat) = page.existing_mut() else {
+            return;
+        };
+        if chat.tool_outputs.remove(call).is_some() {
+            return;
+        }
+        chat.tool_outputs.insert(call.to_owned(), None);
+        let id = chat.id.clone();
+        let call = call.to_owned();
+        self.api.call(
+            "tool_output",
+            json!({"chat": id, "call": call}),
+            move |s, result: Result<crate::data::ToolOutput, String>, _| {
+                if let Some(chat) = s.existing_at(nav)
+                    && let Some(output) = chat.tool_outputs.get_mut(&call)
+                {
+                    *output = Some(result);
+                }
+            },
+        );
+    }
+
     /// Copy message `id`'s answer as Markdown, and mark its button copied.
     pub fn copy_answer(&mut self, id: &str, tx: &mut Tx) {
         let Some(chat) = self.chat_mut().and_then(|p| p.existing_mut()) else {
