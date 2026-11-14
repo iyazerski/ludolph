@@ -100,6 +100,9 @@ impl Hub {
         }
     }
 
+    /// Pass a phone's sealed call to `machine` and return its sealed reply.
+    /// The phone app retries a call that must run once on these errors' exact
+    /// wording (`RETRY` in `app.js`), since they leave its fate unknown.
     pub async fn call(&self, machine: &str, sealed: Sealed) -> Answer {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (calls, pending) = {

@@ -179,20 +179,24 @@ class ApiError extends Error {}
  * deadline it would hold up its poller for good. */
 const REQUEST_TIMEOUT = 40000;
 
+/** An error from the network or the relay, not from a Mac: the request may
+ * or may not have got through. */
+class LostError extends Error {}
+
 async function post(path, body = {}) {
   let res;
   try {
     res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(REQUEST_TIMEOUT) });
   } catch {
     setOnline(false);
-    throw new Error("Can't reach the relay");
+    throw new LostError("Can't reach the relay");
   }
   setOnline(true);
   // Null when the body didn't arrive whole, also when the deadline cut it off.
   const data = await res.json().catch(() => null);
   if (res.status === 401 && !path.startsWith("/auth/")) { showSignIn(); throw new ApiError("Sign in first"); }
   if (!res.ok) throw new ApiError(data?.error || `HTTP ${res.status}`);
-  if (data == null) throw new Error("Can't reach the relay");
+  if (data == null) throw new LostError("Can't reach the relay");
   return data;
 }
 /** This phone's links to its Macs, by machine id, as `Seal.links` keeps them. */
@@ -200,15 +204,57 @@ let links = new Map();
 async function loadLinks() { links = new Map((await Seal.links()).map(l => [l.machine, l])); }
 const NOT_LINKED = "This phone can't open this Mac's chats yet. On the Mac, open Ludolph's Settings, choose Link a phone, and scan the code.";
 
+/** Calls that must not run twice. Each gets an op id, and the Mac runs an op
+ * once however often it's asked, so a call the relay or the network gave up
+ * on is asked for again rather than reported as failed. */
+const ONCE = new Set(["send_message", "create_chat", "respond_to_input"]);
+/** How long to keep asking for a call that runs once. */
+const ONCE_PATIENCE = 3 * 60_000;
+/** What the relay says when a Mac isn't connected, so nothing reached it. */
+const NOT_CONNECTED = "this Mac is offline";
+/** The relay's answers that leave a call's fate unknown, or that a retry may fix. */
+const RETRY = new Set([NOT_CONNECTED, "this Mac went offline", "this Mac didn't answer in time", "this Mac is busy; try again"]);
+
 /** Run an engine tool on one Mac: sealed for it, and its answer opened. */
 async function call(machine, tool, args = {}) {
+  if (!ONCE.has(tool)) {
+    const reply = await callSealed(machine, { tool, args });
+    if (reply.pending) throw new ApiError("The Mac didn't answer in time");
+    return reply.ok;
+  }
+  const op = crypto.randomUUID();
+  const until = Date.now() + ONCE_PATIENCE;
+  for (let tries = 0, reached = false; ; tries++) {
+    try {
+      const reply = await callSealed(machine, { tool, args, op });
+      if (!reply.pending) return reply.ok;
+      reached = true;
+    } catch (e) {
+      // Retry only what may have reached the Mac, or might once it's back.
+      const never = !reached && e.message === NOT_CONNECTED;
+      if (!(e instanceof LostError) || never || Date.now() > until) throw e;
+    }
+    if (Date.now() > until) throw new ApiError("The Mac is still on it. Check the chat in a moment.");
+    await new Promise(r => setTimeout(r, Math.min(500 * 2 ** tries, 8000)));
+  }
+}
+
+/** Seal `call` for `machine`, send it, and return the Mac's opened reply:
+ * `{ok}` or `{pending}`. A Mac's error throws an `ApiError`, and the relay's
+ * or the network's a `LostError`. */
+async function callSealed(machine, call) {
   const link = links.get(machine);
   if (!link) throw new ApiError(NOT_LINKED);
-  const { data, nonce } = await Seal.seal(link.key, Seal.aad.call(), JSON.stringify({ tool, args }));
-  const { sealed } = await post(`/api/call/${encodeURIComponent(machine)}`, { phone: link.phone, data });
+  const { data, nonce } = await Seal.seal(link.key, Seal.aad.call(), JSON.stringify(call));
+  let sealed;
+  try {
+    ({ sealed } = await post(`/api/call/${encodeURIComponent(machine)}`, { phone: link.phone, data }));
+  } catch (e) {
+    throw RETRY.has(e.message) ? new LostError(e.message) : e;
+  }
   const reply = JSON.parse(await Seal.open(link.key, Seal.aad.reply(nonce), sealed));
   if ("error" in reply) throw new ApiError(reply.error);
-  return reply.ok;
+  return reply;
 }
 
 /** How to follow `chat` on `machine` for `eventStream`: each connection seals
