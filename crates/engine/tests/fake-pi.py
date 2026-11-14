@@ -123,7 +123,23 @@ def answer(text, stop, tokens):
     TOKENS = tokens
     return {"role": "assistant", "content": text, "stopReason": stop, "timestamp": now(),
             "provider": MODEL["provider"], "model": MODEL["id"],
-            "usage": {"input": tokens, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": tokens}}
+            "usage": {"input": tokens, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": tokens,
+                      "cost": {"total": tokens / 4000}}}
+
+
+def spent():
+    """The session's spent tokens and cost, summed over its file like pi's
+    getSessionStats."""
+    tokens, cost = 0, 0.0
+    if SESSION_FILE and os.path.exists(SESSION_FILE):
+        with open(SESSION_FILE) as f:
+            for line in f:
+                entry = json.loads(line)
+                usage = entry.get("usage") or (entry.get("message") or {}).get("usage")
+                if usage:
+                    tokens += usage["input"] + usage["output"] + usage["cacheRead"] + usage["cacheWrite"]
+                    cost += usage["cost"]["total"]
+    return {"total": tokens}, cost
 
 
 def write(message, kind="message"):
@@ -292,7 +308,8 @@ def main():
             respond(command)
         elif kind == "get_session_stats":
             usage = {"tokens": TOKENS, "contextWindow": MODEL["contextWindow"]}
-            respond(command, {"sessionId": SESSION_ID, "contextUsage": usage})
+            tokens, cost = spent()
+            respond(command, {"sessionId": SESSION_ID, "contextUsage": usage, "tokens": tokens, "cost": cost})
         elif kind == "set_session_name":
             NAME = command["name"]
             write({"name": NAME}, "session_info")

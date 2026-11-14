@@ -306,6 +306,8 @@ pub struct ComposerInfo {
     pub context_usage: Option<ContextUsage>,
     pub model: Option<String>,
     pub reasoning: Option<String>,
+    /// What the chat has spent; absent before it has one.
+    pub spent: Option<Spent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -313,6 +315,13 @@ pub struct ComposerInfo {
 pub enum Checkout {
     Local,
     Worktree,
+}
+
+/// A chat's spent tokens, and their cost in US dollars.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Spent {
+    pub tokens: u64,
+    pub cost: f64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

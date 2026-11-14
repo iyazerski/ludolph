@@ -58,7 +58,27 @@ pub struct Summary {
     /// estimates them. A compaction clears it until the next answer.
     #[serde(default)]
     pub context_tokens: Option<u64>,
+    /// What the chat has spent, as pi's `get_session_stats` totals it.
+    #[serde(default)]
+    pub spent: Spent,
     progress: Progress,
+}
+
+/// The tokens and money a chat has spent: every answer and tool result, and
+/// the usage, compaction and branch summary entries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Spent {
+    pub tokens: u64,
+    /// In US dollars, at the model's prices.
+    pub cost: f64,
+}
+
+impl Spent {
+    /// Add one usage, as pi's `addUsageToTotals` does.
+    fn add(&mut self, usage: &Usage) {
+        self.tokens += usage.input + usage.output + usage.cache_read + usage.cache_write;
+        self.cost += usage.cost.total;
+    }
 }
 
 /// How the last user, assistant or tool message left a chat.
@@ -141,6 +161,7 @@ impl Summary {
             model: None,
             thinking: None,
             context_tokens: None,
+            spent: Spent::default(),
             progress: Progress {
                 version: header.version,
                 offset: header.len,
@@ -224,8 +245,19 @@ impl Summary {
                     self.thinking = entry.thinking_level;
                 }
             }
-            Kind::Compaction => self.context_tokens = None,
+            Kind::Compaction => {
+                self.context_tokens = None;
+                self.add_usage(entry.usage.as_ref());
+            }
+            Kind::Usage | Kind::BranchSummary => self.add_usage(entry.usage.as_ref()),
             Kind::Other => {}
+        }
+    }
+
+    /// Count what an entry spent, if it says.
+    fn add_usage(&mut self, usage: Option<&Usage>) {
+        if let Some(usage) = usage {
+            self.spent.add(usage);
         }
     }
 
@@ -235,6 +267,7 @@ impl Summary {
         let (Role::User | Role::Assistant | Role::ToolResult) = message.role else {
             return;
         };
+        self.add_usage(message.usage.as_ref());
         self.outcome = Some(match (message.role, message.stop_reason) {
             (Role::Assistant, Some(StopReason::Stop)) => Outcome::Done,
             (Role::Assistant, Some(StopReason::Error | StopReason::Length)) => Outcome::Failed,
@@ -298,6 +331,8 @@ struct Entry<'a> {
     model_id: Option<String>,
     #[serde(rename = "thinkingLevel")]
     thinking_level: Option<String>,
+    /// A `usage`, `compaction` or `branch_summary` entry's usage.
+    usage: Option<Usage>,
 }
 
 /// A message entry's message, with its content left raw.
@@ -309,7 +344,7 @@ struct Message<'a> {
     content: Option<&'a RawValue>,
     timestamp: Option<i64>,
     stop_reason: Option<StopReason>,
-    /// An assistant message's model and usage.
+    /// An assistant message's model, and an assistant or tool result's usage.
     provider: Option<String>,
     model: Option<String>,
     usage: Option<Usage>,
@@ -328,6 +363,15 @@ struct Usage {
     #[serde(default)]
     cache_write: u64,
     total_tokens: Option<u64>,
+    #[serde(default)]
+    cost: Cost,
+}
+
+/// What a usage cost, in US dollars.
+#[derive(Deserialize, Default)]
+struct Cost {
+    #[serde(default)]
+    total: f64,
 }
 
 impl Usage {
@@ -349,6 +393,8 @@ enum Kind {
     ModelChange,
     ThinkingLevelChange,
     Compaction,
+    Usage,
+    BranchSummary,
     #[serde(other)]
     Other,
 }

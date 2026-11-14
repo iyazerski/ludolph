@@ -26,7 +26,7 @@ pub use crate::relay::SecretStore;
 use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone, Phones};
 use crate::runtime::Runtime;
 use crate::seal;
-use crate::session::{Outcome, Summary};
+use crate::session::{Outcome, Spent, Summary};
 use crate::settings::Settings;
 use crate::skills::{self, Skill};
 use crate::title::Titler;
@@ -343,8 +343,8 @@ pub enum Delivery {
     Handled,
 }
 
-/// The model settings and context use a chat's composer shows.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The model settings, context use and spend a chat's composer shows.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Composer {
     /// `provider/model`; `None` before pi has picked one.
     pub model: Option<String>,
@@ -352,6 +352,7 @@ pub struct Composer {
     /// The tokens in the context; `None` right after a compaction.
     pub context_tokens: Option<u64>,
     pub context_window: Option<u64>,
+    pub spent: Spent,
 }
 
 impl Engine {
@@ -1244,6 +1245,7 @@ impl Engine {
                 thinking: summary.thinking.clone(),
                 context_tokens: summary.context_tokens,
                 context_window: None,
+                spent: summary.spent,
             });
             (running.map(|running| running.pi.clone()), saved)
         };
@@ -1909,7 +1911,6 @@ async fn follow(engine: Weak<Inner>, watcher: Watcher) {
     }
 }
 
-/// Fail unless `id` is a chat in the index or a draft.
 /// What a running pi says about its model and context.
 async fn live_composer(pi: &Pi) -> Result<Composer> {
     let (state, stats) = tokio::try_join!(
@@ -1925,9 +1926,14 @@ async fn live_composer(pi: &Pi) -> Result<Composer> {
             .as_u64()
             .or(model.as_ref().and_then(|model| model.context_window)),
         model: model.map(|model| model.id),
+        spent: Spent {
+            tokens: stats["tokens"]["total"].as_u64().unwrap_or_default(),
+            cost: stats["cost"].as_f64().unwrap_or_default(),
+        },
     })
 }
 
+/// Fail unless `id` is a chat in the index or a draft.
 fn known(state: &State, id: &str) -> Result<()> {
     if !state.chats.contains_key(id) && state.index.find(id).is_none() {
         bail!("no chat {id}");
