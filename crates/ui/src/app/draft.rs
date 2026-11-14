@@ -6,6 +6,7 @@ use serde_json::json;
 use super::attach::Payload;
 use super::{Page, Pending, State, Target};
 use crate::data::{Created, Model, Models, Picked, Project, Projects, levels_of};
+use crate::labels::short_model;
 use crate::prefs::{NewChat, ProjectPick};
 
 /// The picks of a chat that isn't created yet.
@@ -81,6 +82,14 @@ impl Catalog {
             Self::Ready(got) => Some(&got.models),
             Self::Unloaded | Self::Loading | Self::Failed(_) => None,
         }
+    }
+
+    /// Model `id`'s name, as pi labels it, or a short form of its id.
+    pub fn label(&self, id: &str) -> String {
+        self.ready()
+            .and_then(|models| models.iter().find(|m| m.id == id))
+            .and_then(|m| m.label.clone())
+            .unwrap_or_else(|| short_model(id).to_owned())
     }
 
     /// The model pi starts a chat on, once loaded.

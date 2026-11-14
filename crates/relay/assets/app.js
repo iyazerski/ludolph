@@ -993,6 +993,23 @@ function toolGroup(tools, open, onToggle, onOpen) {
   return block;
 }
 
+/** How long a turn worked, as the desktop words it: 42s, 6m 56s, 1h 5m. */
+function workedFor(ms) {
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  return `${Math.floor(secs / 3600)}h ${Math.floor(secs / 60) % 60}m`;
+}
+
+/** A finished turn's work before its answer, folded under how long it took. */
+function workedFold(ms, blocks, open, onToggle) {
+  const fold = h("div", { class: `worked${open ? " open" : ""}` });
+  const head = h("button", { onclick: () => { fold.classList.toggle("open"); onToggle(fold.classList.contains("open")); haptic(4); } },
+    h("span", {}, ms > 0 ? `Worked for ${workedFor(ms)}` : "Worked"), icon("chevDown", "chev"));
+  fold.append(head, h("div", { class: "body" }, ...blocks));
+  return fold;
+}
+
 /** A message's prose: its text parts, joined as read_chat joins them. */
 const textOf = m => m.parts.filter(p => p.kind === "text").map(p => p.text).join("\n\n");
 
@@ -1079,7 +1096,15 @@ function chatView(machine, id, fromList) {
   // moves, at most every few seconds.
   let info = null, infoFor = "", infoAt = 0;
   const rendered = new Map();
-  const openGroups = new Set();
+  // Folds the user opened or closed, by key; the rest follow their default.
+  const openGroups = new Map();
+  // The Mac's "Tool calls" setting: the work under way shows open while the agent runs.
+  let expandTools = false;
+  call(machine, "get_settings").then(s => {
+    if (!!s.expandTools === expandTools) return;
+    expandTools = !!s.expandTools;
+    if (read) drawMessages();
+  }, () => {});
   let questionId = null;
   const api = (tool, args = {}) => call(machine, tool, { chat: id, ...args });
   const draftKey = id || "new";
@@ -1461,9 +1486,11 @@ function chatView(machine, id, fromList) {
     return out;
   }
 
-  function toolsBlock(m, g) {
+  const isOpen = (key, byDefault) => openGroups.get(key) ?? byDefault;
+
+  function toolsBlock(m, g, byDefault = false) {
     const key = `${m.id}#${g.at}`;
-    return toolGroup(g.tools, openGroups.has(key), on => (on ? openGroups.add(key) : openGroups.delete(key)), openTool);
+    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool);
   }
 
   function userBubble(m, isPending = false) {
@@ -1475,13 +1502,15 @@ function chatView(machine, id, fromList) {
         images.length ? h("div", { class: "shots" }, images.map(p => h("button", { class: "chip", onclick: () => !isPending && openImage(m, p.index) }, icon("image"), `Image ${p.index + 1}`))) : null) : null);
   }
 
-  // Prose, tool groups, and errors in transcript order, as on the desktop.
-  function assistantMessage(m, isLast) {
+  // Prose, tool groups, and errors in transcript order, as on the desktop:
+  // only the work under way shows open, and once the turn ends, what came
+  // before its answer folds under how long it took.
+  function assistantMessage(m, isLast, startedAt) {
     const streaming = m.status === "streaming" || (isLast && isWorking());
     const parts = grouped(m.parts);
     const blocks = parts.map((p, i) => {
       if (p.kind === "error") return h("div", { class: "errbox" }, p.error);
-      if (p.kind === "tools") return toolsBlock(m, p);
+      if (p.kind === "tools") return toolsBlock(m, p, streaming && expandTools && i === parts.length - 1);
       const body = h("div", { class: "md", html: markdown(p.text) });
       // The caret trails the reply while it streams, not prose a tool followed.
       if (streaming && i === parts.length - 1) {
@@ -1490,6 +1519,13 @@ function chatView(machine, id, fromList) {
       }
       return body;
     });
+    const answer = parts.findLastIndex(p => p.kind === "text");
+    if (!streaming && answer > 0) {
+      const key = `${m.id}#worked`;
+      const fold = workedFold(startedAt ? m.endedAt - startedAt : 0, blocks.slice(0, answer),
+        isOpen(key, false), on => openGroups.set(key, on));
+      blocks.splice(0, answer, fold, h("div", { class: "worked-rule" }));
+    }
     return h("div", { class: "msg assistant" }, ...blocks,
       m.status === "aborted" ? h("div", { class: "aborted" }, "Stopped") : null);
   }
@@ -1500,13 +1536,16 @@ function chatView(machine, id, fromList) {
     const firstPaint = !rendered.size;
     const nodes = [];
     const last = read.messages[read.messages.length - 1];
+    // A reply's turn started with the prompt before it.
+    let startedAt = null;
     for (const m of read.messages) {
       if (m.role === "system") continue;
+      if (m.role === "user") startedAt = m.createdAt;
       const isLast = m === last;
-      const sig = JSON.stringify([m.parts, m.status, isLast && isWorking()]);
+      const sig = JSON.stringify([m.parts, m.status, isLast && isWorking(), expandTools, startedAt, m.endedAt]);
       let entry = rendered.get(m.id);
       if (!entry || entry.sig !== sig) {
-        const node = m.role === "user" ? userBubble(m) : assistantMessage(m, isLast);
+        const node = m.role === "user" ? userBubble(m) : assistantMessage(m, isLast, startedAt);
         if (!entry && !firstPaint) node.classList.add("new");
         entry = { sig, node };
         rendered.set(m.id, entry);

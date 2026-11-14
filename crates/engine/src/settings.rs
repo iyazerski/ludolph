@@ -18,6 +18,9 @@ pub struct Settings {
     /// Open Ludolph.app, hidden, at each login, and with it the engine. Off
     /// until you turn it on.
     pub open_at_login: bool,
+    /// Show the work under way open while the agent runs, on the Mac and
+    /// the phone alike. It folds once the agent writes again either way.
+    pub expand_tools: bool,
 }
 
 /// When the phone gets notifications.

@@ -3,14 +3,14 @@
 //! and a filter by status.
 
 use chrono::{DateTime, TimeDelta, Utc};
-use rune::{El, TextStyle, Tx, col, icon, row, text};
+use rune::{El, TextEdit, TextStyle, Tx, col, icon, row, text};
 use rune_kit::{
     Button, ButtonVariant, IconButton, IconButtonVariant, Kit, SegmentedControl, TextInput,
 };
 
 use super::icons;
 use super::widgets::{busy, dot, engine_note, faint, head, head_titles, hide_button, tile, tones};
-use crate::app::{GROUP_CHATS, ListFilter, State};
+use crate::app::{GROUP_CHATS, ListFilter, State, Window};
 use crate::data::{Chat, Status};
 use crate::labels::{ago, short_model};
 
@@ -94,7 +94,8 @@ pub fn view(s: &State, k: &Kit) -> El {
         )
 }
 
-/// The search over titles, projects and previews; Return opens the first match.
+/// The search over titles, projects and previews; Return opens the first
+/// match, and Escape clears it. In the main window, Escape also leaves it.
 pub(super) fn search_field(s: &State, k: &Kit) -> El {
     TextInput::new(&s.list.query)
         .width(None)
@@ -103,7 +104,22 @@ pub(super) fn search_field(s: &State, k: &Kit) -> El {
         .leading_icon(&icons::SEARCH)
         .clear_button()
         .on_edit(|s: &mut State| &mut s.list.query)
+        .on_action(|s: &mut State, _: &mut Tx| {
+            let mut query = TextEdit::default();
+            query.focused = true;
+            s.list.query = query;
+        })
         .on_key(|s: &mut State, key, tx: &mut Tx| {
+            if key.key == rune::Key::Escape {
+                let cleared = !s.list.query.text.is_empty();
+                s.list.query = TextEdit::default();
+                // The quick window's Escape puts the window away once there's nothing to clear.
+                if s.window == Window::Main {
+                    tx.blur();
+                    return true;
+                }
+                return cleared;
+            }
             // Return opens the first match.
             if key.key != rune::Key::Enter {
                 return false;

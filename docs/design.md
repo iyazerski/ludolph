@@ -204,7 +204,7 @@ A session written without a name, by pi in a terminal or by another tool, gets a
 
 Nothing is archived automatically. Zeron's rule (archive all but each project's 10 newest chats) existed because Zeron slowed down with many chats. Ludolph's index keeps every summary in memory, so a long list costs nothing to produce. Keeping it short is the list's job:
 
-- Each project, and **No project**, shows its 10 newest chats and its total. **Show more** adds 10. The windows remember what's expanded in memory only, so a restart shows 10 again.
+- Each project, and **No project**, shows its 5 newest chats, each with how long ago it was last active, and its total. **Show more** adds 5. The windows remember what's expanded in memory only, so a restart shows 5 again.
 - `list_chat_groups` returns every group with its newest chats, and takes a higher limit for each expanded group. A window asks for the whole list again on each list notice, so there are no offsets that drift when chats change order.
 - The phone keeps its flat `list_chats`, the 200 newest chats.
 
@@ -271,7 +271,7 @@ The app and the phone call the same tools:
 | `polish_dictation` | The sidecar model through `pi -p` |
 | `take_over_chat` | Turns sending back on for a chat [another pi](#sessions-open-elsewhere) has open |
 
-The socket also has `get_settings` and `set_settings`, which the relay refuses: a relay mustn't change settings.
+The socket also has `get_settings` and `set_settings`. The relay passes `get_settings` on, so the phone shows tool calls as the Mac does, and refuses `set_settings`: a relay mustn't change settings.
 
 In the phone app, a Mac whose engine isn't running is offline. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 5. Version 2 dropped the `Engine` message, since a linked Mac is a running engine, version 3 changed messages' parts, version 4 dropped harnesses and took pi's dialog shape, and version 5 added watches.
 
@@ -288,19 +288,19 @@ The views are shared by both windows. They're today's Companion views, with the 
 
 They live in a `ui` crate. Each window gives them its own layout.
 
-- **Main window:** a normal, resizable window. The sidebar has **New chat** (⌘N), search (⌘F), the status filters, and the projects with their chats, each project with a **+** for a new chat in it, collapsible, and with **Show more**. ⌃⌘S hides the sidebar. The open chat is on the right, its transcript capped at a reading width. Its toolbar has the title and project, an action to open the chat in the quick window, and the chat's menu. The quick window's header can open its chat here too, and hides as it does. The window shows a Dock icon while open, and the app can be pinned to the Dock. Closing it keeps the draft but drops the open chat and the window's GPU surface, so the app goes back near its hidden size. **Settings** (⌘, from either window, or the sidebar's last row) replaces the chat on the right, and Escape goes back to it.
+- **Main window:** a normal, resizable window. The sidebar has **New chat** (⌘N), search (⌘F), and the projects as folders with their chats under them, each with a **+** for a new chat in it, collapsible, and with **Show more**. Search shows a field in place of its row while it's in use, and Escape clears it. The sidebar and toolbar are a shade lighter than the chat. The window opens where it was last, if that's still on a display. ⌃⌘S hides the sidebar. The open chat is on the right, its transcript capped at a reading width. Its toolbar has the title and project, an action to open the chat in the quick window, and the chat's menu. The quick window's header can open its chat here too, and hides as it does. The window shows a Dock icon while open, and the app can be pinned to the Dock. Closing it keeps the draft but drops the open chat and the window's GPU surface, so the app goes back near its hidden size. **Settings** (⌘, from either window, or the sidebar's last row) replaces the chat on the right, and Escape goes back to it.
 - **Quick window:** today's Companion: floating and slightly transparent, shown and hidden with the global shortcut (⌃⌥Space until you record another in Settings). It follows the chat list and the open chat through the socket's feeds while it shows, and drops them when it hides. Its 1-second tick runs only while something on screen counts: a toast, the working clock, a copy check, a retry countdown, or, on the settings page, a phone link that's connecting. The list loads the 200 latest chats and shows 10 per project, with **Show more**.
 - **Dictation:** Apple's speech recognizer, as now, then cleaned up by the sidecar model.
 
 ### Settings
 
-The engine keeps most of them, since it's the one using them and it runs while the app is closed. The app reads and saves them with `get_settings` and `set_settings`, which take all the settings at once. The phone can't call either. A change shows at once, and goes back with a toast if the engine refuses it.
+The engine keeps most of them, since it's the one using them and it runs while the app is closed. The app reads and saves them with `get_settings` and `set_settings`, which take all the settings at once. The phone can read them but not change them. A change shows at once, and goes back with a toast if the engine refuses it.
 
 - Sidecar model, for titles and dictation (`sidecarModel`), picked from pi's models with a search, or pi's default model, which the picker names (`list_models` asks a fresh pi's `get_state` for it)
 - Notifications on the phone only while you're away from the Mac, or always (`notify`: `away` or `always`)
 - Open at login (`openAtLogin`, off until you turn it on)
 - Phone: link a phone with a QR code, see whether the link is connected, or unlink (`link_phone`, `stop_linking_phone`, `get_phone_link`, `unlink_phone`; see "Phone and relay")
-- Tool calls collapsed or expanded: the app's own, in `ui.json`, since only the app draws them. A reply's work between two texts, its tool calls and thinking, is one group on a rail, and a click opens or closes one group either way.
+- Tool calls collapsed or expanded (`expandTools`): the engine's, so both windows and the phone draw them alike. A reply's work between two texts, its tool calls and thinking, is one group on a rail. The setting only decides whether the group under way shows open while the agent works; a group folds once the agent writes again, and a click opens or closes one group either way. Once a turn ends, everything before its last text folds under **Worked for 6m 56s** over a rule, whatever the setting.
 - Global shortcut: the app's own, since it registers it, so it's in `ui.json`. The recorder registers the new chord before it lets the old one go, so a chord another app holds is refused and the old one stays. If the saved one is taken when the app starts, the page says so.
 
 ## Phone and relay
@@ -311,8 +311,8 @@ The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, w
   - A signed-in phone claims it at once.
   - Otherwise the phone signs in with its passkey, or creates one. It may create one through a Mac the relay already knows, or on a relay with no passkey yet, which makes the first link set the relay up. A Mac the relay doesn't know needs a signed-in phone.
   - A passkey, not just a cookie, because a home-screen web app doesn't share Safari's cookies.
-  - A Mac new to the relay gets its token over the waiting socket, saves it in `relay.json`, and connects at once.
-  `get_phone_link` says whether the link is connected and how a pairing stands, `stop_linking_phone` drops the code, and `unlink_phone` disconnects, forgets the link, and has the relay forget the Mac (`Up::Forget`). The phone can't call these. The relay's address defaults to the maintainer's, and Settings takes another before the first link.
+  - A Mac new to the relay gets its token over the waiting socket, saves it in the Keychain, and connects at once. `relay.json` keeps only the relay's address.
+  `get_phone_link` says whether the link is connected and how a pairing stands, `stop_linking_phone` drops the code, and `unlink_phone` disconnects, forgets the link, and has the relay forget the Mac (`Up::Forget`). Settings asks before it unlinks. The phone can't call these. The relay's address defaults to the maintainer's, and Settings takes another before the first link.
 - **Battery:** the phone shows the Mac's battery. The engine reads it from IOKit when it connects, and again on each `com.apple.system.powersources` notification, about once a minute while charging or on battery. It sends it only when it changed, so nothing polls.
 - **Protocol 6:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
 - **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Runs by another pi aren't watched, so they don't notify.
@@ -320,7 +320,7 @@ The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, w
 
 ### Trust
 
-The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac, and keep the Mac's relay token in the Keychain. For now the token is in `relay.json`, readable only by you. The Keychain ties an item to the program's signature, so it moves there next, now that `make install` signs every build with one identity. End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
+The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac. The Mac's relay token is in the Keychain, which ties it to the app's signature (`make install` signs every build with one identity). End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
 
 ## Performance budget
 

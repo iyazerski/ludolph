@@ -5,6 +5,8 @@
 //! column on the right of its label, and a compact one (switch, button)
 //! sits at the right edge, so every row lines up.
 
+use std::sync::OnceLock;
+
 use rune::{El, SurfaceFit, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, Combobox, ComboboxOption, Kit, SegmentedControl, ShortcutRecorder,
@@ -27,7 +29,8 @@ const CONTROL: f32 = 300.0;
 /// settings; a model's id has a `/`.
 const DEFAULT_MODEL: &str = "default";
 
-pub fn view(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
+pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>) -> El {
+    let k = controls_kit(k);
     let mut body = col().w_full().max_w(MAX_WIDTH).gap(8.0).px(24.0).py(20.0);
     match (&page.settings, &page.error) {
         (Some(_), _) => {
@@ -69,19 +72,19 @@ pub fn view(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El 
 
 fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
     let at_login = page.settings.as_ref().is_some_and(|s| s.open_at_login);
-    let expanded = s.prefs.borrow().expand_tools;
+    let expanded = page.settings.as_ref().is_some_and(|s| s.expand_tools);
     let tools = wide(
         k,
         "Tool calls",
         SegmentedControl::new(&["Collapsed", "Expanded"], Some(usize::from(expanded)))
             .width(Some(CONTROL))
-            .on_pick(|s: &mut State, i, _| s.expand_tools(i == 1))
+            .on_pick(|s: &mut State, i, _| s.change_settings(|v| v.expand_tools = i == 1))
             .build(k),
     );
     let tools = with_hint(
         tools,
         k,
-        "How the commands, edits and thinking between a reply's texts show. A click still opens or closes one.",
+        "Whether the agent's commands, edits and thinking show open while it works. They fold once it writes again.",
     );
     vec![
         wide(
@@ -141,7 +144,7 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .settings
         .as_ref()
         .and_then(|v| v.sidecar_model.as_deref());
-    let default = s.catalog.default_model().map(|id| model_label(s, id));
+    let default = s.catalog.default_model().map(|id| s.catalog.label(id));
     let default = default.map_or("Default model".to_owned(), |name| {
         format!("{name} (default)")
     });
@@ -179,15 +182,6 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
     )
 }
 
-/// The name pi gives model `id`, else its id's model part.
-fn model_label(s: &State, id: &str) -> String {
-    s.catalog
-        .ready()
-        .and_then(|models| models.iter().find(|m| m.id == id))
-        .and_then(|m| m.label.clone())
-        .unwrap_or_else(|| short_model(id).to_owned())
-}
-
 fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
     let notify = page.settings.as_ref().map_or(Notify::Away, |v| v.notify);
     let notify = wide(
@@ -219,7 +213,11 @@ fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
                 .as_ref()
                 .filter(|l| l.status != LinkStatus::Rejected)
             {
-                Some(link) => out.push(linked(link, pairing.is_none(), k)),
+                Some(link) => out.push(if page.phone.confirm_unlink {
+                    confirm_unlink(k)
+                } else {
+                    linked(link, pairing.is_none(), k)
+                }),
                 None => {
                     out.push(relay_field(page, pairing.is_none(), k));
                     if pairing.is_none() {
@@ -289,9 +287,44 @@ fn linked(link: &RelayLink, can_link: bool, k: &Kit) -> El {
         Button::new("Unlink")
             .variant(ButtonVariant::Outline)
             .help("Disconnect this Mac from the relay, so no phone reaches it")
-            .on_press(State::unlink_phone)
+            .on_press(|s: &mut State| s.confirm_unlink(true))
             .build(k),
     );
+    status_row(info, buttons)
+}
+
+/// Unlink's second step, in the link's place: what it does, and whether to.
+fn confirm_unlink(k: &Kit) -> El {
+    let info = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(2.0)
+        .child(text("Unlink this Mac?").font(k.ty.ui).color(k.c.text_base))
+        .child(
+            text("No phone reaches it until you link one again, and the relay forgets it.")
+                .font(k.ty.text_small)
+                .color(k.c.text_muted)
+                .wrap(),
+        );
+    let buttons = row()
+        .gap(8.0)
+        .child(
+            Button::new("Cancel")
+                .variant(ButtonVariant::Outline)
+                .on_press(|s: &mut State| s.confirm_unlink(false))
+                .build(k),
+        )
+        .child(
+            Button::new("Unlink")
+                .variant(ButtonVariant::Danger)
+                .on_press(State::unlink_phone)
+                .build(k),
+        );
+    status_row(info, buttons)
+}
+
+/// The phone link's row: what it says, then its buttons.
+fn status_row(info: El, buttons: El) -> El {
     row()
         .w_full()
         .px(PAD)
@@ -466,6 +499,20 @@ fn group(k: &Kit, rows: Vec<El>) -> El {
         card = card.child(line);
     }
     card
+}
+
+/// `k` with the fields, pickers and segmented controls on the chat
+/// composer's surface, so they read as fields on the groups' cards rather
+/// than holes in them.
+fn controls_kit(k: &'static Kit) -> &'static Kit {
+    static LIGHT: OnceLock<Kit> = OnceLock::new();
+    static DARK: OnceLock<Kit> = OnceLock::new();
+    let cell = if k.dark { &DARK } else { &LIGHT };
+    cell.get_or_init(|| {
+        let mut controls = k.clone();
+        controls.c.bg_base = k.c.bg_base.mix(k.c.text_base, 0.035);
+        controls
+    })
 }
 
 /// A row with `label` on the left and a wide `control` on its right.

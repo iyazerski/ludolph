@@ -328,6 +328,12 @@ a { color: inherit; text-decoration: none; }
 .tools .chev { width: 14px; height: 14px; margin: 0 8.5px 0 5.5px; transform: rotate(-90deg); transition: transform .14s ease-out; flex: none; }
 .tools.open .chev { transform: none; }
 .tools .rail { display: none; padding-top: 2px; }
+.worked > button { display: flex; align-items: center; height: 26px; font-size: 13.5px; color: var(--secondary); }
+.worked > button .chev { width: 14px; height: 14px; margin-left: 4px; transform: rotate(-90deg); transition: transform .14s ease-out; flex: none; }
+.worked.open > button .chev { transform: none; }
+.worked > .body { display: none; }
+.worked.open > .body { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; }
+.worked-rule { height: 1px; background: var(--rail); }
 .tools.open .rail { display: block; }
 .tools .item { position: relative; display: flex; align-items: center; gap: 8px; height: 32px; padding-left: 32px; min-width: 0; }
 .tools .item::before { content: ""; position: absolute; left: 12px; top: 0; bottom: 0; border-left: 1px solid var(--rail); }

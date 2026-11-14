@@ -8,12 +8,12 @@ mod draft;
 mod page;
 mod settings;
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use rune::{ImageCache, ShortcutId, TextEdit, Tx};
+use rune::{ImageCache, ShortcutId, TextEdit, Tx, WindowHandle};
 use rune_kit::diff::DiffState;
 use rune_kit::shell::PaneState;
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use super::api::Api;
 use super::client::Subscription;
 use super::data::{Chat, Chats};
-use super::prefs::{Prefs, ProjectPick};
+use super::prefs::{Frame, Prefs, ProjectPick};
 
 pub use self::actions::Answer;
 pub use self::attach::Prep;
@@ -35,7 +35,7 @@ pub use self::settings::{QR_SIZE, SettingsPage};
 /// The most chats the list loads, for its search.
 const LIST_LIMIT: usize = 200;
 /// Chats a project shows at first, and how many more "Show more" adds.
-pub const GROUP_CHATS: usize = 10;
+pub const GROUP_CHATS: usize = 5;
 const TOAST_FOR: Duration = Duration::from_millis(3800);
 
 /// Which of the app's two windows a state belongs to.
@@ -58,6 +58,11 @@ pub struct State {
     /// The quick window's global shortcut while it's registered, shared too:
     /// the main window's settings change it.
     pub hotkey: Rc<Cell<Option<ShortcutId>>>,
+    /// The engine's `expandTools` setting, shared too, so both windows
+    /// draw tool calls alike.
+    pub expand_tools: Rc<Cell<bool>>,
+    /// The native window, once it first opens, to read where it is.
+    handle: Rc<OnceCell<WindowHandle>>,
     pub page: Page,
     /// The main window's sidebar: its width, and whether it's open.
     pub sidebar: PaneState,
@@ -150,6 +155,8 @@ impl State {
         window: Window,
         prefs: Rc<RefCell<Prefs>>,
         hotkey: Rc<Cell<Option<ShortcutId>>>,
+        expand_tools: Rc<Cell<bool>>,
+        handle: Rc<OnceCell<WindowHandle>>,
     ) -> Self {
         let page = match window {
             Window::Quick => Page::List,
@@ -166,6 +173,8 @@ impl State {
             engine_up: false,
             prefs,
             hotkey,
+            expand_tools,
+            handle,
             page,
             sidebar: PaneState::new(320.0).range(260.0, 480.0),
             list: ListState::default(),
@@ -389,12 +398,32 @@ impl State {
     /// The main window closed: it rests, and the app leaves the Dock, as
     /// the quick window and the shortcut stay.
     pub fn closed(&mut self, _: &mut Tx) {
+        self.keep_frame();
         self.stop_dictating();
         self.visibility_changed(false);
         self.api.app().set_dock_icon(false);
         // Its transcript is most of its memory, and the app may stay hidden for
         // days. It opens again on a new chat, keeping any unsent text.
         self.new_chat();
+    }
+
+    /// Remember where the main window is, to open it there next run. A
+    /// minimized or full-screen window keeps the place it had before.
+    pub fn keep_frame(&mut self) {
+        if self.window != Window::Main {
+            return;
+        }
+        let Some(at) = self.handle.get().and_then(WindowHandle::placement) else {
+            return;
+        };
+        if at.minimized || at.full_screen {
+            return;
+        }
+        self.prefs.borrow_mut().main_frame = Some(Frame {
+            position: at.position,
+            size: at.content_size,
+        });
+        self.save_prefs();
     }
 
     /// Show chat `id` in the other window. Expanding the quick window into
@@ -428,11 +457,14 @@ impl State {
         if !came {
             return;
         }
+        self.load_expand_tools();
         if self.shown {
             self.load_chats();
         }
+        // The first new chat is made before the engine answers, and a load that
+        // failed tries again.
         if let Some(Target::New(draft)) = self.chat().map(|p| &p.target)
-            && draft.load == Load::Failed
+            && draft.load != Load::Ready
         {
             self.load_draft();
         }
