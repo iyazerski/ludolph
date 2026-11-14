@@ -14,7 +14,6 @@ use super::page::{ChangeTarget, Changes, Dictating, LEVELS_KEPT, SkillList, Skil
 use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
 use crate::data::{ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Polished, Skills};
 use crate::dictation::{self, Heard, Listening};
-use crate::message::with_skill_refs;
 
 /// How many more messages "Load earlier messages" adds.
 const EARLIER: usize = 40;
@@ -345,17 +344,15 @@ impl State {
             Ok(images) => images,
             Err(why) => return self.fail(why, ""),
         };
-        let text = with_skill_refs(&typed, page.skills.list.ready());
         let nav = page.nav;
         let payloads: Vec<attach::Payload> = images.iter().map(|(p, _)| p.clone()).collect();
         let Target::Existing(chat) = &mut page.target else {
-            self.create(text, payloads);
+            self.create(typed, payloads);
             return;
         };
         let id = chat.id.clone();
         chat.pending.push(Pending {
             text: typed.clone(),
-            sent: ludolph_prompt::to_front(&text).into_owned(),
             images: images.iter().map(|(_, thumb)| thumb.clone()).collect(),
             at: chrono::Utc::now().timestamp_millis(),
         });
@@ -365,7 +362,7 @@ impl State {
         page.composer.clear();
         page.attached.clear();
         tx.scroll_to_bottom("transcript");
-        let mut args = json!({ "chat": id, "text": text });
+        let mut args = json!({ "chat": id, "text": typed });
         if !payloads.is_empty() {
             args["images"] = json!(payloads);
         }

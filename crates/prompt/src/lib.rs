@@ -1,50 +1,47 @@
-//! Normalize pi skill commands for sending and matching transcript messages.
+//! Find inline `$skill` mentions without changing the user's wording or order.
 
-use std::borrow::Cow;
+/// Whether `c` can be in a skill's name after the `$`.
+fn name_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | ':' | '-')
+}
 
-const COMMAND: &str = "/skill:";
+/// The `$` word the caret at byte `caret` ends: where its `$` is, and the
+/// lowercased text after it.
+pub fn skill_query(text: &str, caret: usize) -> Option<(usize, String)> {
+    let before = text.get(..caret)?;
+    let start = before.rfind('$')?;
+    let word = &before[start + 1..];
+    let lead = before[..start].chars().next_back();
+    let ok = lead.is_none_or(char::is_whitespace) && word.chars().all(name_char);
+    ok.then(|| (start, word.to_lowercase()))
+}
 
-/// `text` with its first `/skill:name` moved to the front, followed by a
-/// space, since pi runs a skill only from there and reads its name up to the
-/// first space. The composer puts the command where the `$name` was typed.
-/// Later commands stay where they are, as text.
-pub fn to_front(text: &str) -> Cow<'_, str> {
-    if text.starts_with(COMMAND) {
-        return Cow::Borrowed(text);
+/// `text` cut at its `$name` words, as the engine shows a skill that ran:
+/// `(piece, is_skill)`. A name starts with a letter, so prices stay text.
+pub fn skill_words(text: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    let (mut plain, mut at) = (0, 0);
+    while let Some(i) = text[at..].find('$').map(|i| i + at) {
+        let lead_ok = text[..i]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace);
+        let after = &text[i + 1..];
+        let len = after.find(|c| !name_char(c)).unwrap_or(after.len());
+        let name = after[..len].trim_end_matches(':');
+        if lead_ok && name.starts_with(char::is_alphabetic) {
+            if i > plain {
+                out.push((&text[plain..i], false));
+            }
+            let end = i + 1 + name.len();
+            out.push((&text[i..end], true));
+            (plain, at) = (end, end);
+        } else {
+            at = i + 1;
+        }
     }
-    let found = text
-        .match_indices(COMMAND)
-        .map(|(at, _)| at)
-        .find(|&at| text[..at].ends_with(char::is_whitespace));
-    let Some(at) = found else {
-        return Cow::Borrowed(text);
-    };
-    let end = text[at..]
-        .find(char::is_whitespace)
-        .map_or(text.len(), |len| at + len);
-    if end == at + COMMAND.len() {
-        return Cow::Borrowed(text);
+    if plain < text.len() {
+        out.push((&text[plain..], false));
     }
-    // Of the gaps around the command, the one with more line breaks stays,
-    // so paragraphs do.
-    let before = text[..at].trim_end();
-    let after = text[end..].trim_start();
-    let (gap_before, gap_after) = (
-        &text[before.len()..at],
-        &text[end..text.len() - after.len()],
-    );
-    let lines = |gap: &str| gap.matches('\n').count();
-    let gap = if lines(gap_before) > lines(gap_after) {
-        gap_before
-    } else {
-        gap_after
-    };
-    let rest = format!("{before}{gap}{after}");
-    let rest = rest.trim();
-    let command = &text[at..end];
-    Cow::Owned(if rest.is_empty() {
-        command.to_owned()
-    } else {
-        format!("{command} {rest}")
-    })
+    out
 }

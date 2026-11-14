@@ -315,7 +315,8 @@ def control(command: dict[str, object]) -> bool:
                        "model": MODEL, "thinkingLevel": THINKING}}, end="\r\n")
     elif kind == "get_commands":
         respond(command, {"commands": [
-            {"name": "skill:review", "description": "Review the diff", "source": "skill"},
+            {"name": "skill:review", "description": "Review the diff", "source": "skill",
+             "sourceInfo": {"path": os.path.join(os.getcwd(), ".pi", "skills", "review", "SKILL.md")}},
             {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt"},
         ]})
     elif kind == "get_available_models":

@@ -1,26 +1,35 @@
-use ludolph_prompt::to_front;
+use ludolph_prompt::{skill_query, skill_words};
 
 #[test]
-fn a_skill_command_moves_to_the_front() {
-    let cases = [
-        ("/skill:a fix it", "/skill:a fix it"),
-        ("fix it with /skill:a", "/skill:a fix it with"),
-        ("please /skill:a now", "/skill:a please now"),
+fn skill_queries_follow_the_caret() {
+    assert_eq!(skill_query("use $com", 8), Some((4, "com".to_owned())));
+    assert_eq!(skill_query("costs 5$", 8), None);
+    assert_eq!(skill_query("$a b", 4), None);
+}
+
+#[test]
+fn skill_mentions_keep_their_positions() {
+    let cases: [(&str, &[(&str, bool)]); 4] = [
         (
-            "look:\n\n/skill:a\nthen this",
-            "/skill:a look:\n\nthen this",
+            "please $commit: then $review",
+            &[
+                ("please ", false),
+                ("$commit", true),
+                (": then ", false),
+                ("$review", true),
+            ],
+        ),
+        ("pay $5 a$b", &[("pay $5 a$b", false)]),
+        (
+            "run $x\nnow",
+            &[("run ", false), ("$x", true), ("\nnow", false)],
         ),
         (
-            "please\n/skill:a\n\nthen this",
-            "/skill:a please\n\nthen this",
+            "use $unknown-skill",
+            &[("use ", false), ("$unknown-skill", true)],
         ),
-        ("/skill:a and /skill:b", "/skill:a and /skill:b"),
-        ("one /skill:a two /skill:b", "/skill:a one two /skill:b"),
-        ("see a/skill:b", "see a/skill:b"),
-        ("just /skill: alone", "just /skill: alone"),
-        ("no skill here", "no skill here"),
     ];
-    for (text, sent) in cases {
-        assert_eq!(to_front(text), sent, "{text:?}");
+    for (text, want) in cases {
+        assert_eq!(skill_words(text), want, "{text}");
     }
 }

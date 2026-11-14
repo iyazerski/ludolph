@@ -21,6 +21,7 @@ pub enum Shade {
     Code,
     Strong,
     Emphasis,
+    Skill,
 }
 
 /// The parts of `text` that draw apart, each over the ones before it.
@@ -58,6 +59,14 @@ pub fn shades(text: &str) -> Vec<(Range<usize>, Shade)> {
             Event::Start(Tag::Emphasis) => out.push((range, Shade::Emphasis)),
             _ => {}
         }
+    }
+    let mut at = 0;
+    for (piece, skill) in ludolph_prompt::skill_words(text) {
+        let end = at + piece.len();
+        if skill {
+            out.push((at..end, Shade::Skill));
+        }
+        at = end;
     }
     out
 }
@@ -159,7 +168,7 @@ mod tests {
 
     #[test]
     fn markdown_source_is_shaded() {
-        let text = "# Plan\n\n1. See [shot](</a b.png>) and `x`\n- **b**";
+        let text = "# Plan\n\n1. See [shot](</a b.png>) and `x`\n- **b** then $commit: and $review";
         let shaded: Vec<(&str, Shade)> = shades(text)
             .into_iter()
             .map(|(r, shade)| (&text[r], shade))
@@ -175,6 +184,8 @@ mod tests {
                 ("`x`", Shade::Code),
                 ("- ", Shade::Marker),
                 ("**b**", Shade::Strong),
+                ("$commit", Shade::Skill),
+                ("$review", Shade::Skill),
             ]
         );
         let at = text.find("[shot]").unwrap();

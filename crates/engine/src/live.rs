@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::pi::Event;
+use crate::skills;
 use crate::transcript::{self, NestedCall, ToolState};
 
 /// What pi has done since the run started, and whether it's still going.
@@ -147,8 +148,16 @@ impl Live {
     /// What the run is waiting on, while one is going.
     pub fn run(&self) -> Option<Run> {
         self.working().then(|| Run {
-            steering: self.steering.clone(),
-            follow_up: self.follow_up.clone(),
+            steering: self
+                .steering
+                .iter()
+                .map(|text| skills::as_typed(text).into_owned())
+                .collect(),
+            follow_up: self
+                .follow_up
+                .iter()
+                .map(|text| skills::as_typed(text).into_owned())
+                .collect(),
             retry: self.retry.clone(),
             compacting: self.compacting.clone(),
         })

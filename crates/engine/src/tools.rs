@@ -588,7 +588,7 @@ struct ListSkillsArgs {
 }
 
 /// The skills a chat, or a new chat in a project, can run. A skill's `ref`
-/// is the command the composer puts where its `$name` was typed.
+/// is the inline mention the composer inserts.
 async fn list_skills(engine: &Engine, args: ListSkillsArgs) -> Result<Value> {
     let skills = match &args.chat {
         Some(id) => engine.skills(id).await?,
@@ -597,7 +597,7 @@ async fn list_skills(engine: &Engine, args: ListSkillsArgs) -> Result<Value> {
     let skills: Vec<Value> = skills
         .iter()
         .map(|skill| {
-            json!({"name": skill.name, "description": skill.description, "ref": skill.command()})
+            json!({"name": skill.name, "description": skill.description, "ref": skill.reference()})
         })
         .collect();
     Ok(json!({"skills": skills}))

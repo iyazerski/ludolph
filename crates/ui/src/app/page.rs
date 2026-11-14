@@ -182,15 +182,6 @@ pub enum SkillList {
     Failed(String),
 }
 
-impl SkillList {
-    pub fn ready(&self) -> &[Skill] {
-        match self {
-            Self::Ready(skills) => skills,
-            Self::Loading | Self::Failed(_) => &[],
-        }
-    }
-}
-
 /// The waiting prompt's identity and the composer draft to restore after editing.
 pub struct QueueEdit {
     pub id: String,
@@ -203,8 +194,6 @@ pub struct QueueEdit {
 /// A message sent but not in the transcript yet.
 pub struct Pending {
     pub text: String,
-    /// The prompt after resolving skill references and moving the first one.
-    pub sent: String,
     pub images: Vec<Option<Image>>,
     /// When it was sent, in epoch milliseconds, so an older message with the
     /// same text doesn't stand for it.
@@ -399,10 +388,10 @@ impl Existing {
             let arrived = page.iter().any(|m| {
                 m.role == Role::User
                     && m.created_at >= p.at - CLOCK_SLACK_MS
-                    && m.text().trim() == p.sent
+                    && m.text().trim() == p.text
                     && m.images().count() == p.images.len()
             });
-            !arrived && !(p.images.is_empty() && queued.contains(&p.sent.as_str()))
+            !arrived && !(p.images.is_empty() && queued.contains(&p.text.as_str()))
         });
     }
 }
@@ -424,21 +413,14 @@ impl QuestionForm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{MessageStatus, Skill};
-    use crate::message::with_skill_refs;
+    use crate::data::MessageStatus;
 
     #[test]
     fn skill_previews_clear_when_the_transcript_arrives() {
-        let skills = [Skill {
-            name: "commit".into(),
-            description: String::new(),
-            reference: "/skill:commit".into(),
-        }];
         let typed = "[Image 1](</tmp/image.png>) - review this.\nPlease $commit the fix";
         let mut chat = Existing::new("chat".into(), None);
         chat.pending.push(Pending {
             text: typed.into(),
-            sent: ludolph_prompt::to_front(&with_skill_refs(typed, &skills)).into_owned(),
             images: vec![None],
             at: 10_000,
         });
@@ -448,14 +430,7 @@ mod tests {
             created_at: 10_100,
             ended_at: 10_100,
             status: MessageStatus::Complete,
-            parts: vec![
-                Part::Text {
-                    text:
-                        "/skill:commit [Image 1](</tmp/image.png>) - review this.\nPlease the fix"
-                            .into(),
-                },
-                Part::Image { index: 0 },
-            ],
+            parts: vec![Part::Text { text: typed.into() }, Part::Image { index: 0 }],
         };
         message.created_at = 1;
         chat.confirm_pending(std::slice::from_ref(&message), None);
@@ -480,11 +455,10 @@ mod tests {
     }
 
     #[test]
-    fn steering_previews_match_the_normalized_prompt() {
+    fn steering_previews_keep_inline_skills() {
         let mut chat = Existing::new("chat".into(), None);
         chat.pending.push(Pending {
             text: "please $commit".into(),
-            sent: "/skill:commit please".into(),
             images: Vec::new(),
             at: 10_000,
         });
@@ -493,7 +467,7 @@ mod tests {
         chat.confirm_pending(
             &[],
             Some(&Run {
-                steering: vec!["/skill:commit please".into()],
+                steering: vec!["please $commit".into()],
                 ..Run::default()
             }),
         );

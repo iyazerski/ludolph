@@ -2,7 +2,7 @@
 //! tool groups, thinking and errors, pi's dialogs, and the composer under
 //! them.
 
-use rune::{Color, El, Link, ScrollSpec, Span, TextStyle, Tx, col, el, icon, rich, row, text};
+use rune::{Color, El, Link, ScrollSpec, TextStyle, Tx, col, el, icon, rich, row, text};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Markdown, Menu,
@@ -15,7 +15,6 @@ use super::widgets::{busy, dot, engine_note, head, head_titles, hide_button, ton
 use crate::app::{Answer, ChatPage, Existing, Overlay, QuestionForm, State, Target, Window};
 use crate::data::{DialogKind, Message, MessageStatus, Part, Role, Run, ToolState};
 use crate::labels::{self, ToolCall, tool_summary};
-use crate::message::skill_words;
 use rune::Image;
 use rune_theme_opencode::file_icons;
 
@@ -447,21 +446,8 @@ type Tile<'a> = (Option<&'a Image>, Option<(String, usize)>);
 /// A message the user sent, with its images.
 fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
     let opacity = if shade == Shade::Sent { 1.0 } else { 0.6 };
-    // A skill the message ran stands out; the rest stays literal text.
-    let mut shown = String::new();
-    let mut spans = Vec::new();
-    for (piece, is_skill) in skill_words(text_in.trim()) {
-        let start = shown.len();
-        shown.push_str(piece);
-        if is_skill {
-            spans.push(
-                Span::new(start, shown.len())
-                    .color(k.c.text_accent)
-                    .weight(560.0),
-            );
-        }
-    }
-    spans.extend(super::widgets::markdown_spans(k, &shown));
+    let shown = text_in.trim().to_owned();
+    let spans = super::widgets::markdown_spans(k, &shown);
     let links = crate::markup::links(&shown);
     let mut out = col().w_full().pl(40.0).items_end().gap(4.0);
     if !images.is_empty() {

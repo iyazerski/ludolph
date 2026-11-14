@@ -1,6 +1,6 @@
 [package]
 name = "ludolph-prompt"
-description = "Shared prompt normalization for pi skill commands"
+description = "Inline skill mentions shared by pi prompts and chat rendering"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

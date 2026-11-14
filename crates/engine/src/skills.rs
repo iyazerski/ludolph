@@ -1,33 +1,28 @@
-//! Skills for the composer's `$` menu, and the `/skill:name` commands that
-//! run them.
-//!
-//! pi runs a skill when a prompt starts with `/skill:name`: it replaces the
-//! command with a `<skill>` block holding the skill's `SKILL.md`, followed by
-//! the rest of the prompt, and saves that as the user message.
+//! Discover pi skills, load inline mentions, and keep their source text in chat views.
 
 use std::borrow::Cow;
+use std::fmt::Write;
+use std::path::PathBuf;
 
+use anyhow::{Context, Result};
 use serde_json::Value;
-
-/// What starts a skill command.
-const COMMAND: &str = "/skill:";
 
 /// One skill pi can run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
-    /// The name after `/skill:`.
     pub name: String,
     pub description: Option<String>,
+    pub path: PathBuf,
 }
 
 impl Skill {
-    /// The command that runs it, which the composer puts in the prompt.
-    pub fn command(&self) -> String {
-        format!("{COMMAND}{}", self.name)
+    /// Return the inline reference the composer inserts.
+    pub fn reference(&self) -> String {
+        format!("${}", self.name)
     }
 }
 
-/// The skills among the commands of pi's `get_commands` answer.
+/// Read skills and their instruction paths from pi's command discovery.
 pub fn from_commands(answer: &Value) -> Vec<Skill> {
     let commands = answer["commands"].as_array().map_or(&[][..], Vec::as_slice);
     commands
@@ -38,36 +33,75 @@ pub fn from_commands(answer: &Value) -> Vec<Skill> {
             Some(Skill {
                 name: name.to_owned(),
                 description: command["description"].as_str().map(str::to_owned),
+                path: command["sourceInfo"]["path"].as_str()?.into(),
             })
         })
         .collect()
 }
 
-/// A user message's text as it was typed: a skill pi expanded goes back to
-/// `/skill:name` and the request, as pi's own view shows it.
+/// Load each known inline mention without moving any surrounding text.
+///
+/// Fail if a referenced skill's instructions cannot be read.
+pub fn expand(text: &str, skills: &[Skill]) -> Result<String> {
+    let mut out = String::new();
+    for (piece, mention) in ludolph_prompt::skill_words(text) {
+        let skill = mention
+            .then(|| skills.iter().find(|skill| piece[1..] == skill.name))
+            .flatten();
+        let Some(skill) = skill else {
+            out.push_str(piece);
+            continue;
+        };
+        let content = std::fs::read_to_string(&skill.path)
+            .with_context(|| format!("reading skill {} at {}", skill.name, skill.path.display()))?;
+        let directory = skill
+            .path
+            .parent()
+            .context("a skill has no parent folder")?;
+        write!(
+            out,
+            "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
+            skill.name,
+            skill.path.display(),
+            directory.display(),
+            content.trim(),
+        )?;
+    }
+    Ok(out)
+}
+
+/// Collapse expanded skill instructions to inline mentions, preserving surrounding text.
 pub fn as_typed(text: &str) -> Cow<'_, str> {
-    match expanded(text) {
-        Some((name, "")) => Cow::Owned(format!("{COMMAND}{name}")),
-        Some((name, request)) => Cow::Owned(format!("{COMMAND}{name} {request}")),
-        None => Cow::Borrowed(text),
+    let mut rest = text;
+    let mut out = String::new();
+    let mut changed = false;
+    while let Some(at) = rest.find("<skill name=\"") {
+        let (before, candidate) = rest.split_at(at);
+        out.push_str(before);
+        if let Some((name, end)) = expanded(candidate) {
+            out.push('$');
+            out.push_str(name);
+            rest = &candidate[end..];
+            changed = true;
+        } else {
+            out.push('<');
+            rest = &candidate[1..];
+        }
+    }
+    if changed {
+        out.push_str(rest);
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(text)
     }
 }
 
-/// The skill's name and the request after it, if `text` is an expanded
-/// skill. It follows `parseSkillBlock` in pi's `agent-session.js`.
-fn expanded(text: &str) -> Option<(&str, &str)> {
+/// Read a pi-style instruction block and its end offset.
+fn expanded(text: &str) -> Option<(&str, usize)> {
     let (head, body) = text.split_once('\n')?;
     let attributes = head.strip_prefix("<skill name=\"")?.strip_suffix("\">")?;
     let (name, _) = attributes.split_once("\" location=\"")?;
-    // The first end tag that the request, if any, follows.
-    let request = body.match_indices("</skill>").find_map(|(at, _)| {
-        body[..at].strip_suffix('\n')?;
-        let after = &body[at + "</skill>".len()..];
-        if after.is_empty() {
-            Some("")
-        } else {
-            after.strip_prefix("\n\n")
-        }
-    })?;
-    Some((name, request.trim()))
+    let closing = "\n</skill>";
+    let end = head.len() + 1 + body.find(closing)? + closing.len();
+    Some((name, end))
 }

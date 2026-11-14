@@ -444,9 +444,6 @@ pub struct Skill {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    /// The command that runs the skill when sent.
-    #[serde(rename = "ref")]
-    pub reference: String,
 }
 
 #[derive(Debug, Deserialize)]

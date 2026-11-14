@@ -9,7 +9,6 @@ mod data;
 mod dictation;
 mod labels;
 mod markup;
-mod message;
 mod prefs;
 mod update;
 mod view;
