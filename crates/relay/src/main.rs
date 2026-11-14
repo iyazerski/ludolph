@@ -80,6 +80,11 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
         include_bytes!("../assets/file-icons.js"),
     ),
     (
+        "/provider-marks.js",
+        "text/javascript; charset=utf-8",
+        include_bytes!("../assets/provider-marks.js"),
+    ),
+    (
         "/seal.js",
         "text/javascript; charset=utf-8",
         include_bytes!("../assets/seal.js"),

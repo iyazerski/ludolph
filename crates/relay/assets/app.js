@@ -38,7 +38,7 @@ const ICONS = {
   "key": ["0 0 24 24", "", "<path fill=\"currentColor\" d=\"m18.977 5.023l.53-.53zm0 9.767l.53.53zM7.146 12.668l-.53-.53zM3.433 16.38l.53.53zm4.187 4.187l-.53-.53zm3.712-3.713l-.53-.53zm-8.323.736l-.745.083zm.232 2.089l-.745.083zm1.08 1.08l-.083.745zm2.089.232l.082-.745zm-2.886-.723l.53-.53zm.208.208l-.53.53zm3.672-8.845l-.726.187zm4.965 4.965l-.187.726zm-4.73.467a.75.75 0 1 0-1.055 1.066zm5.477-6.18a1.25 1.25 0 0 1 0-1.767l-1.06-1.06a2.75 2.75 0 0 0 0 3.889zm1.768 0a1.25 1.25 0 0 1-1.768 0l-1.06 1.062a2.75 2.75 0 0 0 3.889 0zm0-1.767a1.25 1.25 0 0 1 0 1.768l1.06 1.06a2.75 2.75 0 0 0 0-3.889zm1.06-1.06a2.75 2.75 0 0 0-3.889 0l1.061 1.06a1.25 1.25 0 0 1 1.768 0zm2.503-2.503a6.157 6.157 0 0 1 0 8.707l1.06 1.06a7.657 7.657 0 0 0 0-10.827zm1.06-1.06a7.657 7.657 0 0 0-10.828 0l1.06 1.06a6.157 6.157 0 0 1 8.708 0zM6.615 12.138L2.903 15.85l1.06 1.06l3.714-3.71zm1.535 8.959l1.24-1.24l-1.06-1.061l-1.24 1.24zm1.24-1.24l2.472-2.472l-1.06-1.061l-2.472 2.472zm-7.126-2.184l.232 2.089l1.49-.166l-.232-2.088zm1.974 3.831l2.089.232l.165-1.49l-2.088-.232zm-1.244-.706l.208.208l1.06-1.06l-.208-.209zm1.41-.784a.24.24 0 0 1-.141-.068l-1.061 1.06c.279.28.644.455 1.036.498zm-1.908-.252c.043.392.219.757.498 1.036l1.06-1.06a.24.24 0 0 1-.067-.142zm4.593.274a.73.73 0 0 1-.597.21l-.165 1.49a2.23 2.23 0 0 0 1.823-.64zM2.903 15.85a2.23 2.23 0 0 0-.64 1.823l1.491-.165a.73.73 0 0 1 .21-.597zm5.228-4.405A6.15 6.15 0 0 1 9.74 5.553l-1.06-1.06a7.65 7.65 0 0 0-2.002 7.325zm10.316 2.815a6.15 6.15 0 0 1-5.892 1.61l-.373 1.452a7.65 7.65 0 0 0 7.325-2.001zm-6.585 3.124c.056-.055.17-.1.32-.062l.373-1.453c-.588-.15-1.27-.028-1.753.455zM7.676 13.2c.483-.483.606-1.166.455-1.754l-1.453.373c.038.15-.007.264-.063.32zm1.711 5.594l-1.749-1.73l-1.054 1.066l1.749 1.73z\"/>"],
   "branch": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M6 8.5v7M6 12h10a2 2 0 0 0 2-2V8.5\"/><circle cx=\"6\" cy=\"6.25\" r=\"2.25\"/><circle cx=\"6\" cy=\"17.75\" r=\"2.25\"/><circle cx=\"18\" cy=\"6.25\" r=\"2.25\"/>"],
   "home": ["0 0 24 24", "", "<g fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path stroke-linecap=\"round\" d=\"M3 10.75L10.51 4.4c.86-.727 2.12-.727 2.98 0L21 10.75\"/><path d=\"M5 9.5V16c0 2.357 0 3.536.732 4.268C6.464 21 7.643 21 10 21h4c2.357 0 3.536 0 4.268-.732C19 19.536 19 18.357 19 16V9.5\"/><path stroke-linecap=\"round\" d=\"M12 21v-4\"/></g>"],
-  "mark-pi": ["0 0 800 800", "", "<path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65ZM517.36 400H634.72V634.72H517.36Z\"/>"],
+  "bot": ["0 0 24 24", "", "<rect x=\"4.75\" y=\"7.75\" width=\"14.5\" height=\"11.5\" rx=\"2.75\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/><path d=\"M12 7.5V5.25M9.25 12.25V14M14.75 12.25V14M2 12.5V15M22 12.5V15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"/><circle cx=\"12\" cy=\"3.75\" r=\"1.25\" fill=\"currentColor\"/>"],
 };
 
 // ---- helpers -------------------------------------------------------------------
@@ -53,8 +53,18 @@ function icon(name, cls = "") {
   return wrap.firstChild;
 }
 
-/** pi's mark. */
-const piMark = () => icon("mark-pi");
+/** A model's provider mark from its `provider/model` id, as the desktop picks it, else a bot. */
+function modelMark(model) {
+  const [provider, name = provider] = (model || "").split(/\/(.*)/);
+  // A gateway like bifrost has no mark, so the model's family stands in.
+  const family = [["claude", "anthropic"], ["gpt", "openai"], ["gemini", "google"], ["grok", "xai"]]
+    .find(([prefix]) => name.startsWith(prefix))?.[1];
+  const mark = PROVIDER_MARKS[provider] || PROVIDER_MARKS[family];
+  if (!mark) return icon("bot");
+  const wrap = document.createElement("span");
+  wrap.innerHTML = `<svg class="i" viewBox="0 0 ${mark[0]} ${mark[0]}" fill="currentColor" aria-hidden="true">${mark[1]}</svg>`;
+  return wrap.firstChild;
+}
 
 /** A status glyph: `spin` (sidebar), `trail` (transcript), `dot`, or `check`. */
 function glyph(kind, color) {
@@ -919,7 +929,7 @@ function listView() {
   // results also name the project.
   function row(c, withProject) {
     const s = statusOf(c), unseen = s === "idle" && seen.unseen(c);
-    const sig = JSON.stringify([chatTitle(c), s, isStale(c), unseen, ago(c.lastMessageAt || c.createdAt), c.project?.id, withProject]);
+    const sig = JSON.stringify([chatTitle(c), s, isStale(c), unseen, ago(c.lastMessageAt || c.createdAt), c.project?.id, c.model, withProject]);
     const old = known.get(c.machine + c.id);
     if (old?.sig === sig) return old.el;
     const corner = s === "working" ? [glyph("spin"), h("span", { style: { color: "var(--tone-working)" } }, isStale(c) ? "Offline?" : "Working")]
@@ -929,7 +939,7 @@ function listView() {
       : unseen ? [glyph("check", "var(--tone-done)"), h("span", { style: { color: "var(--tone-done)" } }, "Done")]
       : [ago(c.lastMessageAt || c.createdAt)];
     const el = h("a", { class: `row${unseen ? " unseen" : ""}${s !== "idle" ? " live" : ""}${old || !painted ? "" : " new"}`, href: chatHash(c.machine, c.id) },
-      h("span", { class: "mark" }, piMark()),
+      h("span", { class: "mark" }, modelMark(c.model)),
       h("span", { class: "title" }, chatTitle(c)),
       h("span", { class: "corner" }, corner),
       withProject && h("span", { class: "meta" }, h("span", {}, tile(c.project), c.project?.name || "No project")));
@@ -1830,7 +1840,7 @@ function chatView(machine, id, fromList) {
     if (entry && !entry.ready) entry.promise.then(drawInfo, () => {});
     const label = entry?.ready?.find(m => m.id === model)?.label || shortModel(model) || "Default";
     modelChip.disabled = !machine;
-    modelChip.replaceChildren(piMark(), h("span", { class: "name" }, label),
+    modelChip.replaceChildren(modelMark(model), h("span", { class: "name" }, label),
       // replaceChildren, unlike h(), prints null as "null": no level, no node.
       reasoning ? h("span", { class: "lvl" }, reasoningName(reasoning)) : "");
     // A new chat picks its project (and Mac) here, in front of the checkout;
