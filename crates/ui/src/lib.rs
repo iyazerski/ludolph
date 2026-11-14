@@ -135,6 +135,7 @@ pub fn run(opts: Opts) -> Result<()> {
     let quick = App::new(spec(SIZE, MIN_SIZE)).windowless();
     let main = App::new(spec(MAIN_SIZE, MAIN_MIN_SIZE)).windowless();
     let (quick_handle, main_handle) = (quick.handle(), main.handle());
+    let dock = main_handle.clone();
     // Registered once the app runs, so the settings can change it.
     quick_handle.update(|s, _| s.register_saved_shortcut());
     if !opts.hidden {
@@ -171,8 +172,7 @@ pub fn run(opts: Opts) -> Result<()> {
             drag_regions: true,
         })
         .on_visibility(|s, shown, _| {
-            // Only once it's on screen: an app that becomes regular while its window
-            // orders in gets the window back at a stray, tiny frame.
+            // Each later open; `on_ready` below covers the first, which this misses.
             if shown {
                 s.api.app().set_dock_icon(true);
             }
@@ -219,6 +219,9 @@ pub fn run(opts: Opts) -> Result<()> {
             WindowSpec::from_app("main", main)
                 .options(main_options)
                 .on_ready(move |handle| {
+                    // Not before its first frame: an app that becomes regular while its
+                    // window orders in gets the window back at a stray, tiny frame.
+                    dock.set_dock_icon(true);
                     // AppKit centres a window first shown during launch, wherever it was made.
                     if let Some(frame) = saved.take()
                         && handle
