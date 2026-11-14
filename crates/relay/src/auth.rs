@@ -1,7 +1,7 @@
 //! Sign-in with a passkey (WebAuthn), and the session cookie it sets.
 //!
-//! There's one user. The first passkey is created with the setup token
-//! (`SETUP_TOKEN`, a deploy secret); a signed-in browser can add more.
+//! There's one user. Passkeys are created by linking a phone to a Mac
+//! (`pair`), or by a signed-in browser.
 //! Ceremony state stays in memory for a few minutes: a restart only cancels
 //! a sign-in that's under way.
 
@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use ring::digest::{SHA256, digest};
 use serde::Serialize;
 use url::Url;
 use webauthn_rs::prelude::{
@@ -43,7 +42,6 @@ struct Pending {
 /// Passkey sign-in and creation for the relay's one user.
 pub struct Auth {
     webauthn: Webauthn,
-    setup_token: Option<String>,
     flows: Mutex<HashMap<String, Pending>>,
 }
 
@@ -57,7 +55,7 @@ pub struct Started<T> {
 
 impl Auth {
     /// Set up WebAuthn for passkeys bound to `public_url`'s host.
-    pub fn new(public_url: &Url, setup_token: Option<String>) -> Result<Self> {
+    pub fn new(public_url: &Url) -> Result<Self> {
         let rp_id = public_url
             .host_str()
             .context("the public URL has no host")?;
@@ -66,19 +64,8 @@ impl Auth {
             .build()?;
         Ok(Self {
             webauthn,
-            setup_token: setup_token.filter(|t| !t.is_empty()),
             flows: Mutex::new(HashMap::new()),
         })
-    }
-
-    pub fn setup_allowed(&self, token: Option<&str>) -> bool {
-        // Compare digests, so the comparison's timing says nothing about the token.
-        let hash = |t: &str| digest(&SHA256, t.as_bytes()).as_ref().to_vec();
-        matches!((&self.setup_token, token), (Some(want), Some(got)) if hash(want) == hash(got))
-    }
-
-    pub fn has_setup_token(&self) -> bool {
-        self.setup_token.is_some()
     }
 
     pub fn start_register(&self, store: &Store) -> Result<Started<CreationChallengeResponse>> {
@@ -207,21 +194,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_setup_token_allows_setup() {
-        let url = Url::parse("https://ludolph.example.com").unwrap();
-        let auth = Auth::new(&url, Some("s3cret".into())).unwrap();
-        assert!(auth.setup_allowed(Some("s3cret")));
-        assert!(!auth.setup_allowed(Some("s3cre")));
-        assert!(!auth.setup_allowed(None));
-        let none = Auth::new(&url, Some(String::new())).unwrap();
-        assert!(!none.setup_allowed(Some("")));
-    }
-
-    #[test]
     fn flows_are_single_use() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        let auth = Auth::new(&Url::parse("https://ludolph.example.com").unwrap(), None).unwrap();
+        let auth = Auth::new(&Url::parse("https://ludolph.example.com").unwrap()).unwrap();
         let started = auth.start_register(&store).unwrap();
         assert!(matches!(auth.take(&started.flow), Some(Flow::Register(_))));
         assert!(auth.take(&started.flow).is_none());

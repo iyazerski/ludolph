@@ -878,6 +878,7 @@ Used by:
 - flagset 0.4.7
 - kurbo 0.11.3
 - multiversion_no_op 1.0.0
+- qrcode 0.14.1
 - raw-window-metal 1.1.0
 - siphasher 1.0.4
 - static_assertions 1.1.0

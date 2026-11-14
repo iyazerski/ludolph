@@ -2801,7 +2801,6 @@ dependencies = [
  "anyhow",
  "libc",
  "ludolph-engine",
- "ludolph-relay-proto",
  "ludolph-ui",
  "plist",
  "serde",
@@ -2875,7 +2874,6 @@ dependencies = [
 name = "ludolph-relay-proto"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.1",
  "serde",
  "serde_json",
 ]
@@ -2896,6 +2894,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-speech",
  "pulldown-cmark",
+ "qrcode",
  "rune",
  "rune-kit",
  "rune-theme-opencode",
@@ -4201,6 +4200,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4702,7 +4707,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

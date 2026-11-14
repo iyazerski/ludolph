@@ -576,7 +576,7 @@ fn model_body(s: &State, page: &ChatPage, k: &Kit) -> El {
         reasoning,
     } = s.config();
     let models = match &s.catalog {
-        Catalog::Ready(models) => models,
+        Catalog::Ready(got) => &got.models,
         Catalog::Failed(e) => {
             return text(format!("Couldn't load the models: {e}"))
                 .font(k.ty.small)

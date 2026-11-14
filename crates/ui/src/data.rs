@@ -2,7 +2,7 @@
 //! (`ludolph_engine::tools`, `ludolph_engine::feed`).
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A chat as `list_chats` and the feed summarize it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -322,6 +322,8 @@ pub struct Model {
 #[derive(Debug, Deserialize)]
 pub struct Models {
     pub models: Vec<Model>,
+    /// The model pi starts a chat on when none is picked.
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -417,4 +419,68 @@ mod tests {
             assert_eq!(m.answer().as_deref(), want);
         }
     }
+}
+
+/// The engine's settings, as `get_settings` answers and `set_settings`
+/// takes them, all at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    /// The model for titles and dictation cleanup; pi's default if `None`.
+    pub sidecar_model: Option<String>,
+    pub notify: Notify,
+    pub open_at_login: bool,
+}
+
+/// When the phone gets notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Notify {
+    /// Only while nobody uses the Mac.
+    Away,
+    Always,
+}
+
+/// The Mac's link to the relay, as `get_phone_link` and `link_phone`
+/// answer.
+/// This Mac's link to the relay, a phone linking through it, and the relay
+/// it links through.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PhoneLink {
+    pub link: Option<RelayLink>,
+    pub pairing: Option<Pairing>,
+    pub relay: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayLink {
+    pub relay: String,
+    pub status: LinkStatus,
+    /// Why the last try to connect failed, while it tries again.
+    pub error: Option<String>,
+}
+
+/// A phone linking through this Mac.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Pairing {
+    Starting,
+    /// Waiting for a phone to open `url`, which the QR code holds.
+    Waiting {
+        url: String,
+    },
+    Linked,
+    Failed {
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkStatus {
+    Connecting,
+    Connected,
+    /// The relay forgot this Mac, so a phone must link again.
+    Rejected,
 }

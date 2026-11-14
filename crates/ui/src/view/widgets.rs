@@ -168,7 +168,7 @@ pub fn engine_note(s: &State, k: &Kit) -> Option<El> {
                         .truncate(),
                 )
                 .child(
-                    text("Start it with ludolph install")
+                    text("Its log is in ~/Library/Logs/Ludolph")
                         .font(k.ty.text_xsmall)
                         .color(k.c.text_muted)
                         .truncate(),

@@ -318,7 +318,7 @@ function selectedMac() {
 function macNote(m) {
   if (macState(m) === "offline") {
     return h("div", { class: "offline-note" }, h("span", {}, h("b", {}, `${m.name} is offline.`),
-      " It may be asleep, or its engine isn't running: run ludolph install on it."));
+      " It may be asleep, or its engine isn't running: open Ludolph on it."));
   }
   return null;
 }
@@ -369,9 +369,9 @@ const b64 = {
   encode: buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
 };
 
-/** Create a passkey; `setup` is the setup token, if not signed in yet. */
-async function createPasskey(setup) {
-  const { flow, options } = await post("/auth/register/start", { setup });
+/** Create a passkey; `pair` is the pairing code that allows it, if not signed in yet. */
+async function createPasskey(pair) {
+  const { flow, options } = await post("/auth/register/start", { pair });
   const o = options.publicKey;
   o.challenge = b64.decode(o.challenge);
   o.user.id = b64.decode(o.user.id);
@@ -628,7 +628,7 @@ function route() {
   const previous = current;
   let view;
   const fromList = previous?.kind === "list" || (previous?.kind === "new" && previous.fromList);
-  if (parts[1] === "setup") view = signInView(parts[2]);
+  if (parts[1] === "pair") view = pairView(parts[2]);
   else if (parts[1] === "new") view = chatView(null, null, fromList);
   else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "changes") view = changesView(parts[2], parts[4], parts[6], previous?.kind === "chat", previous?.fromList);
   // Back from the changes, the chat goes back the way it came.
@@ -658,11 +658,11 @@ document.addEventListener("animationend", ({ target: el }) => {
 const go = hash => { if (location.hash !== hash) location.hash = hash; };
 const chatHash = (machine, chat) => `#/m/${encodeURIComponent(machine)}/chat/${encodeURIComponent(chat)}`;
 
-function showSignIn() {
+function showSignIn(hasPasskey) {
   if (current?.kind === "signin") return;
   current?.destroy();
   $("#app").replaceChildren();
-  current = signInView(null);
+  current = signInView(hasPasskey);
   $("#app").append(current.el);
 }
 
@@ -683,29 +683,91 @@ function solidOnScroll(scroll, bar, at = 8) {
 
 // ---- sign in ------------------------------------------------------------------
 
-function signInView(setupToken) {
-  const setup = setupToken != null;
-  const btn = h("button", { class: "btn solid" }, icon("key"), setup ? "Create a passkey" : "Sign in with passkey");
+/** How to link a phone, which only a Mac starts. */
+const LINK_HINT = "On your Mac, open Ludolph's Settings, choose Link a phone, and scan the QR code with this phone's camera.";
+
+/** The sign-in screen. Without a passkey yet, it says how to link a phone instead. */
+function signInView(hasPasskey = true) {
+  const btn = h("button", { class: "btn solid" }, icon("key"), "Sign in with passkey");
   const el = h("div", { class: "view" }, h("div", { class: "signin" },
     h("img", { src: "/icon-192.png", alt: "" }),
     h("h1", {}, "Ludolph"),
-    h("p", {}, setup
-      ? "Create a passkey for this relay. Your password manager or phone saves it, and you sign in with it from then on."
-      : "Your pi chats, from anywhere."),
-    btn));
+    h("p", {}, hasPasskey ? "Your pi chats, from anywhere." : LINK_HINT),
+    hasPasskey && btn));
   btn.addEventListener("click", async () => {
     btn.disabled = true;
     try {
-      if (setup) await createPasskey(setupToken);
-      else await signInWithPasskey();
+      await signInWithPasskey();
       haptic(10);
       location.hash = "#/";
       route();
     } catch (e) {
-      if (e.name !== "NotAllowedError") toast({ title: setup ? "Couldn't create the passkey" : "Couldn't sign in", body: e.message, kind: "error", timeout: 6000 });
+      if (e.name !== "NotAllowedError") toast({ title: "Couldn't sign in", body: e.message, kind: "error", timeout: 6000 });
     } finally { btn.disabled = false; }
   });
   return { kind: "signin", el, destroy() {} };
+}
+
+/**
+ * The page a Mac's QR code opens: link this phone to that Mac. A signed-in
+ * phone links at once. Otherwise it signs in with its passkey, or creates one
+ * when the relay allows: for a Mac the relay knows, or on a relay without any.
+ */
+function pairView(code) {
+  const text = h("p", {}, "Checking the code…");
+  const actions = h("div", { class: "pair-actions" });
+  const el = h("div", { class: "view" }, h("div", { class: "signin" },
+    h("img", { src: "/icon-192.png", alt: "" }),
+    h("h1", {}, "Link this phone"), text, actions));
+  const done = async machine => {
+    // A new Mac connects once it has its token, so wait a little for it rather than show it offline.
+    text.textContent = `Connecting to ${machine.name}…`;
+    actions.replaceChildren();
+    for (let i = 0; i < 20; i++) {
+      const { machines } = await post("/api/machines");
+      if (machines.find(m => m.id === machine.id)?.status.online) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    haptic(10);
+    toast({ title: `Linked to ${machine.name}`, kind: "done", timeout: 2600 });
+    // Replace the pairing page, so Back doesn't claim a spent code again.
+    history.replaceState(null, "", "#/");
+    route();
+  };
+  const claim = async () => done((await post("/api/pair/claim", { code })).machine);
+  const failed = (title, e) => {
+    if (e.name !== "NotAllowedError") toast({ title, body: e.message, kind: "error", timeout: 6000 });
+  };
+  const button = (label, solid, run, title) => {
+    const btn = h("button", { class: solid ? "btn solid" : "btn" }, icon("key"), label);
+    btn.addEventListener("click", async () => {
+      for (const b of actions.querySelectorAll("button")) b.disabled = true;
+      try { await run(); await claim(); }
+      catch (e) { failed(title, e); }
+      finally { for (const b of actions.querySelectorAll("button")) b.disabled = false; }
+    });
+    return btn;
+  };
+  (async () => {
+    let info;
+    try { info = await post("/auth/pair", { code }); }
+    catch (e) {
+      text.textContent = `This code doesn't work anymore. ${LINK_HINT}`;
+      return;
+    }
+    if (info.signedIn) {
+      text.textContent = `Linking to ${info.name}…`;
+      try { await claim(); } catch (e) { failed("Couldn't link", e); text.textContent = e.message; }
+      return;
+    }
+    const canCreate = info.known || !info.hasPasskey;
+    text.textContent = canCreate
+      ? `Use Ludolph on ${info.name} from this phone. A passkey keeps it signed in; your password manager saves it.`
+      : `Sign in with the passkey you made when you first linked a phone, to add ${info.name}.`;
+    if (canCreate) actions.append(button("Create a passkey", true, () => createPasskey(code), "Couldn't create the passkey"));
+    if (info.hasPasskey) actions.append(button("Sign in with passkey", !canCreate, signInWithPasskey, "Couldn't sign in"));
+  })();
+  return { kind: "pair", el, destroy() {} };
 }
 
 // ---- chat list ----------------------------------------------------------------
@@ -2079,11 +2141,11 @@ function settingsSheet() {
       extra: icon("chevRight", "chev"),
       onclick: () => fill(macPage(m, close)),
     }));
-    const addRow = itemRow({ iconName: "plus", label: "Add a Mac", onclick: () => fill(addMac(close)) });
     return [
       h("h2", {}, "Settings"),
       h("div", { class: "group" }, pushRow, testRow), pushNote,
-      h("div", { class: "group" }, macRows, addRow),
+      macRows.length ? h("div", { class: "group" }, macRows) : "",
+      h("div", { class: "note" }, "To add a Mac, open Ludolph's Settings on it and choose Link a phone."),
       h("div", { class: "group" }, itemRow({ iconName: "logout", label: "Sign out", cls: "danger", onclick: async () => {
         await post("/auth/logout").catch(() => {});
         close();
@@ -2095,40 +2157,16 @@ function settingsSheet() {
 
 /** One Mac's page: its state, and removing it. */
 function macPage(m, close) {
-  const sub = macState(m) === "ready" ? versions(m) : "Offline. Run ludolph install on it.";
+  const sub = macState(m) === "ready" ? versions(m) : "Offline. Open Ludolph on it.";
   return [
     h("h2", {}, m.name),
     h("div", { class: "note", style: { marginTop: "-8px" } }, withBattery(m, sub)),
     h("div", { class: "group" }, itemRow({ iconName: "trash", label: "Remove this Mac", cls: "danger", onclick: async () => {
-      if (!confirm(`Remove ${m.name}? It disconnects now, and needs a new token to connect again.`)) return;
+      if (!confirm(`Remove ${m.name}? It disconnects now. To add it again, link this phone from its Settings.`)) return;
       try { await post("/api/machines/remove", { id: m.id }); close(); toast({ title: `${m.name} removed`, kind: "done" }); }
       catch (e) { toast({ title: "Couldn't remove it", body: e.message, kind: "error" }); }
     } })),
   ];
-}
-
-/** The "Add a Mac" step: name it, then show the command that links it. */
-function addMac(close) {
-  const name = h("input", { class: "field", placeholder: "Name, like Work MacBook", maxlength: 60, autocomplete: "off" });
-  const create = h("button", { class: "btn solid full" }, "Create");
-  const body = h("div", {}, h("h2", {}, "Add a Mac"), name, create);
-  create.addEventListener("click", async () => {
-    if (!name.value.trim()) return;
-    create.disabled = true;
-    try {
-      const { code } = await post("/api/machines/add", { name: name.value.trim() });
-      const command = `ludolph link ${code}`;
-      body.replaceChildren(
-        h("h2", {}, "Connect the Mac"),
-        h("div", { class: "note", style: { margin: "-6px 4px 12px" } }, "Run this on the Mac, after ludolph install. Its engine stays connected in the background from then on. The code is shown only once."),
-        h("div", { class: "command" }, command),
-        h("button", { class: "btn full", style: { marginBottom: "8px" }, onclick: () => { copyText(command); toast({ title: "Command copied", kind: "done", timeout: 1600 }); } }, icon("copy"), "Copy command"),
-        // Not `onclick: close`: the click event would count as `fromHistory`.
-        h("button", { class: "btn solid full", onclick: () => close() }, "Done"));
-    } catch (e) { toast({ title: "Couldn't add the Mac", body: e.message, kind: "error" }); create.disabled = false; }
-  });
-  setTimeout(() => name.focus(), 300);
-  return body;
 }
 
 // ---- start --------------------------------------------------------------------
@@ -2148,10 +2186,11 @@ if ("serviceWorker" in navigator) {
 }
 
 (async () => {
-  if (location.hash.startsWith("#/setup/")) return route();
+  // The pairing page signs in on its own.
+  if (location.hash.startsWith("#/pair/")) return route();
   try {
-    const { signedIn } = await post("/auth/status");
-    if (!signedIn) return showSignIn();
+    const { signedIn, hasPasskey } = await post("/auth/status");
+    if (!signedIn) return showSignIn(hasPasskey);
   } catch {
     // The relay is unreachable: show the cached shell; polling retries.
   }

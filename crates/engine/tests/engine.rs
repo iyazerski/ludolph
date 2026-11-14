@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, Status};
-use ludolph_engine::relay::{self, Link};
 use ludolph_engine::server;
 use ludolph_engine::settings::{Notify, Settings};
 use ludolph_engine::transcript::{Part, Role, ToolState, Window};
@@ -15,6 +14,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{
     Callback, ErrorResponse, Request, Response,
 };
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 /// An engine in `dir` that runs the fake pi, which logs to `dir/pi.log`.
 async fn engine(dir: &Path, idle: Duration) -> Engine {
@@ -629,6 +630,10 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
             {"id": "fake/quick", "label": "Quick", "reasoningLevels": ["off"]},
         ])
     );
+    assert_eq!(
+        models["default"], "fake/deep",
+        "the model a new pi starts on"
+    );
 
     let quick = json!({"chat": id, "model": "fake/quick"});
     let saved = tool(&engine, "set_chat_model", quick).await.unwrap();
@@ -968,17 +973,54 @@ fn replay<'a>(frames: impl IntoIterator<Item = &'a Value>) -> Vec<Value> {
         .collect()
 }
 
-/// Keeps the `Authorization` header of the Mac's handshake.
-struct Bearer<'a>(&'a mut Option<String>);
+/// Keeps the path and `Authorization` header of the Mac's handshake.
+struct Handshake<'a>(&'a mut (String, Option<String>));
 
-impl Callback for Bearer<'_> {
+impl Callback for Handshake<'_> {
     fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
         let header = request.headers().get("authorization");
-        *self.0 = header
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
+        *self.0 = (
+            request.uri().path().to_owned(),
+            header
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+        );
         Ok(response)
     }
+}
+
+type MacSocket = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
+
+/// Accept the Mac's next WebSocket, with the path and `Authorization`
+/// header it asked with.
+async fn accept_mac(listener: &TcpListener) -> (MacSocket, String, Option<String>) {
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut handshake = (String::new(), None);
+    let socket = tokio_tungstenite::accept_hdr_async(tcp, Handshake(&mut handshake))
+        .await
+        .unwrap();
+    (socket, handshake.0, handshake.1)
+}
+
+/// The phone link once `wanted` picks it.
+async fn phone_link_until(engine: &Engine, wanted: impl Fn(&Value) -> bool) -> Value {
+    let wait = async {
+        loop {
+            let link = tool(engine, "get_phone_link", json!({})).await.unwrap();
+            if wanted(&link) {
+                return link;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .unwrap()
+}
+
+async fn to_mac(socket: &mut MacSocket, message: Value) {
+    let text = message.to_string();
+    socket.send(Message::Text(text.into())).await.unwrap();
 }
 
 /// The next message the Mac sent the relay.
@@ -1013,31 +1055,14 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
 
-    // A relay that refuses the token.
-    let refusing = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let relay = format!("http://{}", refusing.local_addr().unwrap());
-    tokio::spawn(async move {
-        let (mut tcp, _) = refusing.accept().await.unwrap();
-        let mut request = [0; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut tcp, &mut request).await;
-        let refusal = b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n";
-        tcp.write_all(refusal).await.unwrap();
-    });
-    let token = "t0ken".to_owned();
-    // Without TLS, the token only goes to a relay on this Mac.
-    let plain = Link {
-        relay: "http://relay.example.com".into(),
-        token: token.clone(),
-    };
-    let plain = relay::verify(&plain).await.unwrap_err();
+    assert_eq!(
+        tool(&engine, "get_phone_link", json!({})).await.unwrap(),
+        json!({"link": null, "pairing": null, "relay": "https://ludolph.iyazerski.dev"})
+    );
+    // Without TLS, a token only goes to a relay on this Mac.
+    let plain = json!({"relay": "http://relay.example.com"});
+    let plain = tool(&engine, "link_phone", plain).await.unwrap_err();
     assert!(format!("{plain:#}").contains("https://"), "{plain:#}");
-    let refused = relay::verify(&Link {
-        relay,
-        token: token.clone(),
-    })
-    .await
-    .unwrap_err();
-    assert!(format!("{refused:#}").contains("rejected"), "{refused:#}");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = format!("http://{}", listener.local_addr().unwrap());
@@ -1045,14 +1070,50 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     tool(&engine, "set_settings", json!({"notify": "always"}))
         .await
         .unwrap();
-    tokio::spawn(relay::run(engine.clone(), Link { relay, token }));
-    let (tcp, _) = listener.accept().await.unwrap();
-    let mut bearer = None;
-    let mut socket = tokio_tungstenite::accept_hdr_async(tcp, Bearer(&mut bearer))
+    let pairing = |state: &'static str| move |link: &Value| link["pairing"]["state"] == state;
+    // A code that expires before a phone claims it.
+    let started = tool(&engine, "link_phone", json!({"relay": relay})).await;
+    assert_eq!(started.unwrap()["pairing"], json!({"state": "starting"}));
+    let (mut waiting, path, bearer) = accept_mac(&listener).await;
+    assert_eq!((path.as_str(), bearer), ("/pair", None));
+    let start = from_mac(&mut waiting).await;
+    assert_eq!(start["protocol"], 6);
+    assert!(!start["name"].as_str().unwrap().is_empty(), "{start}");
+    let expired = CloseFrame {
+        code: CloseCode::Policy,
+        reason: "the code expired".into(),
+    };
+    waiting.close(Some(expired)).await.unwrap();
+    let failed = phone_link_until(&engine, pairing("failed")).await;
+    assert_eq!(failed["pairing"]["error"], "the code expired");
+
+    // A phone claims the next code, and the relay gives the new Mac its token.
+    tool(&engine, "link_phone", json!({"relay": relay}))
         .await
         .unwrap();
-    assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
-    assert_eq!(from_mac(&mut socket).await["protocol"], 5);
+    let (mut waiting, _, _) = accept_mac(&listener).await;
+    from_mac(&mut waiting).await;
+    to_mac(
+        &mut waiting,
+        json!({"type": "code", "code": "c0de", "expiresIn": 600}),
+    )
+    .await;
+    let shown = phone_link_until(&engine, pairing("waiting")).await;
+    assert_eq!(shown["pairing"]["url"], format!("{relay}/#/pair/c0de"));
+    to_mac(&mut waiting, json!({"type": "linked", "token": "t0ken"})).await;
+    let (mut socket, path, bearer) = accept_mac(&listener).await;
+    assert_eq!(
+        (path.as_str(), bearer.as_deref()),
+        ("/connect", Some("Bearer t0ken"))
+    );
+    assert_eq!(from_mac(&mut socket).await["protocol"], 6);
+    let linked = phone_link_until(&engine, |link| link["link"]["status"] == "connected").await;
+    assert_eq!(
+        linked,
+        json!({"link": {"relay": relay, "status": "connected", "error": null},
+               "pairing": {"state": "linked"}, "relay": relay})
+    );
+    assert!(dir.path().join("state/relay.json").exists());
     // A Mac without a battery, like a CI machine, reports none.
     let power = from_mac(&mut socket).await;
     let battery = &power["battery"];
@@ -1153,5 +1214,52 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         (&cut["kind"], &cut["body"]),
         (&json!("interrupted"), &json!("The run stopped: pi exited."))
     );
+
+    // Another phone links through the Mac the relay knows, on the same relay only.
+    let other = json!({"relay": "https://relay.example.com"});
+    let other = tool(&engine, "link_phone", other).await.unwrap_err();
+    assert!(
+        format!("{other:#}").contains("unlink it first"),
+        "{other:#}"
+    );
+    tool(&engine, "link_phone", json!({})).await.unwrap();
+    let (mut waiting, path, bearer) = accept_mac(&listener).await;
+    assert_eq!(
+        (path.as_str(), bearer.as_deref()),
+        ("/pair", Some("Bearer t0ken"))
+    );
+    from_mac(&mut waiting).await;
+    to_mac(
+        &mut waiting,
+        json!({"type": "code", "code": "c0de2", "expiresIn": 600}),
+    )
+    .await;
+    phone_link_until(&engine, pairing("waiting")).await;
+    to_mac(&mut waiting, json!({"type": "linked", "token": null})).await;
+    phone_link_until(&engine, pairing("linked")).await;
+
+    // Unlinking drops the connection, forgets the link, and has the relay
+    // forget the Mac.
+    let unlinked = tool(&engine, "unlink_phone", json!({})).await.unwrap();
+    assert_eq!(unlinked["link"], Value::Null);
+    let closed = async {
+        while let Some(Ok(message)) = socket.next().await {
+            if message.is_close() {
+                break;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), closed)
+        .await
+        .unwrap();
+    let (mut forgetting, path, bearer) = accept_mac(&listener).await;
+    assert_eq!(
+        (path.as_str(), bearer.as_deref()),
+        ("/connect", Some("Bearer t0ken"))
+    );
+    assert_eq!(from_mac(&mut forgetting).await["type"], "hello");
+    assert_eq!(from_mac(&mut forgetting).await, json!({"type": "forget"}));
+    forgetting.close(None).await.unwrap();
+    assert!(!dir.path().join("state/relay.json").exists());
     engine.shutdown().await.unwrap();
 }

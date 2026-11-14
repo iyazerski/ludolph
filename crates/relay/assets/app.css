@@ -648,6 +648,7 @@ a { color: inherit; text-decoration: none; }
 .signin h1 { margin: 6px 0 0; font-size: 24px; font-weight: 700; }
 .signin p { margin: 0 0 10px; color: var(--secondary); max-width: 300px; font-size: 15px; }
 .signin .btn { min-width: 240px; }
+.pair-actions { display: flex; flex-direction: column; gap: 10px; }
 
 /* ---- toasts ------------------------------------------------------------- */
 

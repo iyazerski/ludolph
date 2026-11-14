@@ -1,11 +1,11 @@
-//! The main window: the sidebar beside the chat, under a toolbar with the
-//! chat's title and actions.
+//! The main window: the sidebar beside the chat or the settings, under a
+//! toolbar with the page's title and actions.
 
-use rune::{Cx, El, col, el, text};
+use rune::{Cx, El, col, el, row, text};
 use rune_kit::shell::{SidebarToggle, SplitView, Toolbar};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
-use super::{chat, icons, sidebar, toast};
+use super::{chat, icons, settings, sidebar, toast};
 use crate::app::{ChatPage, Page, State};
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
@@ -15,6 +15,10 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         Page::Chat(page) => (
             chat::pane(s, page, k, &mut layer),
             toolbar(page, k, &mut layer),
+        ),
+        Page::Settings(page) => (
+            settings::view(s, page, k, &mut layer),
+            Toolbar::new().leading(settings_title(k)),
         ),
         Page::List => (el(), Toolbar::new()),
     };
@@ -31,6 +35,22 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .reduced_motion(cx.is_reduced_motion())
         .build(k);
     rune_kit::root(split, layer)
+}
+
+/// Back to the chat, and the page's title.
+fn settings_title(k: &Kit) -> El {
+    row()
+        .gap(6.0)
+        .center_y()
+        .child(
+            IconButton::new(&icons::BACK)
+                .variant(IconButtonVariant::GhostMuted)
+                .label("Back")
+                .help("Back (Esc)")
+                .on_press(State::close_settings)
+                .build(k),
+        )
+        .child(text("Settings").font(k.ty.ui_medium).color(k.c.text_base))
 }
 
 /// The chat's title and project, then its actions.

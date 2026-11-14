@@ -1,6 +1,7 @@
 //! What the app remembers between runs, as the phone app keeps it in local
-//! storage: which turns were seen, folded projects, and the last new chat's
-//! picks.
+//! storage: which turns were seen, folded projects, the last new chat's
+//! picks, the global shortcut, which the app registers itself, and how tool
+//! calls show.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -10,7 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use super::data::Chat;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// The shortcut that shows and hides the quick window until you record another.
+const SHORTCUT: &str = "ctrl+alt+space";
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     /// Each chat's last activity the app has shown, so later turns read "Done".
@@ -19,6 +23,23 @@ pub struct Prefs {
     pub collapsed: BTreeSet<String>,
     /// The picks of the last chat started here.
     pub new_chat: NewChat,
+    /// The quick window's global shortcut, as Rune writes it (`ctrl+alt+space`),
+    /// or `None` for none.
+    pub shortcut: Option<String>,
+    /// Whether a chat's tool groups start open.
+    pub expand_tools: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            seen: BTreeMap::new(),
+            collapsed: BTreeSet::new(),
+            new_chat: NewChat::default(),
+            shortcut: Some(SHORTCUT.to_owned()),
+            expand_tools: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

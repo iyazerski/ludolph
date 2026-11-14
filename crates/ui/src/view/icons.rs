@@ -4,6 +4,10 @@
 use std::sync::LazyLock;
 
 use rune::Icon;
+/// A step of thinking among tool calls. The phone leaves thinking out.
+pub use rune_theme_opencode::icons::OUTLINE_BRAIN as THOUGHT;
+/// The settings. The phone keeps its settings under its menu, without one.
+pub use rune_theme_opencode::icons::SETTINGS_GEAR as SETTINGS;
 /// Expanding the quick window's chat into the main window, and popping the
 /// main window's chat out into the quick one. The phone has neither.
 pub use rune_theme_opencode::icons::{OUTLINE_EXPAND as EXPAND, SQUARE_ARROW_TOP_RIGHT as POP_OUT};

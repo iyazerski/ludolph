@@ -41,6 +41,14 @@ pub fn view(s: &State, k: &Kit) -> El {
                 .build(k),
         )
         .child(
+            IconButton::new(&icons::SETTINGS)
+                .variant(IconButtonVariant::Ghost)
+                .label("Settings")
+                .help("Settings (⌘,)")
+                .on_press(State::open_settings)
+                .build(k),
+        )
+        .child(
             IconButton::new(&icons::EXPAND)
                 .variant(IconButtonVariant::Ghost)
                 .label("Open the main window")

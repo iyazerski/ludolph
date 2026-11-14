@@ -5,18 +5,52 @@
 //! to follow for the phone, and the Mac answers each call with an
 //! [`Up::Reply`], streams followed chats as [`Up::Frame`]s, and reports chat
 //! changes with [`Up::Notify`].
+//!
+//! Linking a phone takes a second, short WebSocket on [`PAIR_PATH`]: the
+//! Mac opens it with a [`PairStart`], shows the code it gets as a QR code,
+//! and learns from a [`Paired::Linked`] when a phone has claimed it.
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Bumped when a message or a tool's answer changes shape, since the relay
 /// serves the phone app the answers are for; it refuses other versions.
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 
 /// The path the Mac connects to, with `Authorization: Bearer <token>`.
 pub const CONNECT_PATH: &str = "/connect";
+
+/// The path the Mac waits on while a phone links, with its token if it has
+/// one, so a phone can link through a Mac the relay already knows.
+pub const PAIR_PATH: &str = "/pair";
+
+/// The phone app's page that claims pairing code `code`. The code is in
+/// the fragment, which the browser never sends, so no log can keep it.
+pub fn pair_url(relay: &str, code: &str) -> String {
+    format!("{}/#/pair/{code}", relay.trim_end_matches('/'))
+}
+
+/// Mac → relay: the first message on [`PAIR_PATH`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairStart {
+    pub protocol: u32,
+    /// The Mac's name, which the phone shows.
+    pub name: String,
+}
+
+/// Relay → Mac on [`PAIR_PATH`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Paired {
+    /// The code to show, valid for `expires_in` seconds; the relay closes
+    /// the socket when it expires.
+    #[serde(rename_all = "camelCase")]
+    Code { code: String, expires_in: u64 },
+    /// A phone claimed the code. A Mac new to the relay gets its token,
+    /// which [`CONNECT_PATH`] takes.
+    Linked { token: Option<String> },
+}
 
 /// Relay → Mac.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +90,8 @@ pub enum Up {
     /// The Mac's battery, `None` on a Mac without one: sent after
     /// [`Up::Hello`] and on each change.
     Power { battery: Option<Battery> },
+    /// The Mac unlinked: the relay forgets it and its token, and closes.
+    Forget,
 }
 
 /// The Mac's battery, which the phone shows beside the Mac's name.
@@ -100,36 +136,6 @@ pub enum NoticeKind {
     Failed,
     /// Its run was cut off: pi exited in the middle of it.
     Interrupted,
-}
-
-/// What the phone's **Add a Mac** gives: the relay's address and the Mac's
-/// token, as one string to paste on the Mac.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LinkCode {
-    pub relay: String,
-    pub token: String,
-}
-
-impl LinkCode {
-    /// The code as text: its JSON, in URL-safe base64.
-    pub fn encode(&self) -> String {
-        B64.encode(serde_json::to_vec(self).expect("two strings serialize"))
-    }
-
-    /// Read a code, or `None` if `code` isn't one. Spaces around it, from
-    /// copying, don't matter.
-    pub fn decode(code: &str) -> Option<Self> {
-        serde_json::from_slice(&B64.decode(code.trim()).ok()?).ok()
-    }
-}
-
-/// Leaves the token out, so logs can't leak it.
-impl std::fmt::Debug for LinkCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LinkCode")
-            .field("relay", &self.relay)
-            .finish_non_exhaustive()
-    }
 }
 
 #[cfg(test)]
@@ -202,14 +208,24 @@ mod tests {
     }
 
     #[test]
-    fn a_link_code_reads_back() {
-        let link = LinkCode {
-            relay: "https://relay.example.com".into(),
-            token: "t0k-en_".into(),
+    fn pairing_messages_keep_their_wire_shape() {
+        let code = Paired::Code {
+            code: "c0de".into(),
+            expires_in: 600,
         };
-        let code = link.encode();
-        assert_eq!(LinkCode::decode(&format!(" {code}\n")), Some(link));
-        assert_eq!(LinkCode::decode("not a code"), None);
-        assert_eq!(LinkCode::decode(&B64.encode("{}")), None);
+        let value = serde_json::to_value(&code).unwrap();
+        assert_eq!(
+            value,
+            json!({ "type": "code", "code": "c0de", "expiresIn": 600 })
+        );
+        assert_eq!(serde_json::from_value::<Paired>(value).unwrap(), code);
+        let linked = serde_json::to_value(Paired::Linked { token: None }).unwrap();
+        assert_eq!(linked, json!({ "type": "linked", "token": null }));
+        let forget = serde_json::to_value(Up::Forget).unwrap();
+        assert_eq!(forget, json!({ "type": "forget" }));
+        assert_eq!(
+            pair_url("https://relay.example.com/", "c0de"),
+            "https://relay.example.com/#/pair/c0de"
+        );
     }
 }

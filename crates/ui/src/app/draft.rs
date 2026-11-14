@@ -47,7 +47,7 @@ pub enum Catalog {
     #[default]
     Unloaded,
     Loading,
-    Ready(Vec<Model>),
+    Ready(Models),
     /// Loading failed; the next [`State::load_catalog`] call tries again.
     Failed(String),
 }
@@ -78,7 +78,15 @@ impl Draft {
 impl Catalog {
     pub fn ready(&self) -> Option<&[Model]> {
         match self {
-            Self::Ready(models) => Some(models),
+            Self::Ready(got) => Some(&got.models),
+            Self::Unloaded | Self::Loading | Self::Failed(_) => None,
+        }
+    }
+
+    /// The model pi starts a chat on, once loaded.
+    pub fn default_model(&self) -> Option<&str> {
+        match self {
+            Self::Ready(got) => got.default.as_deref(),
             Self::Unloaded | Self::Loading | Self::Failed(_) => None,
         }
     }
@@ -214,7 +222,7 @@ impl State {
             json!({}),
             |s, result: Result<Models, String>, _| {
                 s.catalog = match result {
-                    Ok(got) => Catalog::Ready(got.models),
+                    Ok(got) => Catalog::Ready(got),
                     Err(e) => {
                         eprintln!("loading the models: {e}");
                         Catalog::Failed(e)

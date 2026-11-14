@@ -14,7 +14,6 @@ workspace = true
 anyhow.workspace = true
 libc.workspace = true
 ludolph-engine = { path = "crates/engine" }
-ludolph-relay-proto.workspace = true
 ludolph-ui.workspace = true
 plist.workspace = true
 serde.workspace = true
@@ -58,6 +57,8 @@ objc2-io-kit = { version = "0.3", default-features = false, features = ["libc", 
 objc2-core-services = { version = "0.3", default-features = false, features = ["FSEvents", "dispatch2", "std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
 objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-avf-audio", "SFSpeechRecognitionMetadata", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognizer", "SFTranscription"] }
+# The QR code a phone scans to link, drawn as SVG for Rune to rasterize.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # launchd's plists: the engine's job and the app's login item.
 plist = { version = "1", default-features = false, features = ["serde"] }
 # Finds inline code in the transcript's Markdown, to colour it, and writes

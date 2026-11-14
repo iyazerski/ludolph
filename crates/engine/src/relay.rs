@@ -7,6 +7,10 @@
 //! has open as their feeds' frames. It also passes the chats'
 //! alerts on, so the phone can notify you, and the battery, which the
 //! phone shows.
+//!
+//! A phone links by scanning a QR code from Settings: [`pair`] waits on the
+//! relay for a phone to claim its code, and gets this Mac's token if the
+//! relay didn't know it yet.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -16,11 +20,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use ludolph_relay_proto::{CONNECT_PATH, Down, Notice, NoticeKind, PROTOCOL, Up};
+use ludolph_relay_proto::{
+    CONNECT_PATH, Down, Notice, NoticeKind, PAIR_PATH, PROTOCOL, PairStart, Paired, Up, pair_url,
+};
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::{AbortHandle, JoinSet};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -66,8 +72,13 @@ const AWAY_AFTER: Duration = Duration::from_secs(120);
 /// How long building one notice (reading its chat) may take.
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(15);
 const BODY_CHARS: usize = 240;
+/// How long the relay has to confirm an unlink.
+const FORGET_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The relay's address and this Mac's token, from the phone's "Add a Mac".
+/// The relay a phone links through unless Settings names another.
+pub const DEFAULT_RELAY: &str = "https://ludolph.iyazerski.dev";
+
+/// The relay's address and this Mac's token, from linking a phone.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     /// `https://…`, or `http://…` for a relay on this Mac.
@@ -83,6 +94,45 @@ impl fmt::Debug for Link {
             .field("token", &"<redacted>")
             .finish()
     }
+}
+
+/// How this Mac's link to the relay stands, as Settings shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Phone {
+    pub relay: String,
+    pub status: LinkStatus,
+    /// Why the last try to connect failed, while it tries again.
+    pub error: Option<String>,
+}
+
+/// A phone linking through this Mac, as Settings shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Pairing {
+    /// Getting a code from the relay.
+    Starting,
+    /// Waiting for a phone to open `url`, until `expires_at` (Unix ms).
+    #[serde(rename_all = "camelCase")]
+    Waiting {
+        url: String,
+        expires_at: i64,
+    },
+    /// A phone linked.
+    Linked,
+    Failed {
+        error: String,
+    },
+}
+
+/// Whether the engine is connected to the relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkStatus {
+    Connecting,
+    Connected,
+    /// The relay refused the token, so a phone must link again.
+    Rejected,
 }
 
 impl Link {
@@ -111,13 +161,22 @@ impl Link {
 }
 
 /// Stay connected to the relay, answer its calls, and pass alerts on as
-/// the settings allow, reconnecting when the link drops. It returns only
-/// when the relay rejects the token, since trying again can't help then.
-pub async fn run(engine: Engine, link: Link) {
-    let url = match socket_url(&link.relay) {
+/// the settings allow, reconnecting when the link drops, and keep `phone`
+/// up to date. It returns only when the relay rejects the token, since
+/// trying again can't help then.
+pub(crate) async fn run(engine: Engine, link: Link, phone: watch::Sender<Option<Phone>>) {
+    let report = |status, error: Option<String>| {
+        phone.send_replace(Some(Phone {
+            relay: link.relay.clone(),
+            status,
+            error,
+        }));
+    };
+    let url = match socket_url(&link.relay, CONNECT_PATH) {
         Ok(url) => url,
         Err(e) => {
             eprintln!("relay: {e:#}");
+            report(LinkStatus::Connecting, Some(e.root_cause().to_string()));
             return;
         }
     };
@@ -129,8 +188,9 @@ pub async fn run(engine: Engine, link: Link) {
     loop {
         let mut connected = None;
         let result = async {
-            let socket = dial(&url, &link.token).await?;
+            let socket = dial(&url, Some(&link.token)).await?;
             eprintln!("relay: connected to {url}");
+            report(LinkStatus::Connected, None);
             connected = Some(Instant::now());
             serve(socket, &engine, &slots, &mut power).await
         }
@@ -139,33 +199,106 @@ pub async fn run(engine: Engine, link: Link) {
             backoff = MIN_BACKOFF;
         }
         match result {
-            Ok(()) => eprintln!("relay: the relay closed the link; reconnecting"),
-            Err(e) if rejected(&e) => {
-                eprintln!("relay: the relay rejected this Mac's token; add the Mac again");
+            Ok(()) => {
+                eprintln!("relay: the relay closed the link; reconnecting");
+                report(LinkStatus::Connecting, None);
+            }
+            Err(e) if is_rejected(&e) => {
+                eprintln!("relay: the relay rejected this Mac's token; link a phone again");
+                report(LinkStatus::Rejected, None);
                 return;
             }
-            Err(e) => eprintln!("relay: {e:#}"),
+            Err(e) => {
+                eprintln!("relay: {e:#}");
+                report(LinkStatus::Connecting, Some(e.root_cause().to_string()));
+            }
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 }
 
-/// Check that the relay takes `link`'s token, then disconnect.
+/// Wait on `relay` for a phone to link through this Mac, calling `shown`
+/// with the page the QR code opens and the seconds it works for. `token`
+/// is this Mac's, if the relay knows it. Returns the token the relay gives
+/// a Mac it didn't know.
 ///
 /// # Errors
 ///
-/// Fails if the relay can't be reached or rejects the token.
-pub async fn verify(link: &Link) -> Result<()> {
-    let socket = match dial(&socket_url(&link.relay)?, &link.token).await {
-        Err(e) if rejected(&e) => bail!("the relay rejected this token; add the Mac again"),
-        other => other.with_context(|| format!("reaching {}", link.relay))?,
+/// Fails if the relay can't be reached, refuses `token` ([`is_rejected`]),
+/// or closes before a phone links, as when the code expires.
+pub async fn pair(
+    relay: &str,
+    token: Option<&str>,
+    mut shown: impl FnMut(String, u64),
+) -> Result<Option<String>> {
+    let mut socket = dial(&socket_url(relay, PAIR_PATH)?, token).await?;
+    let start = PairStart {
+        protocol: PROTOCOL,
+        name: mac_name(),
     };
-    // Saying hello makes it a short visit in the relay's log, not a bad client.
-    let (mut sink, _) = socket.split();
-    sink.send(encode(&hello())?).await?;
-    sink.close().await?;
-    Ok(())
+    socket
+        .send(Message::Text(serde_json::to_string(&start)?.into()))
+        .await?;
+    while let Some(message) = socket.next().await {
+        match message? {
+            Message::Text(body) => match serde_json::from_str(&body)? {
+                Paired::Code { code, expires_in } => shown(pair_url(relay, &code), expires_in),
+                Paired::Linked { token } => return Ok(token),
+            },
+            Message::Close(Some(frame)) if !frame.reason.is_empty() => bail!("{}", frame.reason),
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    bail!("the relay closed the link before a phone linked")
+}
+
+/// Tell the relay to forget this Mac and its token.
+///
+/// # Errors
+///
+/// Fails if the relay can't be reached or doesn't confirm in time.
+pub async fn forget(link: &Link) -> Result<()> {
+    let url = socket_url(&link.relay, CONNECT_PATH)?;
+    let confirmed = async {
+        let mut socket = dial(&url, Some(&link.token)).await?;
+        socket.send(encode(&hello())?).await?;
+        socket.send(encode(&Up::Forget)?).await?;
+        // The relay closes once it has forgotten the Mac.
+        while let Some(message) = socket.next().await {
+            if message?.is_close() {
+                break;
+            }
+        }
+        anyhow::Ok(())
+    };
+    tokio::time::timeout(FORGET_TIMEOUT, confirmed)
+        .await
+        .context("the relay didn't answer")?
+}
+
+/// The Mac's name, as Sharing settings has it, which the phone shows.
+fn mac_name() -> String {
+    let name = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok());
+    // The relay takes up to 60 characters.
+    let name: String = name
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .chars()
+        .take(60)
+        .collect();
+    if name.is_empty() {
+        "Mac".to_owned()
+    } else {
+        name
+    }
 }
 
 type Socket =
@@ -411,10 +544,12 @@ fn away() -> bool {
         .is_none_or(|idle| idle >= AWAY_AFTER)
 }
 
-async fn dial(url: &str, token: &str) -> Result<Socket> {
+async fn dial(url: &str, token: Option<&str>) -> Result<Socket> {
     let mut request = url.into_client_request()?;
-    let bearer = HeaderValue::from_str(&format!("Bearer {token}")).context("a bad token")?;
-    request.headers_mut().insert(header::AUTHORIZATION, bearer);
+    if let Some(token) = token {
+        let bearer = HeaderValue::from_str(&format!("Bearer {token}")).context("a bad token")?;
+        request.headers_mut().insert(header::AUTHORIZATION, bearer);
+    }
     let (socket, _) = tokio_tungstenite::connect_async(request).await?;
     Ok(socket)
 }
@@ -426,8 +561,12 @@ fn hello() -> Up {
     }
 }
 
-/// The relay's WebSocket URL for an `https://`, or local `http://`, address.
-fn socket_url(relay: &str) -> Result<String> {
+/// The WebSocket URL of `path` on an `https://`, or local `http://`, relay.
+///
+/// # Errors
+///
+/// Fails for any other address.
+pub fn socket_url(relay: &str, path: &str) -> Result<String> {
     let base = relay.trim_end_matches('/');
     let rest = if let Some(rest) = base.strip_prefix("https://") {
         format!("wss://{rest}")
@@ -438,7 +577,7 @@ fn socket_url(relay: &str) -> Result<String> {
     } else {
         bail!("the relay address must start with https:// (got {relay})")
     };
-    Ok(format!("{rest}{CONNECT_PATH}"))
+    Ok(format!("{rest}{path}"))
 }
 
 /// Whether `address` points at this Mac, the only place the token can go
@@ -459,7 +598,7 @@ fn on_this_mac(address: &str) -> bool {
 }
 
 /// Whether the relay refused the token.
-fn rejected(error: &anyhow::Error) -> bool {
+pub fn is_rejected(error: &anyhow::Error) -> bool {
     use tokio_tungstenite::tungstenite::Error;
     matches!(
         error.downcast_ref::<Error>(),
