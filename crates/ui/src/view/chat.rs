@@ -64,7 +64,7 @@ fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     body = match &page.target {
         Target::New(_) => body.child(hero(k)),
         Target::Existing(chat) => {
-            let expanded = s.prefs.borrow().expand_tools;
+            let expanded = s.expand_tools.get();
             body.children(transcript(chat, k, expanded))
         }
     };

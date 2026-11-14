@@ -1,6 +1,7 @@
 //! The main window's sidebar: a new chat and the search, then the chats by
 //! project, each under its folder.
 
+use chrono::Utc;
 use rune::{El, col, el, row, text};
 use rune_kit::shell::{ROW_HEIGHT, RowStatus, Sidebar, SidebarRow};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
@@ -10,6 +11,7 @@ use super::list;
 use super::widgets::{busy, dot, engine_note, tones};
 use crate::app::{GROUP_CHATS, State};
 use crate::data::{Chat, Status};
+use crate::labels::ago;
 
 /// How far a chat's title sits in from its project's folder: past the
 /// folder icon and its gap, so the titles line up with the project's name.
@@ -182,6 +184,7 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
     };
     let id = c.id.clone();
     let mut r = SidebarRow::new(c.title())
+        .detail(ago(c.active_at(), Utc::now()))
         .selected(s.shows_chat(&c.id))
         .on_select(move |s: &mut State, _| {
             if !s.shows_chat(&id) {

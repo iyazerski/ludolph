@@ -103,6 +103,7 @@ pub fn run(opts: Opts) -> Result<()> {
     let prefs = Rc::new(RefCell::new(Prefs::load(&prefs_path)));
     let shared = Shared::start(rt.handle().clone(), socket, prefs_path);
     let hotkey = Rc::new(Cell::new(None));
+    let expand_tools = Rc::new(Cell::new(false));
     let main_window = Rc::new(OnceCell::new());
     // The writer runs on the runtime, which may not get to the last save as the app quits.
     let last_prefs = prefs.clone();
@@ -131,11 +132,19 @@ pub fn run(opts: Opts) -> Result<()> {
     }
     let quick = {
         let (shared, prefs, hotkey) = (shared.clone(), prefs.clone(), hotkey.clone());
+        let expand_tools = expand_tools.clone();
         let (me, peer) = (quick_handle, main_handle.clone());
         quick
             .init(move || {
                 let api = Api::start(&shared, me, peer);
-                State::new(api, Window::Quick, prefs, hotkey, Rc::default())
+                State::new(
+                    api,
+                    Window::Quick,
+                    prefs,
+                    hotkey,
+                    expand_tools,
+                    Rc::default(),
+                )
             })
             .on_visibility(|s, shown, _| s.visibility_changed(shown))
     };
@@ -143,7 +152,7 @@ pub fn run(opts: Opts) -> Result<()> {
         let (peer, handle, prefs) = (quick.handle(), main_window.clone(), prefs.clone());
         main.init(move || {
             let api = Api::start(&shared, main_handle, peer);
-            State::new(api, Window::Main, prefs, hotkey, handle)
+            State::new(api, Window::Main, prefs, hotkey, expand_tools, handle)
         })
         .chrome(Chrome {
             full_size_content: true,

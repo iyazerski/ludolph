@@ -1,5 +1,5 @@
 //! The tools the app and the phone call, by name, with JSON arguments and
-//! answers. The settings and phone link tools are the app's alone.
+//! answers. Changing the settings and the phone link are the app's alone.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use crate::turns::Counts;
 const DEFAULT_CHATS: usize = 50;
 const MAX_CHATS: usize = 500;
 /// Chats `list_chat_groups` returns per group without a `limit`.
-const DEFAULT_GROUP_CHATS: usize = 10;
+const DEFAULT_GROUP_CHATS: usize = 5;
 /// The most messages `chat_view` returns from the end, or adds before its
 /// anchor, in one call.
 const MAX_MESSAGES: usize = 500;
@@ -62,14 +62,14 @@ pub enum Tool {
 }
 
 impl Tool {
-    /// Whether the phone may call it. The phone can't change settings or
-    /// the link, so a relay can't, say, point dictation at a model of its
-    /// choosing, or the Mac at another relay.
+    /// Whether the phone may call it. The phone can read the settings, to
+    /// show tool calls as the Mac does, but can't change them or the link,
+    /// so a relay can't, say, point dictation at a model of its choosing,
+    /// or the Mac at another relay.
     pub fn for_phone(self) -> bool {
         !matches!(
             self,
-            Self::GetSettings
-                | Self::SetSettings
+            Self::SetSettings
                 | Self::GetPhoneLink
                 | Self::LinkPhone
                 | Self::StopLinkingPhone

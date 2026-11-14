@@ -1,7 +1,7 @@
 //! What the app remembers between runs, as the phone app keeps it in local
 //! storage: which turns were seen, folded projects, the last new chat's
-//! picks, the global shortcut, which the app registers itself, how tool
-//! calls show, and where the main window was.
+//! picks, the global shortcut, which the app registers itself, and where
+//! the main window was.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -26,8 +26,6 @@ pub struct Prefs {
     /// The quick window's global shortcut, as Rune writes it (`ctrl+alt+space`),
     /// or `None` for none.
     pub shortcut: Option<String>,
-    /// Whether the work under way shows open while the agent runs.
-    pub expand_tools: bool,
     /// Where the main window was last, to open it there next run.
     pub main_frame: Option<Frame>,
 }
@@ -48,7 +46,6 @@ impl Default for Prefs {
             collapsed: BTreeSet::new(),
             new_chat: NewChat::default(),
             shortcut: Some(SHORTCUT.to_owned()),
-            expand_tools: false,
             main_frame: None,
         }
     }

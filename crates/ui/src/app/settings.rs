@@ -142,6 +142,9 @@ impl State {
             "get_settings",
             json!({}),
             |s, result: Result<Settings, String>, _| {
+                if let Ok(settings) = &result {
+                    s.show_expand_tools(settings.expand_tools);
+                }
                 if let Some(page) = s.settings_page_mut() {
                     match result {
                         Ok(settings) => page.settings = Some(settings),
@@ -167,6 +170,7 @@ impl State {
             return;
         }
         page.settings = Some(new.clone());
+        self.show_expand_tools(new.expand_tools);
         let args = serde_json::to_value(&new).unwrap_or(Value::Null);
         self.api.call(
             "set_settings",
@@ -179,6 +183,7 @@ impl State {
                         old
                     }
                 };
+                s.show_expand_tools(saved.expand_tools);
                 if let Some(page) = s.settings_page_mut() {
                     page.settings = Some(saved);
                 }
@@ -317,11 +322,24 @@ impl State {
         Ok(())
     }
 
-    /// Open a chat's tool groups from the start if `on`, else keep them
-    /// closed until clicked.
-    pub fn expand_tools(&mut self, on: bool) {
-        self.prefs.borrow_mut().expand_tools = on;
-        self.save_prefs();
+    /// Load whether the work under way shows open, which both windows
+    /// and the phone follow.
+    pub(super) fn load_expand_tools(&mut self) {
+        self.api.call(
+            "get_settings",
+            json!({}),
+            |s, result: Result<Settings, String>, _| match result {
+                Ok(settings) => s.show_expand_tools(settings.expand_tools),
+                Err(e) => eprintln!("get_settings: {e}"),
+            },
+        );
+    }
+
+    /// Draw tool calls in both windows by the `expandTools` setting `on`.
+    fn show_expand_tools(&mut self, on: bool) {
+        if self.expand_tools.replace(on) != on {
+            self.api.peer().update(|_, _| {});
+        }
     }
 
     /// Register `shortcut` for the quick window, then let the old one go.

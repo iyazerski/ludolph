@@ -433,6 +433,8 @@ pub struct Settings {
     pub sidecar_model: Option<String>,
     pub notify: Notify,
     pub open_at_login: bool,
+    /// Whether the work under way shows open while the agent runs.
+    pub expand_tools: bool,
 }
 
 /// When the phone gets notifications.

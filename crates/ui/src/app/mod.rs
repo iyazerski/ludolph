@@ -35,7 +35,7 @@ pub use self::settings::{QR_SIZE, SettingsPage};
 /// The most chats the list loads, for its search.
 const LIST_LIMIT: usize = 200;
 /// Chats a project shows at first, and how many more "Show more" adds.
-pub const GROUP_CHATS: usize = 10;
+pub const GROUP_CHATS: usize = 5;
 const TOAST_FOR: Duration = Duration::from_millis(3800);
 
 /// Which of the app's two windows a state belongs to.
@@ -58,6 +58,9 @@ pub struct State {
     /// The quick window's global shortcut while it's registered, shared too:
     /// the main window's settings change it.
     pub hotkey: Rc<Cell<Option<ShortcutId>>>,
+    /// The engine's `expandTools` setting, shared too, so both windows
+    /// draw tool calls alike.
+    pub expand_tools: Rc<Cell<bool>>,
     /// The native window, once it first opens, to read where it is.
     handle: Rc<OnceCell<WindowHandle>>,
     pub page: Page,
@@ -152,6 +155,7 @@ impl State {
         window: Window,
         prefs: Rc<RefCell<Prefs>>,
         hotkey: Rc<Cell<Option<ShortcutId>>>,
+        expand_tools: Rc<Cell<bool>>,
         handle: Rc<OnceCell<WindowHandle>>,
     ) -> Self {
         let page = match window {
@@ -169,6 +173,7 @@ impl State {
             engine_up: false,
             prefs,
             hotkey,
+            expand_tools,
             handle,
             page,
             sidebar: PaneState::new(320.0).range(260.0, 480.0),
@@ -452,11 +457,14 @@ impl State {
         if !came {
             return;
         }
+        self.load_expand_tools();
         if self.shown {
             self.load_chats();
         }
+        // The first new chat is made before the engine answers, and a load that
+        // failed tries again.
         if let Some(Target::New(draft)) = self.chat().map(|p| &p.target)
-            && draft.load == Load::Failed
+            && draft.load != Load::Ready
         {
             self.load_draft();
         }

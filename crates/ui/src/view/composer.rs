@@ -13,7 +13,7 @@ use crate::app::{
     Catalog, ChatPage, Config, LEVELS_KEPT, Overlay, Pick, Prep, Sheet, SkillList, State, Voice,
 };
 use crate::data::{Skill, levels_of};
-use crate::labels::{reasoning_name, short_model};
+use crate::labels::reasoning_name;
 use crate::message::skill_query;
 
 /// The `$` menu's width, in points.
@@ -333,13 +333,9 @@ fn skill_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
 
 fn model_chip(s: &State, k: &Kit) -> El {
     let Config { model, reasoning } = s.config();
-    let catalog = s.catalog.ready();
-    let label = model.map_or("Default".to_owned(), |m| {
-        catalog
-            .and_then(|ms| ms.iter().find(|x| x.id == m))
-            .and_then(|x| x.label.clone())
-            .unwrap_or_else(|| short_model(m).to_owned())
-    });
+    // A chat with no model picked runs on pi's default, so name that one.
+    let model = model.or(s.catalog.default_model());
+    let label = model.map_or("Default model".to_owned(), |m| s.catalog.label(m));
     let mut chip = row()
         .gap(5.0)
         .px(6.0)
@@ -592,6 +588,7 @@ fn model_body(s: &State, page: &ChatPage, k: &Kit) -> El {
                 .child(busy(18.0, k));
         }
     };
+    let current = current.or(s.catalog.default_model());
     let mut body = col().w_full().gap(6.0);
     let levels = levels_of(models, current.unwrap_or_default());
     if !levels.is_empty() {

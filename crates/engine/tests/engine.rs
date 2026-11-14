@@ -560,7 +560,7 @@ async fn chats_are_titled_as_soon_as_they_start() {
         format!("{refused:#}").contains("no model fake/none"),
         "{refused:#}"
     );
-    let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false});
+    let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true});
     let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
     assert_eq!(saved, picked);
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
@@ -581,7 +581,7 @@ async fn chats_are_titled_as_soon_as_they_start() {
     // Nothing opens at login until it's turned on, and turning it off undoes it.
     let item = ludolph_engine::login::path(&engine.config().home);
     assert!(!item.exists());
-    let on = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": true});
+    let on = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": true, "expandTools": true});
     tool(&engine, "set_settings", on).await.unwrap();
     let written = std::fs::read_to_string(&item).unwrap();
     assert!(

@@ -204,7 +204,7 @@ A session written without a name, by pi in a terminal or by another tool, gets a
 
 Nothing is archived automatically. Zeron's rule (archive all but each project's 10 newest chats) existed because Zeron slowed down with many chats. Ludolph's index keeps every summary in memory, so a long list costs nothing to produce. Keeping it short is the list's job:
 
-- Each project, and **No project**, shows its 10 newest chats and its total. **Show more** adds 10. The windows remember what's expanded in memory only, so a restart shows 10 again.
+- Each project, and **No project**, shows its 5 newest chats, each with how long ago it was last active, and its total. **Show more** adds 5. The windows remember what's expanded in memory only, so a restart shows 5 again.
 - `list_chat_groups` returns every group with its newest chats, and takes a higher limit for each expanded group. A window asks for the whole list again on each list notice, so there are no offsets that drift when chats change order.
 - The phone keeps its flat `list_chats`, the 200 newest chats.
 
@@ -271,7 +271,7 @@ The app and the phone call the same tools:
 | `polish_dictation` | The sidecar model through `pi -p` |
 | `take_over_chat` | Turns sending back on for a chat [another pi](#sessions-open-elsewhere) has open |
 
-The socket also has `get_settings` and `set_settings`, which the relay refuses: a relay mustn't change settings.
+The socket also has `get_settings` and `set_settings`. The relay passes `get_settings` on, so the phone shows tool calls as the Mac does, and refuses `set_settings`: a relay mustn't change settings.
 
 In the phone app, a Mac whose engine isn't running is offline. A chat open in a terminal pi shows a **Take over** button, which asks first, since two pis writing one file split the chat. Until a chat has a title, it shows its first prompt. The relay protocol is at version 5. Version 2 dropped the `Engine` message, since a linked Mac is a running engine, version 3 changed messages' parts, version 4 dropped harnesses and took pi's dialog shape, and version 5 added watches.
 
@@ -294,13 +294,13 @@ They live in a `ui` crate. Each window gives them its own layout.
 
 ### Settings
 
-The engine keeps most of them, since it's the one using them and it runs while the app is closed. The app reads and saves them with `get_settings` and `set_settings`, which take all the settings at once. The phone can't call either. A change shows at once, and goes back with a toast if the engine refuses it.
+The engine keeps most of them, since it's the one using them and it runs while the app is closed. The app reads and saves them with `get_settings` and `set_settings`, which take all the settings at once. The phone can read them but not change them. A change shows at once, and goes back with a toast if the engine refuses it.
 
 - Sidecar model, for titles and dictation (`sidecarModel`), picked from pi's models with a search, or pi's default model, which the picker names (`list_models` asks a fresh pi's `get_state` for it)
 - Notifications on the phone only while you're away from the Mac, or always (`notify`: `away` or `always`)
 - Open at login (`openAtLogin`, off until you turn it on)
 - Phone: link a phone with a QR code, see whether the link is connected, or unlink (`link_phone`, `stop_linking_phone`, `get_phone_link`, `unlink_phone`; see "Phone and relay")
-- Tool calls collapsed or expanded: the app's own, in `ui.json`, since only the app draws them. A reply's work between two texts, its tool calls and thinking, is one group on a rail. The setting only decides whether the group under way shows open while the agent works; a group folds once the agent writes again, and a click opens or closes one group either way. Once a turn ends, everything before its last text folds under **Worked for 6m 56s** over a rule, whatever the setting.
+- Tool calls collapsed or expanded (`expandTools`): the engine's, so both windows and the phone draw them alike. A reply's work between two texts, its tool calls and thinking, is one group on a rail. The setting only decides whether the group under way shows open while the agent works; a group folds once the agent writes again, and a click opens or closes one group either way. Once a turn ends, everything before its last text folds under **Worked for 6m 56s** over a rule, whatever the setting.
 - Global shortcut: the app's own, since it registers it, so it's in `ui.json`. The recorder registers the new chord before it lets the old one go, so a chord another app holds is refused and the old one stays. If the saved one is taken when the app starts, the page says so.
 
 ## Phone and relay
