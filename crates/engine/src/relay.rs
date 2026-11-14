@@ -64,6 +64,10 @@ const STABLE_AFTER: Duration = Duration::from_secs(60);
 /// How long a call may run: under the relay's 30 s, so the error still
 /// reaches the phone. A call that timed out may still have happened.
 const CALL_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long a phone may ask again for a call it tagged with an op id.
+const OP_KEPT: Duration = Duration::from_secs(10 * 60);
+/// The most op results kept per phone; older ones go first.
+const MAX_OPS: usize = 256;
 /// Calls running at once; more wait.
 const MAX_CALLS: usize = 16;
 /// Calls running or waiting on one connection; more are refused.
@@ -143,6 +147,70 @@ impl fmt::Debug for Phones {
 struct LinkedPhone {
     keys: Keys,
     replays: Mutex<Replays>,
+    ops: Ops,
+}
+
+impl LinkedPhone {
+    fn new(keys: Keys) -> Self {
+        Self {
+            keys,
+            replays: Mutex::default(),
+            ops: Ops::default(),
+        }
+    }
+}
+
+/// What a call ends with: its value, or why it failed.
+type Outcome = Result<Value, String>;
+
+/// When an op started, and its outcome once it ends.
+type Op = (Instant, watch::Receiver<Option<Outcome>>);
+
+/// A phone's calls tagged with an op id, by id. A call that changes
+/// something, like a send, runs once as its own task, however often the phone
+/// asks: the relay may give up on it while it runs, and the phone asks again
+/// rather than send twice.
+#[derive(Default)]
+struct Ops(Mutex<HashMap<String, Op>>);
+
+impl Ops {
+    /// Start `run` as op `id`, unless it started already, and return what it
+    /// ends with, or `None` if it hasn't ended in `wait`.
+    async fn run(
+        &self,
+        id: String,
+        wait: Duration,
+        run: impl Future<Output = Outcome> + Send + 'static,
+    ) -> Option<Outcome> {
+        let mut done = {
+            let mut ops = self.0.lock().expect("the ops lock isn't poisoned");
+            let now = Instant::now();
+            ops.retain(|_, (at, _)| now.duration_since(*at) < OP_KEPT);
+            if let Some((_, done)) = ops.get(&id) {
+                done.clone()
+            } else {
+                if ops.len() >= MAX_OPS
+                    && let Some(oldest) = ops
+                        .iter()
+                        .min_by_key(|(_, (at, _))| *at)
+                        .map(|(k, _)| k.clone())
+                {
+                    ops.remove(&oldest);
+                }
+                let (tx, done) = watch::channel(None);
+                tokio::spawn(async move { tx.send_replace(Some(run.await)) });
+                ops.insert(id, (now, done.clone()));
+                done
+            }
+        };
+        let ended = tokio::time::timeout(wait, done.wait_for(Option::is_some)).await;
+        match ended {
+            Ok(Ok(outcome)) => outcome.clone(),
+            // The task can't end without sending.
+            Ok(Err(_)) => Some(Err("the Mac dropped this call".into())),
+            Err(_) => None,
+        }
+    }
 }
 
 impl Phones {
@@ -155,11 +223,7 @@ impl Phones {
         let phones = secrets
             .iter()
             .map(|secret| {
-                let keys = Keys::derive(secret)?;
-                let phone = LinkedPhone {
-                    keys,
-                    replays: Mutex::default(),
-                };
+                let phone = LinkedPhone::new(Keys::derive(secret)?);
                 Ok((phone.keys.phone.clone(), Arc::new(phone)))
             })
             .collect::<Result<_>>()?;
@@ -173,11 +237,7 @@ impl Phones {
     ///
     /// Fails if the secret is malformed.
     pub fn add(&self, secret: &str) -> Result<()> {
-        let keys = Keys::derive(secret)?;
-        let phone = LinkedPhone {
-            keys,
-            replays: Mutex::default(),
-        };
+        let phone = LinkedPhone::new(Keys::derive(secret)?);
         self.lock()
             .insert(phone.keys.phone.clone(), Arc::new(phone));
         Ok(())
@@ -624,6 +684,9 @@ struct Call {
     tool: String,
     #[serde(default)]
     args: Value,
+    /// The phone's id for a call it may ask for again, which then runs once
+    /// (see [`Ops`]).
+    op: Option<String>,
 }
 
 /// A phone's request to follow a chat, as it seals it.
@@ -633,27 +696,40 @@ struct WatchRequest {
 }
 
 /// Run `phone`'s `call` and return its reply, sealed for the phone as
-/// `{"ok": …}` or `{"error": …}`. Waiting for a slot counts toward
-/// [`CALL_TIMEOUT`], so the reply still reaches the relay in time.
+/// `{"ok": …}`, `{"error": …}`, or `{"pending": true}` for an op still
+/// running. Waiting for a slot counts toward [`CALL_TIMEOUT`], so the reply
+/// still reaches the relay in time.
 async fn answer(
     engine: Engine,
     slots: Arc<Semaphore>,
     phone: Arc<LinkedPhone>,
     call: Opened,
 ) -> Result<String, String> {
-    let run = async {
-        let _slot = slots.acquire().await?;
-        let Call { tool, args } = serde_json::from_str(&call.text).context("a bad call")?;
-        let parsed: Tool = tool.parse()?;
-        if !parsed.for_phone() {
-            bail!("the phone can't call {tool}");
+    let reply = match serde_json::from_str::<Call>(&call.text) {
+        Ok(Call { tool, args, op }) => {
+            let run = async move {
+                let _slot = slots.acquire_owned().await.map_err(|e| e.to_string())?;
+                let parsed: Tool = tool.parse().map_err(|e| format!("{e:#}"))?;
+                if !parsed.for_phone() {
+                    return Err(format!("the phone can't call {tool}"));
+                }
+                tools::call(&engine, parsed, args)
+                    .await
+                    .map_err(|e| format!("{e:#}"))
+            };
+            let tagged = op.is_some();
+            let outcome = match op {
+                Some(op) => phone.ops.run(op, CALL_TIMEOUT, run).await,
+                None => tokio::time::timeout(CALL_TIMEOUT, run).await.ok(),
+            };
+            match outcome {
+                Some(Ok(value)) => json!({ "ok": value }),
+                Some(Err(e)) => json!({ "error": e }),
+                None if tagged => json!({ "pending": true }),
+                None => json!({ "error": "the Mac didn't answer in time" }),
+            }
         }
-        tools::call(&engine, parsed, args).await
-    };
-    let reply = match tokio::time::timeout(CALL_TIMEOUT, run).await {
-        Ok(Ok(value)) => json!({ "ok": value }),
-        Ok(Err(e)) => json!({ "error": format!("{e:#}") }),
-        Err(_) => json!({ "error": "the Mac didn't answer in time" }),
+        Err(e) => json!({ "error": format!("a bad call: {e}") }),
     };
     let sealed = phone
         .keys

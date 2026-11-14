@@ -1036,8 +1036,12 @@ async fn from_mac(socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::Tc
 
 /// A phone's sealed call to the relay link, and the nonce its reply is bound to.
 fn sealed_call(phone: &Keys, id: u64, tool: &str, args: Value) -> (Value, [u8; 12]) {
-    let call = json!({"tool": tool, "args": args}).to_string();
-    let (data, nonce) = phone.seal(Purpose::Call, &call).unwrap();
+    sealed(phone, id, &json!({"tool": tool, "args": args}))
+}
+
+/// A phone's sealed call, as `{"tool", "args", "op"}`, and its reply's nonce.
+fn sealed(phone: &Keys, id: u64, call: &Value) -> (Value, [u8; 12]) {
+    let (data, nonce) = phone.seal(Purpose::Call, &call.to_string()).unwrap();
     let message = json!({"type": "call", "id": id, "sealed": {"phone": phone.phone, "data": data}});
     (message, nonce)
 }
@@ -1202,7 +1206,8 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
 
     // Each moment worth telling reaches the phone as a notice.
     let project = json!({"project": dir.path(), "prompt": "ask"});
-    let (create, create_nonce) = sealed_call(&phone, 9, "create_chat", project);
+    let create = json!({"tool": "create_chat", "args": project, "op": "op-1"});
+    let (create, create_nonce) = sealed(&phone, 9, &create);
     socket
         .send(Message::Text(create.to_string().into()))
         .await
@@ -1229,6 +1234,16 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         (&finished["kind"], &finished["body"]),
         (&json!("finished"), &json!("You picked red."))
     );
+    // The phone asks again for a call it tagged, say after the relay gave up
+    // on it: it gets the first answer, and no second chat.
+    let again = json!({"tool": "create_chat", "args": project, "op": "op-1"});
+    let (again, again_nonce) = sealed(&phone, 19, &again);
+    socket
+        .send(Message::Text(again.to_string().into()))
+        .await
+        .unwrap();
+    let again = until_from_mac(&mut socket, |m| m["id"] == 19).await;
+    assert_eq!(opened_reply(&phone, again_nonce, &again), made);
     // The phone follows a chat as numbered frames of its feed, until it stops.
     let mut nonces = std::collections::BTreeMap::new();
     for (id, chat) in [(20, chat.as_str()), (21, "nope")] {
