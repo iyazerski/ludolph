@@ -451,8 +451,13 @@ fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
 
 /// A row that's neither side's, like a compaction, in the middle.
 fn system_note(k: &Kit, m: &Message) -> El {
+    note(k, &m.text())
+}
+
+/// A one-line note in the middle, faint.
+fn note(k: &Kit, line: &str) -> El {
     row().w_full().justify_center().child(
-        text(single_line(&m.text()))
+        text(single_line(line))
             .font(k.ty.small)
             .color(k.c.text_faint)
             .truncate()
@@ -491,7 +496,7 @@ fn pieces(parts: &[Part]) -> Vec<Piece<'_>> {
             Part::Thinking { text } => Step::Thought(i, text),
             // The transcript shows a reply's images nowhere, so they don't split the work.
             Part::Image { .. } => continue,
-            Part::Text { .. } | Part::Error { .. } => {
+            Part::Text { .. } | Part::Error { .. } | Part::Note { .. } => {
                 out.push(Piece::Part(i, part));
                 continue;
             }
@@ -543,6 +548,7 @@ fn assistant(
                 prose(page, k, style, text, streaming && i == last).key(format!("{}#{i}", m.id)),
             ],
             Piece::Part(_, Part::Error { error }) => vec![errbox(k, error)],
+            Piece::Part(_, Part::Note { text }) => vec![note(k, text)],
             Piece::Part(..) => Vec::new(),
             // Thinking alone stays a fold of its own; with tool calls it joins their rail.
             Piece::Work(_, steps) if !steps.iter().any(|s| matches!(s, Step::Tool(_))) => steps

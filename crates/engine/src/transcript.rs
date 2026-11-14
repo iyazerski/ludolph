@@ -35,6 +35,9 @@ const MAX_FILES: usize = 8;
 /// The most characters of a tool call's subject, like a command, shown.
 const TOOL_CHARS: usize = 160;
 
+/// How a compaction reads, alone or in a turn's work.
+const COMPACTED: &str = "Compacted the conversation.";
+
 /// What the id of a message pi hasn't written yet starts with.
 const LIVE_ID: &str = "live-";
 
@@ -106,6 +109,11 @@ pub enum Part {
     },
     Error {
         error: String,
+    },
+    /// A note in the middle of a turn's work, like a compaction the agent
+    /// went on after.
+    Note {
+        text: String,
     },
 }
 
@@ -366,6 +374,9 @@ enum Kind {
     Starts,
     /// It joins the assistant turn that's going, or starts one.
     Turn,
+    /// A compaction: part of the turn that's going if the agent works on
+    /// after it, else a note of its own.
+    Compaction,
     /// It doesn't show, like a model change or a system prompt.
     Hidden,
 }
@@ -613,17 +624,22 @@ impl Scan {
 }
 
 /// Split items into messages: each prompt or note starts one, and an
-/// assistant turn runs until the next.
+/// assistant turn runs until the next. A compaction the agent works on
+/// after stays in its turn, so the turn's work folds as one.
 fn group(items: impl Iterator<Item = (Item, Kind)>) -> Vec<Vec<Item>> {
     let mut groups: Vec<Vec<Item>> = Vec::new();
     let mut in_turn = false;
-    for (item, kind) in items {
-        match kind {
-            Kind::Hidden => continue,
-            Kind::Turn if in_turn => {}
-            Kind::Starts | Kind::Turn => groups.push(Vec::new()),
+    let mut items = items.filter(|(_, kind)| *kind != Kind::Hidden).peekable();
+    while let Some((item, kind)) = items.next() {
+        let joins = match kind {
+            Kind::Turn => in_turn,
+            Kind::Compaction => in_turn && matches!(items.peek(), Some((_, Kind::Turn))),
+            Kind::Starts | Kind::Hidden => false,
+        };
+        if !joins {
+            groups.push(Vec::new());
         }
-        in_turn = kind == Kind::Turn;
+        in_turn = kind == Kind::Turn || joins;
         groups
             .last_mut()
             .expect("a group was just pushed")
@@ -674,7 +690,8 @@ impl Line<'_> {
     fn kind(&self) -> Kind {
         match (&*self.kind, &self.message) {
             ("message", Some(message)) => role_kind(&message.role, message.display),
-            ("compaction" | "branch_summary", _) => Kind::Starts,
+            ("compaction", _) => Kind::Compaction,
+            ("branch_summary", _) => Kind::Starts,
             ("custom_message", _) if self.display == Some(true) => Kind::Starts,
             _ => Kind::Hidden,
         }
@@ -969,7 +986,7 @@ fn render(pieces: &[Piece]) -> Option<Message> {
         ("custom_message", ..) => message.parts = content_parts(&entry.content),
         ("compaction", ..) => {
             message.parts = vec![Part::Text {
-                text: "Compacted the conversation.".to_owned(),
+                text: COMPACTED.to_owned(),
             }];
         }
         ("branch_summary", ..) => {
@@ -995,6 +1012,12 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
     let mut calls: Vec<(usize, bool)> = Vec::new();
     let mut parts = Vec::new();
     for piece in pieces {
+        if piece.entry.kind == "compaction" {
+            parts.push(Part::Note {
+                text: COMPACTED.to_owned(),
+            });
+            continue;
+        }
         let Some(m) = &piece.entry.message else {
             continue;
         };

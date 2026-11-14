@@ -1606,6 +1606,7 @@ function chatView(machine, id, fromList) {
     const parts = grouped(m.parts);
     const blocks = parts.map((p, i) => {
       if (p.kind === "error") return h("div", { class: "errbox" }, p.error);
+      if (p.kind === "note") return h("div", { class: "turn-note" }, p.text);
       if (p.kind === "tools") return toolsBlock(m, p, streaming && expandTools && i === parts.length - 1);
       const body = h("div", { class: "md", html: markdown(p.text) });
       // The caret trails the reply while it streams, not prose a tool followed.

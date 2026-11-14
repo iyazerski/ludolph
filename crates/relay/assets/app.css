@@ -318,6 +318,7 @@ a { color: inherit; text-decoration: none; }
 
 .msg.assistant { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .aborted { font-size: 13.5px; color: var(--tertiary); }
+.turn-note { font-size: 13px; color: var(--tertiary); text-align: center; }
 .errbox { font-size: 14px; color: var(--danger); background: rgb(from var(--danger) r g b / .08); padding: 10px 12px; border-radius: 12px; overflow-wrap: anywhere; }
 
 /* Tool groups, as Zeron's mobile app lays them out: a 26px header with the
