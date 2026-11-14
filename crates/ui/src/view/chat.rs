@@ -592,8 +592,26 @@ fn assistant(
     let fold = answer.filter(|&n| n > 0 && !streaming);
     let worked_key = format!("{}#worked", m.id);
     let worked_open = is_open(page, &worked_key, false);
-    if fold.is_some() {
-        out = out.child(worked(k, &worked_key, m.ended_at - started, worked_open));
+    let changes = if streaming {
+        None
+    } else {
+        page.before_changes
+            .iter()
+            .chain(&page.turn_changes)
+            .find(|counts| counts.after == m.id)
+    };
+    if fold.is_some() || changes.is_some() {
+        let mut head = if fold.is_some() {
+            worked(k, &worked_key, m.ended_at - started, worked_open)
+        } else {
+            row().w_full()
+        };
+        if let Some(counts) = changes {
+            head = head
+                .child(rune::spacer())
+                .child(super::changes::button(k, counts));
+        }
+        out = out.child(head.center_y().gap(8.0));
     }
     for (n, piece) in pieces.into_iter().enumerate() {
         if fold.is_some_and(|f| n < f) && !worked_open {
@@ -770,7 +788,7 @@ fn toggle_group(s: &mut State, key: &str, open: bool) {
     }
 }
 
-/// Show a finished reply's timestamp, copy action and saved turn diff.
+/// Show a finished reply's timestamp and copy action.
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     let mut out = row().w_full().gap(8.0).center_y();
     if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {
@@ -796,16 +814,6 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_answer(&id, tx))
                 .build(k),
         );
-    }
-    if let Some(counts) = page
-        .before_changes
-        .iter()
-        .chain(&page.turn_changes)
-        .find(|counts| counts.after == m.id)
-    {
-        out = out
-            .child(rune::spacer())
-            .child(super::changes::button(k, counts));
     }
     out
 }

@@ -232,7 +232,7 @@ The Mac shows a details card beside an existing chat in the main window and abov
 
 ## Turn changes
 
-A completed turn's diff button sits at the right of its final reply's timestamp and copy row. A trailing compaction stays a separate note and doesn't take the reply's button.
+A completed turn's diff button sits at the right of its Worked header, above the final answer. A reply without folded work shows the button in the same position, without a Worked label. The timestamp and copy action stay below the answer. A trailing compaction stays a separate note and doesn't take the reply's button.
 
 The app shows what each run changed, as zeron-tools does now. A run is everything from the prompt that starts it until pi settles, including any steering messages sent in between. pi's own `turn_start` is one assistant response, which is too small a unit, and the engine can't pause pi to take a snapshot in the middle of a run.
 

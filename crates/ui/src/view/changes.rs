@@ -1,4 +1,4 @@
-//! What a chat's run changed: the button in its reply's footer, and the page
+//! What a chat's run changed: the button in its work header, and the page
 //! with its unified diff that opens in place of the chat.
 
 use rune::{El, Span, TextStyle, col, icon, rich, row, text};
@@ -10,7 +10,7 @@ use super::widgets::{busy, head, head_titles, hide_button};
 use crate::app::{ChangeTarget, Changes, Existing, State, Window};
 use crate::data::TurnChanges;
 
-/// Show compact file counts beside the timestamp, pressed to open the diff.
+/// Show compact file counts in the work header, pressed to open the diff.
 pub fn button(k: &Kit, counts: &TurnChanges) -> El {
     let small = TextStyle {
         size: 12.0,
