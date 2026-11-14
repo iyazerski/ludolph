@@ -6,6 +6,13 @@ on:
   workflow_dispatch:
 
 jobs:
+  release-notes:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test release notes
+        run: bash scripts/tests/release_notes.sh
+
   rust:
     runs-on: macos-26
 

@@ -406,6 +406,8 @@ install.sh      installs or updates the latest release
 
 As in fettle, each push to `main` that changes the app publishes `vX.Y.n` (`.github/workflows/release.yml`): X.Y from `Cargo.toml`, and n counting the earlier X.Y releases. It ships only what passes CI. The release has `Ludolph.dmg` for people, `Ludolph.zip` for `install.sh` and the Homebrew cask in `iyazerski/homebrew-tap`, and a checksum for each. CI sets `LUDOLPH_VERSION`, which the engine, the windows and `Info.plist` show.
 
+Release notes list original commit subjects from each merged PR since the previous release, with a link back to the PR. GitHub's API retains these commits after a squash merge. Direct commits use their own subjects, and an API failure stops publication rather than dropping changes from the notes.
+
 The app is signed with a self-signed certificate, the same for every release (`MACOS_CERT_P12`), so macOS keeps the microphone, speech and Keychain grants across updates. `install.sh` and the release workflow check that certificate's hash. It isn't notarized, so macOS asks once before the first start.
 
 Settings checks for a newer release each time it opens, and offers to update. The app downloads `Ludolph.zip` with the system's curl, checks its checksum and certificate, swaps the app in one rename, and starts again. The engine's launchd job names the version, so the new app's changed job restarts the engine too, which stops running chats; Settings says so beside the button.

@@ -21,6 +21,7 @@ on:
       - "assets/**"
       - "scripts/bundle.sh"
       - "scripts/dmg.py"
+      - "scripts/release_notes.sh"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/release.yml"
@@ -81,6 +82,7 @@ jobs:
     runs-on: macos-26
     permissions:
       contents: write
+      pull-requests: read
     env:
       ASSET: Ludolph.zip
       VERSION: ${{ needs.build.outputs.version }}
@@ -134,7 +136,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           previous=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
-          changes=$(git log --no-merges --format='- %s' ${previous:+"$previous..HEAD"})
+          changes=$(bash scripts/release_notes.sh "${previous:+$previous..}$GITHUB_SHA")
           gh release create "v$VERSION" dist/* \
             --target "$GITHUB_SHA" \
             --title "Ludolph v$VERSION" \
