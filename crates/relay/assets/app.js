@@ -2050,12 +2050,15 @@ function chatView(machine, id, fromList) {
       for (const id of feedMessages.keys()) if (!keep.has(id)) feedMessages.delete(id);
     }
     frame = next;
+    const was = chat?.status;
     chat = frame.chat;
     elsewhere.classList.toggle("hide", !chat.openElsewhere);
     seen.mark(chat);
     drawHeader();
     const infoKey = `${chat.status}|${chat.lastMessageAt}`;
-    if (infoKey !== infoFor && Date.now() - infoAt > 8000) { infoFor = infoKey; loadInfo(); }
+    // Each step of a run grows the context; its end always reads it again.
+    const settled = was === "working" && chat.status !== "working";
+    if ((infoKey !== infoFor || chat.status === "working") && (settled || Date.now() - infoAt > 8000)) { infoFor = infoKey; loadInfo(); }
     compose();
     drawMessages();
   }
