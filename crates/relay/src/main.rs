@@ -3,7 +3,8 @@
 //!
 //! Each Mac dials out to `/connect` ([`hub`]), the phone signs in with a
 //! passkey ([`auth`]), and its calls are routed to the chosen Mac. A phone
-//! links by scanning a Mac's QR code ([`pair`]).
+//! links by scanning a Mac's QR code ([`pair`]). What the phone and a Mac
+//! say is sealed with a key the relay never sees, so it routes it unread.
 //!
 //! It serves plain HTTP behind a TLS-terminating proxy. API calls must be
 //! JSON POSTs from the app's own origin, with the session cookie
@@ -21,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::extract::{DefaultBodyLimit, Path, Request, State, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State, WebSocketUpgrade};
 use axum::http::{Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -33,7 +34,7 @@ use axum_extra::extract::cookie::CookieJar;
 use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
 use clap::Parser;
-use ludolph_relay_proto::{CONNECT_PATH, Notice, PAIR_PATH};
+use ludolph_relay_proto::{CONNECT_PATH, PAIR_PATH, Sealed};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use url::Url;
@@ -42,12 +43,13 @@ use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 use auth::Auth;
 use hub::Hub;
 use pair::Pairings;
-use push::{Kind, Payload, Push, Subscription};
+use push::{Payload, Push, Subscription};
 
 /// The largest tool call the phone sends, which leaves room for a message's
-/// photos. It goes to the Mac as one websocket frame, and the engine reads
-/// frames of up to 16 MiB.
-const MAX_CALL: usize = 12 << 20;
+/// photos (8 of up to about 1 MiB, in base64, then sealed in base64 again).
+/// It goes to the Mac as one websocket frame, and the engine reads frames of
+/// up to 24 MiB.
+const MAX_CALL: usize = 20 << 20;
 use store::{Machine, Store};
 
 /// The app's files: plain HTML, CSS, and JS, no build step.
@@ -76,6 +78,11 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
         "/file-icons.js",
         "text/javascript; charset=utf-8",
         include_bytes!("../assets/file-icons.js"),
+    ),
+    (
+        "/seal.js",
+        "text/javascript; charset=utf-8",
+        include_bytes!("../assets/seal.js"),
     ),
     (
         "/sw.js",
@@ -175,10 +182,10 @@ async fn main() -> Result<()> {
         .route("/api/machines", post(machines))
         .route("/api/machines/remove", post(remove_machine))
         .route(
-            "/api/call/{machine}/{tool}",
+            "/api/call/{machine}",
             post(call_tool).layer(DefaultBodyLimit::max(MAX_CALL)),
         )
-        .route("/api/watch/{machine}/{chat}", get(watch_chat))
+        .route("/api/watch/{machine}", get(watch_chat))
         .route("/push/key", post(push_key))
         .route("/push/subscribe", post(push_subscribe))
         .route("/push/unsubscribe", post(push_unsubscribe))
@@ -398,28 +405,34 @@ async fn remove_machine(State(app): State<App>, Json(body): Json<MachineId>) -> 
     done(result)
 }
 
+/// Pass a phone's sealed call to a Mac, and its sealed reply back.
 async fn call_tool(
     State(app): State<App>,
-    Path((machine, tool)): Path<(String, String)>,
-    Json(args): Json<Value>,
+    Path(machine): Path<String>,
+    Json(sealed): Json<Sealed>,
 ) -> Response {
-    match app.hub.call(&machine, tool, args).await {
-        Ok(value) => Json(value).into_response(),
+    match app.hub.call(&machine, sealed).await {
+        Ok(sealed) => Json(json!({ "sealed": sealed })).into_response(),
         Err(error) => failure(StatusCode::BAD_REQUEST, error),
     }
 }
 
-/// Stream a chat's feed from a Mac as server-sent events, one frame each.
-/// The stream ends when the Mac goes away or the phone falls behind; the
-/// phone then connects again and starts over.
+/// Stream a chat's feed from a Mac as server-sent events, one sealed frame
+/// each, for the request the phone sealed in the query. The stream ends when
+/// the Mac goes away or the phone falls behind; the phone then connects
+/// again and starts over.
 async fn watch_chat(
     State(app): State<App>,
-    Path((machine, chat)): Path<(String, String)>,
+    Path(machine): Path<String>,
+    Query(sealed): Query<Sealed>,
 ) -> Response {
-    match app.hub.watch(&machine, chat).await {
+    match app.hub.watch(&machine, sealed).await {
         Ok(watch) => {
             let frames = futures_util::stream::unfold(watch, |mut watch| async move {
-                let frame = watch.frames.recv().await?;
+                let frame = match watch.frames.recv().await? {
+                    Ok(sealed) => json!({ "sealed": sealed }),
+                    Err(error) => json!({ "error": error }),
+                };
                 Some((
                     Ok::<_, Infallible>(Event::default().data(frame.to_string())),
                     watch,
@@ -458,10 +471,14 @@ async fn connect(
                 }
             }
         };
-        let notify = move |machine: &Machine, notice| {
-            let payload = payload(machine, notice, store.machine_count() > 1);
+        let notify = move |machine: &Machine, notices: Vec<Sealed>| {
+            let several = store.machine_count() > 1;
+            let machine = machine.clone();
             let push = push.clone();
-            tokio::spawn(async move { push.broadcast(&payload).await });
+            tokio::spawn(async move {
+                push.broadcast(|sub| payload(&machine, &notices, several, sub))
+                    .await
+            });
         };
         hub.serve(machine, socket, known, notify, forget)
     })
@@ -483,20 +500,20 @@ async fn pair(
     ws.on_upgrade(move |socket| async move { app.pairings.serve(socket, machine).await })
 }
 
-/// The notification for a Mac's notice. With several Macs, the body says which.
-fn payload(machine: &Machine, notice: Notice, several: bool) -> Payload {
-    let body = if several {
-        format!("{} · {}", machine.name, notice.body)
-    } else {
-        notice.body
-    };
-    Payload {
-        title: notice.title,
-        body,
-        kind: notice.kind.into(),
-        machine: Some(machine.id.clone()),
-        chat: Some(notice.chat),
-    }
+/// The notification for one browser of a Mac's notice: the copy sealed for
+/// one of its phones, if it has one. With several Macs, it names the Mac.
+fn payload(
+    machine: &Machine,
+    notices: &[Sealed],
+    several: bool,
+    sub: &Subscription,
+) -> Option<Payload> {
+    let notice = notices.iter().find(|n| sub.phones.contains(&n.phone))?;
+    Some(Payload::Notice {
+        machine: machine.id.clone(),
+        mac: several.then(|| machine.name.clone()),
+        sealed: notice.clone(),
+    })
 }
 
 async fn push_key(State(app): State<App>, Json(_): Json<Value>) -> Response {
@@ -517,12 +534,9 @@ async fn push_unsubscribe(State(app): State<App>, Json(e): Json<Endpoint>) -> Re
 }
 
 async fn push_test(State(app): State<App>, Json(e): Json<Endpoint>) -> Response {
-    let payload = Payload {
+    let payload = Payload::Test {
         title: "Notifications work".into(),
         body: "You'll hear from your Macs when a chat finishes or needs you.".into(),
-        kind: Kind::Test,
-        machine: None,
-        chat: None,
     };
     done(app.push.send_to(&e.endpoint, &payload).await)
 }
@@ -545,28 +559,34 @@ fn failure(status: StatusCode, error: impl Into<String>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ludolph_relay_proto::NoticeKind;
 
     #[test]
-    fn notifications_name_the_mac_only_when_there_are_several() {
+    fn a_browser_gets_the_notice_sealed_for_its_phone_and_names_the_mac_only_when_there_are_several()
+     {
         let mac = Machine {
             id: "m".into(),
             name: "Work Mac".into(),
         };
-        let notice = Notice {
-            kind: NoticeKind::Input,
-            chat: "c".into(),
-            title: "Deploy".into(),
-            body: "Needs your answer: where?".into(),
+        let sealed = |phone: &str| Sealed {
+            phone: phone.into(),
+            data: format!("for {phone}"),
         };
-        let one = payload(&mac, notice.clone(), false);
-        assert_eq!(one.body, "Needs your answer: where?");
+        let notices = [sealed("a"), sealed("b")];
+        let sub = |phones: &[&str]| Subscription {
+            endpoint: "https://push.example/1".into(),
+            keys: push::SubscriptionKeys {
+                p256dh: String::new(),
+                auth: String::new(),
+            },
+            phones: phones.iter().map(|&p| p.into()).collect(),
+        };
+        let one = payload(&mac, &notices, false, &sub(&["x", "b"])).unwrap();
         assert_eq!(
-            (one.kind, one.machine.as_deref(), one.chat.as_deref()),
-            (Kind::Input, Some("m"), Some("c"))
+            serde_json::to_value(&one).unwrap(),
+            json!({"type": "notice", "machine": "m", "mac": null, "sealed": {"phone": "b", "data": "for b"}})
         );
-        assert_eq!(serde_json::to_value(&one).unwrap()["kind"], "input");
-        let several = payload(&mac, notice, true);
-        assert_eq!(several.body, "Work Mac · Needs your answer: where?");
+        let several = payload(&mac, &notices, true, &sub(&["a"])).unwrap();
+        assert_eq!(serde_json::to_value(&several).unwrap()["mac"], "Work Mac");
+        assert_eq!(payload(&mac, &notices, false, &sub(&["x"])), None);
     }
 }

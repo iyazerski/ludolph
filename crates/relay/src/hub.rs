@@ -2,8 +2,8 @@
 //!
 //! The app's calls go to a Mac as [`Down::Call`]s and wait for the matching
 //! reply, and the chats it has open stream back as frames of a
-//! [`Down::Watch`]. The Mac decides which tools may run; the relay only
-//! routes.
+//! [`Down::Watch`]. They're sealed between the phone and the Mac, which
+//! decides which tools may run; the relay only routes.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,9 +13,8 @@ use anyhow::{Result, bail};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use ludolph_relay_proto::{Battery, Down, Notice, PROTOCOL, Up};
+use ludolph_relay_proto::{Battery, Down, PROTOCOL, Sealed, Up};
 use serde::Serialize;
-use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 
@@ -34,10 +33,12 @@ const CALL_QUEUE: usize = 64;
 /// this far behind loses the stream, and starts over when it reconnects.
 const WATCH_QUEUE: usize = 32;
 
+/// A Mac's answer: sealed for the phone, or why it couldn't open the call.
+pub type Answer = Result<String, String>;
 /// Calls waiting for a Mac's reply, by call id.
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Answer>>>>;
 /// Where the frames of each chat the phone follows go, by watch id.
-type Watches = Arc<Mutex<HashMap<u64, mpsc::Sender<Value>>>>;
+type Watches = Arc<Mutex<HashMap<u64, mpsc::Sender<Answer>>>>;
 
 struct Link {
     /// Tells this connection apart from a newer one for the same Mac.
@@ -62,7 +63,7 @@ pub struct Status {
 /// A chat the phone follows on a Mac: its frames, until the Mac goes away.
 /// Dropping it tells the Mac to stop.
 pub struct Watch {
-    pub frames: mpsc::Receiver<Value>,
+    pub frames: mpsc::Receiver<Answer>,
     id: u64,
     watches: Watches,
     /// Weak, so a replaced connection still ends when its link is gone.
@@ -99,7 +100,7 @@ impl Hub {
         }
     }
 
-    pub async fn call(&self, machine: &str, tool: String, args: Value) -> Result<Value, String> {
+    pub async fn call(&self, machine: &str, sealed: Sealed) -> Answer {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (calls, pending) = {
             let links = self.lock();
@@ -115,7 +116,7 @@ impl Hub {
         };
         // The deadline covers queueing too, not just the Mac's answer.
         let exchange = async move {
-            let sent = calls.send(Down::Call { id, tool, args }).await;
+            let sent = calls.send(Down::Call { id, sealed }).await;
             // Don't keep the link's call queue open: a replaced connection
             // ends when its last sender is gone.
             drop(calls);
@@ -131,8 +132,8 @@ impl Hub {
             .unwrap_or_else(|_| Err("this Mac didn't answer in time".into()))
     }
 
-    /// Follow chat `chat` on `machine` for the phone.
-    pub async fn watch(&self, machine: &str, chat: String) -> Result<Watch, String> {
+    /// Follow the chat the phone asks for in `sealed` on `machine`.
+    pub async fn watch(&self, machine: &str, sealed: Sealed) -> Result<Watch, String> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (calls, watches) = {
             let links = self.lock();
@@ -147,7 +148,7 @@ impl Hub {
             watches,
             calls: calls.downgrade(),
         };
-        match tokio::time::timeout(CALL_TIMEOUT, calls.send(Down::Watch { id, chat })).await {
+        match tokio::time::timeout(CALL_TIMEOUT, calls.send(Down::Watch { id, sealed })).await {
             Ok(Ok(())) => Ok(watch),
             Ok(Err(_)) => Err("this Mac went offline".into()),
             Err(_) => Err("this Mac didn't answer in time".into()),
@@ -167,7 +168,7 @@ impl Hub {
         machine: Machine,
         socket: WebSocket,
         known: impl Fn(&str) -> bool + Send,
-        notify: impl Fn(&Machine, Notice) + Send,
+        notify: impl Fn(&Machine, Vec<Sealed>) + Send,
         forget: impl Fn(&Machine) + Send,
     ) {
         if let Err(e) = self
@@ -183,7 +184,7 @@ impl Hub {
         machine: &Machine,
         socket: WebSocket,
         known: impl Fn(&str) -> bool + Send,
-        notify: impl Fn(&Machine, Notice) + Send,
+        notify: impl Fn(&Machine, Vec<Sealed>) + Send,
         forget: impl Fn(&Machine) + Send,
     ) -> Result<()> {
         let (mut sink, mut stream) = socket.split();
@@ -280,7 +281,7 @@ impl Hub {
         pending: &Pending,
         watches: &Watches,
         up: Up,
-        notify: &impl Fn(&Machine, Notice),
+        notify: &impl Fn(&Machine, Vec<Sealed>),
     ) -> Option<Down> {
         match up {
             Up::Reply { id, result } => {
@@ -301,7 +302,7 @@ impl Hub {
                     return Some(Down::Unwatch { id });
                 }
             }
-            Up::Notify(notice) => notify(machine, notice),
+            Up::Notify { notices } => notify(machine, notices),
             Up::Power { battery } => self.update_link(machine, conn, |link| link.battery = battery),
             Up::Hello { .. } | Up::Forget => {}
         }
@@ -373,7 +374,6 @@ pub fn close(reason: &str) -> Message {
 mod tests {
     use super::*;
     use axum::extract::WebSocketUpgrade;
-    use serde_json::json;
     use tokio_tungstenite::tungstenite::Message as Frame;
 
     type MacSocket = tokio_tungstenite::WebSocketStream<
@@ -425,13 +425,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let caller = hub.clone();
-        let call =
-            tokio::spawn(async move { caller.call("m", "list_chats".into(), json!({})).await });
+        let call = tokio::spawn(async move { caller.call("m", sealed("call")).await });
         let Some(Ok(Frame::Text(body))) = socket.next().await else {
             panic!("the Mac got no call");
         };
         assert!(
-            matches!(serde_json::from_str::<Down>(&body).unwrap(), Down::Call { tool, .. } if tool == "list_chats"),
+            matches!(serde_json::from_str::<Down>(&body).unwrap(), Down::Call { sealed, .. } if sealed.data == "call"),
             "{body}"
         );
 
@@ -442,6 +441,13 @@ mod tests {
             .unwrap();
         assert_eq!(result, Err("this Mac went offline".into()));
         assert!(!hub.status("m").online);
+    }
+
+    fn sealed(data: &str) -> Sealed {
+        Sealed {
+            phone: "p".into(),
+            data: data.into(),
+        }
     }
 
     /// The next message the Mac gets.
@@ -459,27 +465,29 @@ mod tests {
         while !hub.status("m").online {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let mut watch = hub.watch("m", "c".into()).await.unwrap();
-        let Down::Watch { id, chat } = to_mac(&mut socket).await else {
+        let mut watch = hub.watch("m", sealed("c")).await.unwrap();
+        let Down::Watch { id, sealed: asked } = to_mac(&mut socket).await else {
             panic!("the Mac wasn't asked to follow the chat");
         };
-        assert_eq!(chat, "c");
-        for frame in [json!({"reset": true}), json!({"reset": false})] {
+        assert_eq!(asked.data, "c");
+        let frames: [Answer; 2] = [Ok("one".into()), Err("gone".into())];
+        for frame in frames.clone() {
             let up = Up::Frame { id, frame };
             socket
                 .send(Frame::text(serde_json::to_string(&up).unwrap()))
                 .await
                 .unwrap();
         }
-        assert_eq!(watch.frames.recv().await, Some(json!({"reset": true})));
-        assert_eq!(watch.frames.recv().await, Some(json!({"reset": false})));
+        for frame in frames {
+            assert_eq!(watch.frames.recv().await, Some(frame));
+        }
 
         drop(watch);
         assert_eq!(to_mac(&mut socket).await, Down::Unwatch { id });
         // A frame already on its way gets another unwatch.
         let late = Up::Frame {
             id,
-            frame: json!({}),
+            frame: Ok("late".into()),
         };
         socket
             .send(Frame::text(serde_json::to_string(&late).unwrap()))
@@ -488,7 +496,7 @@ mod tests {
         assert_eq!(to_mac(&mut socket).await, Down::Unwatch { id });
 
         // The phone's stream ends with the Mac's link.
-        let mut watch = hub.watch("m", "c".into()).await.unwrap();
+        let mut watch = hub.watch("m", sealed("c")).await.unwrap();
         drop(socket);
         let ended = tokio::time::timeout(Duration::from_secs(5), watch.frames.recv()).await;
         assert_eq!(ended, Ok(None));

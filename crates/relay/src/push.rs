@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use ludolph_relay_proto::NoticeKind;
+use ludolph_relay_proto::Sealed;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
@@ -36,11 +36,15 @@ const VAPID_LIFETIME_SECS: u64 = 12 * 3600;
 const PUSH_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTH_SECRET_LEN: usize = 16;
 
-/// A browser's push subscription, as `PushSubscription.toJSON()` gives it.
+/// A browser's push subscription, as `PushSubscription.toJSON()` gives it,
+/// with the ids of the phone links it holds keys for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Subscription {
     pub endpoint: String,
     pub keys: SubscriptionKeys,
+    /// A Mac's notice reaches this browser sealed for one of these.
+    #[serde(default)]
+    pub phones: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,37 +55,19 @@ pub struct SubscriptionKeys {
     pub auth: String,
 }
 
-/// What a notification says; the service worker shows it.
+/// What a notification carries; the service worker shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Payload {
-    pub title: String,
-    pub body: String,
-    pub kind: Kind,
-    pub machine: Option<String>,
-    pub chat: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Kind {
-    Finished,
-    Input,
-    Failed,
-    Interrupted,
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Payload {
     /// Sent from the app's settings to try notifications.
-    Test,
-}
-
-impl From<NoticeKind> for Kind {
-    fn from(kind: NoticeKind) -> Self {
-        match kind {
-            NoticeKind::Finished => Self::Finished,
-            NoticeKind::Input => Self::Input,
-            NoticeKind::Failed => Self::Failed,
-            NoticeKind::Interrupted => Self::Interrupted,
-        }
-    }
+    Test { title: String, body: String },
+    /// A Mac's notice, sealed for the phone: only it reads what happened.
+    Notice {
+        machine: String,
+        /// The Mac's name, when there are several, so the phone says which.
+        mac: Option<String>,
+        sealed: Sealed,
+    },
 }
 
 /// The VAPID key, the browsers' subscriptions, and delivery to them.
@@ -178,11 +164,15 @@ impl Push {
         self.deliver(&sub, payload).await
     }
 
-    /// Send `payload` to every subscription, dropping ones the push service retired.
-    pub async fn broadcast(&self, payload: &Payload) {
+    /// Send each subscription its `payload`, if it has one, dropping ones the
+    /// push service retired.
+    pub async fn broadcast(&self, payload: impl Fn(&Subscription) -> Option<Payload>) {
         let subs = self.subscriptions.lock().await.clone();
         for sub in subs {
-            if let Err(e) = self.deliver(&sub, payload).await {
+            let Some(payload) = payload(&sub) else {
+                continue;
+            };
+            if let Err(e) = self.deliver(&sub, &payload).await {
                 eprintln!("push to {}: {e:#}", short_endpoint(&sub.endpoint));
             }
         }
@@ -278,6 +268,7 @@ mod tests {
                 p256dh: p256dh.into(),
                 auth: auth.into(),
             },
+            phones: Vec::new(),
         };
         push.subscribe(sub(p256dh, "BTBZMqHH6r4Tts7J_aSIgg=="))
             .await

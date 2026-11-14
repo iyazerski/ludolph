@@ -2812,6 +2812,7 @@ name = "ludolph-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "chrono",
  "dispatch2",
  "futures-util",
@@ -2823,6 +2824,7 @@ dependencies = [
  "objc2-core-services",
  "objc2-io-kit",
  "plist",
+ "ring",
  "rustls",
  "security-framework",
  "serde",

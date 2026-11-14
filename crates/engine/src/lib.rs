@@ -13,6 +13,7 @@ pub mod power;
 pub mod relay;
 pub mod repo;
 pub mod runtime;
+pub mod seal;
 pub mod server;
 pub mod session;
 pub mod settings;

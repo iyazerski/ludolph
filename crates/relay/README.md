@@ -1,6 +1,6 @@
 # ludolph-relay
 
-A tiny server that lets your phone reach the Ludolph engines on your Macs. Each Mac dials out to it, so the Macs need no open port. You sign in on the phone with a passkey. The relay keeps a few KB of state: passkeys, sessions, Mac tokens, and Web Push subscriptions. It never stores chats.
+A tiny server that lets your phone reach the Ludolph engines on your Macs. Each Mac dials out to it, so the Macs need no open port. You sign in on the phone with a passkey. The relay keeps a few KB of state: passkeys, sessions, Mac tokens, and Web Push subscriptions. It never stores chats, and can't read them: what the phone and a Mac say is end-to-end encrypted with a key the relay never sees. It still serves the phone app's code, so run it yourself or trust whoever does.
 
 ## Run it
 

@@ -10,35 +10,40 @@
 //!
 //! A phone links by scanning a QR code from Settings: [`pair`] waits on the
 //! relay for a phone to claim its code, and gets this Mac's token if the
-//! relay didn't know it yet.
+//! relay didn't know it yet. The QR code also gives the phone a secret that
+//! only it and this Mac know, and everything they say is sealed with it
+//! ([`crate::seal`]), so the relay only routes.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use ludolph_relay_proto::{
-    CONNECT_PATH, Down, Notice, NoticeKind, PAIR_PATH, PROTOCOL, PairStart, Paired, Up, pair_url,
+    CONNECT_PATH, Down, PAIR_PATH, PROTOCOL, PairStart, Paired, Sealed, Up, pair_url,
 };
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::{AbortHandle, JoinSet};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, Uri, header};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::engine::{Alert, AlertKind, Engine};
 use crate::feed::{self, Feed};
 use crate::power;
+use crate::seal::{self, Keys, Opened, Purpose, Replays};
 use crate::settings::Notify;
 use crate::text::one_line;
 use crate::tools::{self, Tool};
@@ -77,19 +82,22 @@ const NOTICE_TIMEOUT: Duration = Duration::from_secs(15);
 const BODY_CHARS: usize = 240;
 /// How long the relay has to confirm an unlink.
 const FORGET_TIMEOUT: Duration = Duration::from_secs(10);
+/// The largest message the relay sends. A call with a message's photos is
+/// up to about 16 MiB once sealed, and the relay takes up to 20 MiB.
+const MAX_MESSAGE: usize = 24 << 20;
 
 /// The relay a phone links through unless Settings names another.
 pub const DEFAULT_RELAY: &str = "https://ludolph.iyazerski.dev";
 
 /// The Keychain item's service; its account is the engine's folder, so a
-/// throwaway engine can't change the installed one's token.
+/// throwaway engine can't change the installed one's secrets.
 const KEYCHAIN_SERVICE: &str = "dev.iyazerski.ludolph.relay";
 /// `errSecItemNotFound`.
 const NOT_FOUND: i32 = -25300;
 
-/// Where this Mac's relay token is kept.
+/// Where this Mac's relay token and phone secrets are kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenStore {
+pub enum SecretStore {
     /// The login keychain, beside `relay.json` with the relay's address.
     Keychain,
     /// In `relay.json` itself, readable only by you, for tests that mustn't
@@ -97,21 +105,104 @@ pub enum TokenStore {
     File,
 }
 
-/// The relay's address and this Mac's token, from linking a phone.
+/// The relay's address, this Mac's token, and the linked phones' secrets.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Link {
     /// `https://…`, or `http://…` for a relay on this Mac.
     pub relay: String,
     pub token: String,
+    /// One per linked phone, which [`Keys::derive`] takes.
+    pub phones: Vec<String>,
 }
 
-// By hand, so logs never show the token.
+// By hand, so logs never show a secret.
 impl fmt::Debug for Link {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Link")
             .field("relay", &self.relay)
             .field("token", &"<redacted>")
+            .field("phones", &self.phones.len())
             .finish()
+    }
+}
+
+/// The linked phones' keys, by phone id, which seal and open what they say.
+#[derive(Default)]
+pub struct Phones(Mutex<HashMap<String, Arc<LinkedPhone>>>);
+
+// By hand, so logs never show a key.
+impl fmt::Debug for Phones {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Phones")
+            .field("count", &self.lock().len())
+            .finish()
+    }
+}
+
+/// A linked phone's keys, and the calls it sent lately.
+struct LinkedPhone {
+    keys: Keys,
+    replays: Mutex<Replays>,
+}
+
+impl Phones {
+    /// Use the phones with `secrets` from now on, in place of the others.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a secret is malformed.
+    pub fn set(&self, secrets: &[String]) -> Result<()> {
+        let phones = secrets
+            .iter()
+            .map(|secret| {
+                let keys = Keys::derive(secret)?;
+                let phone = LinkedPhone {
+                    keys,
+                    replays: Mutex::default(),
+                };
+                Ok((phone.keys.phone.clone(), Arc::new(phone)))
+            })
+            .collect::<Result<_>>()?;
+        *self.lock() = phones;
+        Ok(())
+    }
+
+    /// Add the phone with `secret`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the secret is malformed.
+    pub fn add(&self, secret: &str) -> Result<()> {
+        let keys = Keys::derive(secret)?;
+        let phone = LinkedPhone {
+            keys,
+            replays: Mutex::default(),
+        };
+        self.lock()
+            .insert(phone.keys.phone.clone(), Arc::new(phone));
+        Ok(())
+    }
+
+    /// Open a call or a watch from a phone, once.
+    fn open(&self, sealed: &Sealed, purpose: Purpose) -> Result<(Arc<LinkedPhone>, Opened)> {
+        let phone = self.lock().get(&sealed.phone).cloned().context(
+            "this phone isn't linked to this Mac: link it again from the Mac's Settings",
+        )?;
+        let opened = phone.keys.open(purpose, &sealed.data)?;
+        phone
+            .replays
+            .lock()
+            .expect("the replays lock isn't poisoned")
+            .check(&opened, seal::now_ms())?;
+        Ok((phone, opened))
+    }
+
+    fn all(&self) -> Vec<Arc<LinkedPhone>> {
+        self.lock().values().cloned().collect()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<LinkedPhone>>> {
+        self.0.lock().expect("the phones lock isn't poisoned")
     }
 }
 
@@ -154,13 +245,20 @@ pub enum LinkStatus {
     Rejected,
 }
 
-/// `relay.json`: the relay's address, and the token when it isn't in the
-/// keychain.
+/// `relay.json`: the relay's address, and the secrets when they aren't in
+/// the keychain.
 #[derive(Serialize, Deserialize)]
 struct Saved {
     relay: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    token: Option<String>,
+    secrets: Option<Secrets>,
+}
+
+/// This Mac's token and its phones' secrets, as the keychain item keeps them.
+#[derive(Serialize, Deserialize)]
+struct Secrets {
+    token: String,
+    phones: Vec<String>,
 }
 
 impl Link {
@@ -169,61 +267,67 @@ impl Link {
         state_dir.join("relay.json")
     }
 
-    /// The saved link, if this Mac has one with its token.
+    /// The saved link, if this Mac has one with its secrets.
     ///
     /// # Errors
     ///
     /// Fails if the file or the keychain can't be read.
-    pub fn load(state_dir: &Path, store: TokenStore) -> Result<Option<Self>> {
+    pub fn load(state_dir: &Path, store: SecretStore) -> Result<Option<Self>> {
         let Some(saved) = ludolph_json_file::load::<Saved>(&Self::path(state_dir))? else {
             return Ok(None);
         };
-        let token = match store {
-            TokenStore::File => saved.token,
-            TokenStore::Keychain => {
+        let secrets = match store {
+            SecretStore::File => saved.secrets,
+            SecretStore::Keychain => {
                 match get_generic_password(KEYCHAIN_SERVICE, &keychain_account(state_dir)) {
-                    Ok(bytes) => {
-                        Some(String::from_utf8(bytes).context("the relay token isn't text")?)
-                    }
+                    Ok(bytes) => Some(
+                        serde_json::from_slice(&bytes)
+                            .context("the keychain's relay item isn't Ludolph's")?,
+                    ),
                     Err(e) if e.code() == NOT_FOUND => None,
-                    Err(e) => bail!("reading the relay token from the keychain: {e}"),
+                    Err(e) => bail!("reading the relay secrets from the keychain: {e}"),
                 }
             }
         };
-        Ok(token.map(|token| Self {
+        Ok(secrets.map(|secrets| Self {
             relay: saved.relay,
-            token,
+            token: secrets.token,
+            phones: secrets.phones,
         }))
     }
 
-    /// Save the link, with the token where `store` keeps it.
+    /// Save the link, with the secrets where `store` keeps them.
     ///
     /// # Errors
     ///
     /// Fails if the file or the keychain can't be written.
-    pub fn save(&self, state_dir: &Path, store: TokenStore) -> Result<()> {
-        let token = match store {
-            TokenStore::File => Some(self.token.clone()),
-            TokenStore::Keychain => {
+    pub fn save(&self, state_dir: &Path, store: SecretStore) -> Result<()> {
+        let secrets = Secrets {
+            token: self.token.clone(),
+            phones: self.phones.clone(),
+        };
+        let secrets = match store {
+            SecretStore::File => Some(secrets),
+            SecretStore::Keychain => {
                 let account = keychain_account(state_dir);
-                set_generic_password(KEYCHAIN_SERVICE, &account, self.token.as_bytes())
-                    .map_err(|e| anyhow!("saving the relay token in the keychain: {e}"))?;
+                set_generic_password(KEYCHAIN_SERVICE, &account, &serde_json::to_vec(&secrets)?)
+                    .map_err(|e| anyhow!("saving the relay secrets in the keychain: {e}"))?;
                 None
             }
         };
         let saved = Saved {
             relay: self.relay.clone(),
-            token,
+            secrets,
         };
         ludolph_json_file::save(&Self::path(state_dir), &saved)
     }
 
-    /// Forget the saved link and its token.
+    /// Forget the saved link and its secrets.
     ///
     /// # Errors
     ///
     /// Fails if the file or the keychain item can't be removed.
-    pub fn remove(state_dir: &Path, store: TokenStore) -> Result<()> {
+    pub fn remove(state_dir: &Path, store: SecretStore) -> Result<()> {
         let path = Self::path(state_dir);
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -231,10 +335,10 @@ impl Link {
             }
             _ => {}
         }
-        if store == TokenStore::Keychain {
+        if store == SecretStore::Keychain {
             match delete_generic_password(KEYCHAIN_SERVICE, &keychain_account(state_dir)) {
                 Err(e) if e.code() != NOT_FOUND => {
-                    bail!("removing the relay token from the keychain: {e}")
+                    bail!("removing the relay secrets from the keychain: {e}")
                 }
                 _ => {}
             }
@@ -252,7 +356,12 @@ fn keychain_account(state_dir: &Path) -> String {
 /// the settings allow, reconnecting when the link drops, and keep `phone`
 /// up to date. It returns only when the relay rejects the token, since
 /// trying again can't help then.
-pub(crate) async fn run(engine: Engine, link: Link, phone: watch::Sender<Option<Phone>>) {
+pub(crate) async fn run(
+    engine: Engine,
+    link: Link,
+    phones: Arc<Phones>,
+    phone: watch::Sender<Option<Phone>>,
+) {
     let report = |status, error: Option<String>| {
         phone.send_replace(Some(Phone {
             relay: link.relay.clone(),
@@ -280,7 +389,7 @@ pub(crate) async fn run(engine: Engine, link: Link, phone: watch::Sender<Option<
             eprintln!("relay: connected to {url}");
             report(LinkStatus::Connected, None);
             connected = Some(Instant::now());
-            serve(socket, &engine, &slots, &mut power).await
+            serve(socket, &engine, &phones, &slots, &mut power).await
         }
         .await;
         if connected.is_some_and(|at| at.elapsed() >= STABLE_AFTER) {
@@ -307,9 +416,9 @@ pub(crate) async fn run(engine: Engine, link: Link, phone: watch::Sender<Option<
 }
 
 /// Wait on `relay` for a phone to link through this Mac, calling `shown`
-/// with the page the QR code opens and the seconds it works for. `token`
-/// is this Mac's, if the relay knows it. Returns the token the relay gives
-/// a Mac it didn't know.
+/// with the page the QR code opens, which gives the phone `secret`, and the
+/// seconds it works for. `token` is this Mac's, if the relay knows it.
+/// Returns the token the relay gives a Mac it didn't know.
 ///
 /// # Errors
 ///
@@ -318,6 +427,7 @@ pub(crate) async fn run(engine: Engine, link: Link, phone: watch::Sender<Option<
 pub async fn pair(
     relay: &str,
     token: Option<&str>,
+    secret: &str,
     mut shown: impl FnMut(String, u64),
 ) -> Result<Option<String>> {
     let mut socket = dial(&socket_url(relay, PAIR_PATH)?, token).await?;
@@ -331,7 +441,9 @@ pub async fn pair(
     while let Some(message) = socket.next().await {
         match message? {
             Message::Text(body) => match serde_json::from_str(&body)? {
-                Paired::Code { code, expires_in } => shown(pair_url(relay, &code), expires_in),
+                Paired::Code { code, expires_in } => {
+                    shown(pair_url(relay, &code, secret), expires_in);
+                }
                 Paired::Linked { token } => return Ok(token),
             },
             Message::Close(Some(frame)) if !frame.reason.is_empty() => bail!("{}", frame.reason),
@@ -399,6 +511,7 @@ type Socket =
 async fn serve(
     socket: Socket,
     engine: &Engine,
+    phones: &Arc<Phones>,
     slots: &Arc<Semaphore>,
     power: &mut Option<power::Changes>,
 ) -> Result<()> {
@@ -427,19 +540,35 @@ async fn serve(
                             let busy = Up::Reply { id, result: Err("this Mac is busy; try again".into()) };
                             sink.send(encode(&busy)?).await?;
                         }
-                        Ok(Down::Call { id, tool, args }) => {
-                            let reply = answer(engine.clone(), slots.clone(), id, tool, args);
-                            calls.spawn(async { Some(reply.await) });
+                        Ok(Down::Call { id, sealed }) => {
+                            let reply = match phones.open(&sealed, Purpose::Call) {
+                                Ok((phone, call)) => {
+                                    let reply = answer(engine.clone(), slots.clone(), phone, call);
+                                    calls.spawn(async move { Some(Up::Reply { id, result: reply.await }) });
+                                    continue;
+                                }
+                                Err(e) => Up::Reply { id, result: Err(format!("{e:#}")) },
+                            };
+                            sink.send(encode(&reply)?).await?;
                         }
-                        Ok(Down::Watch { id, chat }) => {
+                        Ok(Down::Watch { id, sealed }) => {
                             while watches.try_join_next().is_some() {}
                             watching.retain(|_, handle| !handle.is_finished());
-                            if watching.len() >= MAX_WATCHES {
-                                let full = Up::Frame { id, frame: serde_json::json!({"error": "this Mac follows too many chats; close some"}) };
-                                sink.send(encode(&full)?).await?;
-                                continue;
-                            }
-                            let handle = watches.spawn(watch(engine.clone(), id, chat, frames_tx.clone()));
+                            let opened = if watching.len() >= MAX_WATCHES {
+                                Err(anyhow!("this Mac follows too many chats; close some"))
+                            } else {
+                                phones.open(&sealed, Purpose::Watch)
+                            };
+                            let (phone, request) = match opened {
+                                Ok(opened) => opened,
+                                Err(e) => {
+                                    let refused = Up::Frame { id, frame: Err(format!("{e:#}")) };
+                                    sink.send(encode(&refused)?).await?;
+                                    continue;
+                                }
+                            };
+                            let follow = watch(engine.clone(), id, phone, request, frames_tx.clone());
+                            let handle = watches.spawn(follow);
                             if let Some(old) = watching.insert(id, handle) {
                                 old.abort();
                             }
@@ -458,7 +587,7 @@ async fn serve(
                 }
             }
             alert = alerts.recv() => match alert {
-                Ok(alert) => _ = calls.spawn(tell(engine.clone(), alert)),
+                Ok(alert) => _ = calls.spawn(tell(engine.clone(), phones.clone(), alert)),
                 Err(RecvError::Lagged(missed)) => eprintln!("relay: skipped {missed} notifications"),
                 Err(RecvError::Closed) => bail!("the engine stopped"),
             },
@@ -489,43 +618,85 @@ async fn serve(
     }
 }
 
-/// Run one call and return its reply. Waiting for a slot counts toward
+/// A phone's tool call, as it seals it.
+#[derive(Deserialize)]
+struct Call {
+    tool: String,
+    #[serde(default)]
+    args: Value,
+}
+
+/// A phone's request to follow a chat, as it seals it.
+#[derive(Deserialize)]
+struct WatchRequest {
+    chat: String,
+}
+
+/// Run `phone`'s `call` and return its reply, sealed for the phone as
+/// `{"ok": …}` or `{"error": …}`. Waiting for a slot counts toward
 /// [`CALL_TIMEOUT`], so the reply still reaches the relay in time.
 async fn answer(
     engine: Engine,
     slots: Arc<Semaphore>,
-    id: u64,
-    tool: String,
-    args: serde_json::Value,
-) -> Up {
+    phone: Arc<LinkedPhone>,
+    call: Opened,
+) -> Result<String, String> {
     let run = async {
         let _slot = slots.acquire().await?;
+        let Call { tool, args } = serde_json::from_str(&call.text).context("a bad call")?;
         let parsed: Tool = tool.parse()?;
         if !parsed.for_phone() {
             bail!("the phone can't call {tool}");
         }
         tools::call(&engine, parsed, args).await
     };
-    let result = match tokio::time::timeout(CALL_TIMEOUT, run).await {
-        Ok(result) => result.map_err(|e| format!("{e:#}")),
-        Err(_) => Err("the Mac didn't answer in time".into()),
+    let reply = match tokio::time::timeout(CALL_TIMEOUT, run).await {
+        Ok(Ok(value)) => json!({ "ok": value }),
+        Ok(Err(e)) => json!({ "error": format!("{e:#}") }),
+        Err(_) => json!({ "error": "the Mac didn't answer in time" }),
     };
-    Up::Reply { id, result }
+    let sealed = phone
+        .keys
+        .seal(Purpose::Reply(call.nonce), &reply.to_string());
+    sealed.map(|(data, _)| data).map_err(|e| format!("{e:#}"))
 }
 
-/// Follow chat `chat` for the phone, sending its frames to `out` as watch
-/// `id`'s until the relay stops it or the connection ends.
-async fn watch(engine: Engine, id: u64, chat: String, out: mpsc::Sender<Up>) {
-    let send = move |frame| {
+/// Follow the chat `phone` asked for in `request`, sending its frames to
+/// `out` as watch `id`'s until the relay stops it or the connection ends.
+async fn watch(
+    engine: Engine,
+    id: u64,
+    phone: Arc<LinkedPhone>,
+    request: Opened,
+    out: mpsc::Sender<Up>,
+) {
+    let watch_nonce = request.nonce;
+    let mut sent = 0;
+    // Numbered from 0, so the phone sees a frame dropped or sent twice.
+    let mut send = move |frame: Value| {
+        let n = sent;
+        sent += 1;
+        let frame = phone
+            .keys
+            .seal(Purpose::Frame(watch_nonce, n), &frame.to_string())
+            .map(|(data, _)| data)
+            .map_err(|e| format!("{e:#}"));
         let out = out.clone();
         async move { out.send(Up::Frame { id, frame }).await.is_ok() }
+    };
+    let chat = match serde_json::from_str::<WatchRequest>(&request.text) {
+        Ok(request) => request.chat,
+        Err(e) => {
+            send(json!({"error": format!("a bad request: {e}")})).await;
+            return;
+        }
     };
     match engine.subscribe_chat(&chat) {
         Ok(changes) => {
             let feed = Feed::new(engine, chat, false);
             feed::follow(changes, feed, PHONE_FRAME, send).await;
         }
-        Err(e) => _ = send(serde_json::json!({"error": format!("{e:#}")})).await,
+        Err(e) => _ = send(json!({"error": format!("{e:#}")})).await,
     }
 }
 
@@ -537,14 +708,53 @@ async fn power_change(power: &mut Option<power::Changes>) -> Result<()> {
     }
 }
 
-/// The notice for `alert`, if the settings allow one now and it's still
-/// news.
-async fn tell(engine: Engine, alert: Alert) -> Option<Up> {
+/// A notification about one chat, which the phone shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct Notice {
+    kind: NoticeKind,
+    /// The chat's id, which the notification opens.
+    chat: String,
+    title: String,
+    body: String,
+}
+
+/// What happened to the chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum NoticeKind {
+    /// Its run ended.
+    Finished,
+    /// The agent waits on an answer.
+    Input,
+    /// Its run failed.
+    Failed,
+    /// Its run was cut off: pi exited in the middle of it.
+    Interrupted,
+}
+
+/// The notice for `alert`, sealed for each linked phone, if the settings
+/// allow one now and it's still news.
+async fn tell(engine: Engine, phones: Arc<Phones>, alert: Alert) -> Option<Up> {
     if engine.settings().notify == Notify::Away && !away() {
         return None;
     }
+    let sealed = |notice: Notice| {
+        let text = serde_json::to_string(&notice)?;
+        let seal = |phone: Arc<LinkedPhone>| {
+            let (data, _) = phone.keys.seal(Purpose::Notice, &text)?;
+            let phone = phone.keys.phone.clone();
+            Ok(Sealed { phone, data })
+        };
+        phones.all().into_iter().map(seal).collect::<Result<_>>()
+    };
     match tokio::time::timeout(NOTICE_TIMEOUT, notice(&engine, &alert)).await {
-        Ok(Ok(notice)) => notice.map(Up::Notify),
+        Ok(Ok(notice)) => match notice.map(sealed).transpose() {
+            Ok(notices) => notices.map(|notices| Up::Notify { notices }),
+            Err(e) => {
+                eprintln!("relay: notification for {}: {e:#}", alert.chat);
+                None
+            }
+        },
         Ok(Err(e)) => {
             eprintln!("relay: notification for {}: {e:#}", alert.chat);
             None
@@ -638,7 +848,11 @@ async fn dial(url: &str, token: Option<&str>) -> Result<Socket> {
         let bearer = HeaderValue::from_str(&format!("Bearer {token}")).context("a bad token")?;
         request.headers_mut().insert(header::AUTHORIZATION, bearer);
     }
-    let (socket, _) = tokio_tungstenite::connect_async(request).await?;
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE))
+        .max_frame_size(Some(MAX_MESSAGE));
+    let (socket, _) =
+        tokio_tungstenite::connect_async_with_config(request, Some(config), false).await?;
     Ok(socket)
 }
 
