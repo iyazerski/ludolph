@@ -1,6 +1,6 @@
 //! The dialogs a chat's menus open: its new title, and whether to delete it.
 
-use rune::{El, Tx, row};
+use rune::{El, Tx, row, text};
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, TextInput};
 
 use crate::app::{ChatDialog, State};
@@ -34,12 +34,17 @@ pub fn chat_dialog(s: &State, k: &Kit, layer: &mut Vec<El>) {
             let what = if title.is_empty() {
                 "This chat".to_owned()
             } else {
-                format!("“{title}”")
+                format!("“{}”", short(title))
             };
+            // Not `Dialog::description`, which doesn't wrap.
+            let said = text(format!(
+                "{what} and its pi session are deleted for good. If its agent is working, it stops."
+            ))
+            .font(k.ty.ui.lh(20.0))
+            .color(k.c.text_muted)
+            .wrap_anywhere();
             Dialog::new("delete-chat", "Delete this chat?")
-                .description(format!(
-                    "{what} and its pi session are deleted for good. If its agent is working, it stops."
-                ))
+                .child(rune::col().w_full().px(16.0).mt(-8.0).child(said))
                 .child(buttons(
                     k,
                     Button::new("Delete")
@@ -55,6 +60,17 @@ pub fn chat_dialog(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .width(400.0)
         .on_close(State::close_chat_dialog)
         .build(k, layer);
+}
+
+/// A chat's title cut to a sentence's length, on one line: an untitled
+/// chat's is its whole first message.
+fn short(title: &str) -> String {
+    const MAX: usize = 80;
+    let line = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(MAX) {
+        Some((at, _)) => format!("{}…", line[..at].trim_end()),
+        None => line,
+    }
 }
 
 /// Cancel, then the dialog's action, at its bottom right.
