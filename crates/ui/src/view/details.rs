@@ -11,7 +11,7 @@ use crate::data::ChatDetails;
 /// Open quick-window details or toggle the main window's card.
 pub fn toggle(s: &State, k: &Kit) -> El {
     let shown = s.window == Window::Main && s.prefs.borrow().show_details;
-    IconButton::new(&icons::DETAILS)
+    IconButton::new(&icons::INFO)
         .variant(if shown {
             IconButtonVariant::Neutral
         } else {
