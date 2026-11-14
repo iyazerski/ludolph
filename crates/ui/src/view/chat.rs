@@ -71,7 +71,7 @@ fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
 /// Keep the transcript and composer together when the details card is shown.
 fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let wide = s.window == Window::Main;
-    let mut body = col().key("transcript").w_full().px(14.0).py(10.0).gap(14.0);
+    let mut body = col().key("transcript").w_full().px(14.0).py(10.0).gap(32.0);
     if wide {
         body = body.max_w(READING_WIDTH);
     }
