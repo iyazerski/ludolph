@@ -2,7 +2,8 @@
 //!
 //! pi lists them only over RPC (`get_available_models`), so the catalog asks
 //! a short-lived pi without a session, and keeps the answer for a while: the
-//! list changes only when someone edits pi's settings or logs in.
+//! list changes only when someone edits pi's settings or logs in. The same pi
+//! says which model it starts on (`get_state`): its default.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,7 +76,7 @@ pub struct Catalog {
     cwd: PathBuf,
     grace: Duration,
     /// Held while fetching, so callers at the same time share one pi.
-    cached: Mutex<Option<(Instant, Arc<Vec<Model>>)>>,
+    cached: Mutex<Option<(Instant, Fetched)>>,
 }
 
 impl Catalog {
@@ -95,15 +96,29 @@ impl Catalog {
     ///
     /// Fails if pi can't be started or doesn't answer.
     pub async fn models(&self) -> Result<Arc<Vec<Model>>> {
+        Ok(self.fetched().await?.models)
+    }
+
+    /// The model pi starts a chat on when none is picked, as `provider/model`,
+    /// if it has one.
+    ///
+    /// # Errors
+    ///
+    /// Fails if pi can't be started or doesn't answer.
+    pub async fn default_model(&self) -> Result<Option<String>> {
+        Ok(self.fetched().await?.default)
+    }
+
+    async fn fetched(&self) -> Result<Fetched> {
         let mut cached = self.cached.lock().await;
-        if let Some((at, models)) = &*cached
+        if let Some((at, fetched)) = &*cached
             && at.elapsed() < FRESH
         {
-            return Ok(models.clone());
+            return Ok(fetched.clone());
         }
-        let models = Arc::new(self.fetch().await?);
-        *cached = Some((Instant::now(), models.clone()));
-        Ok(models)
+        let fetched = self.fetch().await?;
+        *cached = Some((Instant::now(), fetched.clone()));
+        Ok(fetched)
     }
 
     /// The model `id`, if pi lists it.
@@ -116,13 +131,33 @@ impl Catalog {
         Ok(models.iter().find(|model| model.id == id).cloned())
     }
 
-    /// Ask a new pi for its models.
-    async fn fetch(&self) -> Result<Vec<Model>> {
-        let command = json!({"type": "get_available_models"});
-        let answer = Pi::ask(&self.program, &self.cwd, self.grace, command)
+    /// Ask a new pi for its models and the one it starts on.
+    async fn fetch(&self) -> Result<Fetched> {
+        let commands = vec![
+            json!({"type": "get_available_models"}),
+            json!({"type": "get_state"}),
+        ];
+        let answers = Pi::ask_all(&self.program, &self.cwd, self.grace, commands)
             .await
             .context("listing pi's models")?;
-        let models = answer["models"].as_array().context("pi listed no models")?;
-        Ok(models.iter().filter_map(Model::from_pi).collect())
+        let models = answers[0]["models"]
+            .as_array()
+            .context("pi listed no models")?;
+        let model = &answers[1]["model"];
+        let default = model["provider"]
+            .as_str()
+            .zip(model["id"].as_str())
+            .map(|(provider, id)| format!("{provider}/{id}"));
+        Ok(Fetched {
+            models: Arc::new(models.iter().filter_map(Model::from_pi).collect()),
+            default,
+        })
     }
+}
+
+/// What one pi said: its models, and the one it starts on.
+#[derive(Debug, Clone)]
+struct Fetched {
+    models: Arc<Vec<Model>>,
+    default: Option<String>,
 }

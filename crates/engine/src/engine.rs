@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
-use ludolph_relay_proto::LinkCode;
 use serde_json::{Value, json};
 use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
 use tokio::task::AbortHandle;
@@ -23,7 +22,7 @@ use crate::live::{self, Live};
 use crate::login;
 use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
-use crate::relay::{self, Link, LinkStatus, Phone};
+use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
 use crate::settings::Settings;
@@ -108,6 +107,9 @@ struct Inner {
     /// The task that keeps the relay link, if this Mac has one.
     relay: Mutex<Option<AbortHandle>>,
     phone: watch::Sender<Option<Phone>>,
+    /// The task that waits for a phone to link, while Settings shows a code.
+    pairing_task: Mutex<Option<AbortHandle>>,
+    pairing: watch::Sender<Option<Pairing>>,
 }
 
 impl Drop for Inner {
@@ -115,6 +117,9 @@ impl Drop for Inner {
         self.watching.abort();
         if let Some(relay) = self.relay.get_mut().ok().and_then(Option::take) {
             relay.abort();
+        }
+        if let Some(pairing) = self.pairing_task.get_mut().ok().and_then(Option::take) {
+            pairing.abort();
         }
     }
 }
@@ -408,6 +413,8 @@ impl Engine {
             settings: Mutex::new(settings),
             relay: Mutex::default(),
             phone: watch::channel(None).0,
+            pairing_task: Mutex::default(),
+            pairing: watch::channel(None).0,
             config,
         }));
         if let Some(link) = link {
@@ -958,42 +965,126 @@ impl Engine {
         self.0.phone.borrow().clone()
     }
 
-    /// Link this Mac to the relay in `code`, from the phone's "Add a Mac",
-    /// in place of any link it had, once the relay takes its token.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the code is bad, the relay can't be reached or refuses the
-    /// token, or the link can't be saved.
-    pub async fn link_phone(&self, code: &str) -> Result<Phone> {
-        let LinkCode { relay, token } = LinkCode::decode(code.trim())
-            .context("that isn't a link code: copy it again from Add a Mac on the phone")?;
-        let link = Link { relay, token };
-        relay::verify(&link).await?;
-        link.save(&self.0.config.state_dir)?;
-        let relay = link.relay.clone();
-        self.connect(link);
-        Ok(self.phone().unwrap_or(Phone {
-            relay,
-            status: LinkStatus::Connecting,
-            error: None,
-        }))
+    /// A phone linking through this Mac, if one is or just did.
+    pub fn pairing(&self) -> Option<Pairing> {
+        self.0.pairing.borrow().clone()
     }
 
-    /// Disconnect from the relay and forget the link.
+    /// The relay this Mac links through: its link's, or the default.
+    pub fn relay(&self) -> String {
+        self.phone()
+            .map_or_else(|| DEFAULT_RELAY.to_owned(), |phone| phone.relay)
+    }
+
+    /// Start waiting for a phone to link through `relay`, or through the
+    /// relay this Mac is linked to, in place of any wait under way. A Mac new
+    /// to the relay keeps the link the relay gives it.
     ///
     /// # Errors
     ///
-    /// Fails if the saved link can't be removed.
+    /// Fails if the address isn't a relay's, or names another relay than
+    /// the one this Mac is linked to.
+    pub fn link_phone(&self, relay: Option<&str>) -> Result<()> {
+        let saved = Link::load(&self.0.config.state_dir)?;
+        let relay = match (&saved, relay.map(|r| r.trim().trim_end_matches('/'))) {
+            (Some(link), Some(other)) if other != link.relay => {
+                bail!("this Mac is linked to {}; unlink it first", link.relay)
+            }
+            (Some(link), _) => link.relay.clone(),
+            (None, relay) => relay.unwrap_or(DEFAULT_RELAY).to_owned(),
+        };
+        relay::socket_url(&relay, "")?;
+        self.stop_pairing();
+        self.0.pairing.send_replace(Some(Pairing::Starting));
+        let engine = self.clone();
+        let task = tokio::spawn(async move {
+            let token = saved.map(|link| link.token);
+            let state = match engine.pair(&relay, token).await {
+                Ok(()) => Pairing::Linked,
+                Err(e) => {
+                    eprintln!("relay: linking a phone: {e:#}");
+                    Pairing::Failed {
+                        error: e.root_cause().to_string(),
+                    }
+                }
+            };
+            engine.0.pairing.send_replace(Some(state));
+        });
+        *self
+            .0
+            .pairing_task
+            .lock()
+            .expect("the pairing lock isn't poisoned") = Some(task.abort_handle());
+        Ok(())
+    }
+
+    /// Wait on `relay` for a phone to link, and keep the link a new Mac gets.
+    async fn pair(&self, relay: &str, token: Option<String>) -> Result<()> {
+        let shown = |url, expires_in: u64| {
+            let expires_in = i64::try_from(expires_in).unwrap_or(i64::MAX / 2_000);
+            let expires_at = chrono::Utc::now().timestamp_millis() + expires_in * 1000;
+            self.0
+                .pairing
+                .send_replace(Some(Pairing::Waiting { url, expires_at }));
+        };
+        let token = match relay::pair(relay, token.as_deref(), shown).await {
+            // The relay forgot this Mac, so it links as a new one.
+            Err(e) if token.is_some() && relay::is_rejected(&e) => {
+                relay::pair(relay, None, shown).await?
+            }
+            other => other?,
+        };
+        if let Some(token) = token {
+            let link = Link {
+                relay: relay.to_owned(),
+                token,
+            };
+            link.save(&self.0.config.state_dir)?;
+            self.connect(link);
+        }
+        Ok(())
+    }
+
+    /// Stop waiting for a phone to link, and drop how the last wait ended.
+    pub fn stop_pairing(&self) {
+        let task = self
+            .0
+            .pairing_task
+            .lock()
+            .expect("the pairing lock isn't poisoned")
+            .take();
+        if let Some(task) = task {
+            task.abort();
+        }
+        self.0.pairing.send_replace(None);
+    }
+
+    /// Disconnect from the relay, forget the link, and have the relay
+    /// forget this Mac in the background.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the saved link can't be read or removed.
     pub fn unlink_phone(&self) -> Result<()> {
+        self.stop_pairing();
+        let link = Link::load(&self.0.config.state_dir)?;
         self.disconnect();
         let path = Link::path(&self.0.config.state_dir);
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                Err(e).with_context(|| format!("removing {}", path.display()))
+                return Err(e).with_context(|| format!("removing {}", path.display()));
             }
-            _ => Ok(()),
+            _ => {}
         }
+        if let Some(link) = link {
+            // The phone shows a Mac the relay keeps as offline until it's removed there.
+            tokio::spawn(async move {
+                if let Err(e) = relay::forget(&link).await {
+                    eprintln!("relay: the relay may still list this Mac: {e:#}");
+                }
+            });
+        }
+        Ok(())
     }
 
     /// Keep `link` to the relay from now on, in place of any other.
@@ -1028,6 +1119,15 @@ impl Engine {
     /// Fails if pi can't list them.
     pub async fn models(&self) -> Result<Arc<Vec<Model>>> {
         self.0.catalog.models().await
+    }
+
+    /// The model pi starts a chat on when none is picked, if it has one.
+    ///
+    /// # Errors
+    ///
+    /// Fails if pi can't say.
+    pub async fn default_model(&self) -> Result<Option<String>> {
+        self.0.catalog.default_model().await
     }
 
     /// Switch chat `id` to `model` (`provider/model`) and the thinking level
@@ -1228,6 +1328,7 @@ impl Engine {
     /// Fails if the index can't be saved.
     pub async fn shutdown(&self) -> Result<()> {
         self.0.watching.abort();
+        self.stop_pairing();
         self.disconnect();
         let (processes, working): (Vec<Arc<Pi>>, Vec<String>) = {
             let mut state = self.state();

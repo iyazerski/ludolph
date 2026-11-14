@@ -5,15 +5,15 @@
 //! column on the right of its label, and a compact one (switch, button)
 //! sits at the right edge, so every row lines up.
 
-use rune::{El, col, el, row, text};
+use rune::{El, SurfaceFit, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, Combobox, ComboboxOption, Kit, SegmentedControl, ShortcutRecorder,
     Switch, TextInput, shortcut_error_message,
 };
 
 use super::widgets::{busy, dot};
-use crate::app::{SettingsPage, State};
-use crate::data::{LinkStatus, Notify, PhoneLink};
+use crate::app::{QR_SIZE, SettingsPage, State};
+use crate::data::{LinkStatus, Notify, Pairing, RelayLink};
 use crate::labels::short_model;
 
 /// The page's widest, so rows stay readable in a wide window.
@@ -23,7 +23,8 @@ const PAD: f32 = 12.0;
 const LABEL: f32 = 170.0;
 /// A wide control's width.
 const CONTROL: f32 = 300.0;
-/// The sidecar picker's id for pi's default model; a model's id has a `/`.
+/// The sidecar picker's id for pi's default model, which follows pi's
+/// settings; a model's id has a `/`.
 const DEFAULT_MODEL: &str = "default";
 
 pub fn view(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -68,6 +69,20 @@ pub fn view(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El 
 
 fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
     let at_login = page.settings.as_ref().is_some_and(|s| s.open_at_login);
+    let expanded = s.prefs.borrow().expand_tools;
+    let tools = wide(
+        k,
+        "Tool calls",
+        SegmentedControl::new(&["Collapsed", "Expanded"], Some(usize::from(expanded)))
+            .width(Some(CONTROL))
+            .on_pick(|s: &mut State, i, _| s.expand_tools(i == 1))
+            .build(k),
+    );
+    let tools = with_hint(
+        tools,
+        k,
+        "How the commands, edits and thinking between a reply's texts show. A click still opens or closes one.",
+    );
     vec![
         wide(
             k,
@@ -96,6 +111,7 @@ fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
                 })
                 .build(k),
         ),
+        tools,
     ]
     .into_iter()
     .chain(unregistered(s, page, k))
@@ -125,7 +141,11 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .settings
         .as_ref()
         .and_then(|v| v.sidecar_model.as_deref());
-    let mut options = vec![ComboboxOption::new(DEFAULT_MODEL, "pi's default model")];
+    let default = s.catalog.default_model().map(|id| model_label(s, id));
+    let default = default.map_or("Default model".to_owned(), |name| {
+        format!("{name} (default)")
+    });
+    let mut options = vec![ComboboxOption::new(DEFAULT_MODEL, default)];
     if let Some(models) = s.catalog.ready() {
         options.extend(models.iter().map(|m| {
             let label = m
@@ -159,6 +179,15 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
     )
 }
 
+/// The name pi gives model `id`, else its id's model part.
+fn model_label(s: &State, id: &str) -> String {
+    s.catalog
+        .ready()
+        .and_then(|models| models.iter().find(|m| m.id == id))
+        .and_then(|m| m.label.clone())
+        .unwrap_or_else(|| short_model(id).to_owned())
+}
+
 fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
     let notify = page.settings.as_ref().map_or(Notify::Away, |v| v.notify);
     let notify = wide(
@@ -180,37 +209,56 @@ fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
         k,
         "Away means two minutes without the keyboard or mouse.",
     );
-    let link = match &page.phone.link {
-        None => row().w_full().px(PAD).py(12.0).child(busy(14.0, k)),
-        Some(Some(link)) if link.status != LinkStatus::Rejected => linked(link, k),
-        Some(Some(_)) => {
-            return vec![
-                code_field(
-                    page,
-                    k,
-                    "The relay refused this Mac. Add it again on the phone, then paste the new code.",
-                ),
-                notify,
-            ];
+    let mut out = Vec::new();
+    match &page.phone.state {
+        None => out.push(row().w_full().px(PAD).py(12.0).child(busy(14.0, k))),
+        Some(state) => {
+            let pairing = state.pairing.as_ref();
+            match state
+                .link
+                .as_ref()
+                .filter(|l| l.status != LinkStatus::Rejected)
+            {
+                Some(link) => out.push(linked(link, pairing.is_none(), k)),
+                None => {
+                    out.push(relay_field(page, pairing.is_none(), k));
+                    if pairing.is_none() {
+                        let rejected = state.link.is_some();
+                        out.push(link_row(k, rejected));
+                    }
+                }
+            }
+            if let Some(pairing) = pairing {
+                out.push(pairing_block(page, pairing, k));
+            }
         }
-        Some(None) => code_field(
-            page,
-            k,
-            "In the phone app, tap Add a Mac, then paste its code here.",
-        ),
-    };
-    vec![link, notify]
+    }
+    if let Some(why) = &page.phone.error {
+        out.push(
+            row().w_full().px(PAD).py(8.0).child(
+                text(why.clone())
+                    .font(k.ty.text_small)
+                    .color(k.c.danger.fg)
+                    .wrap(),
+            ),
+        );
+    }
+    out.push(notify);
+    out
 }
 
-/// The link's relay and whether it's connected, with Unlink.
-fn linked(link: &PhoneLink, k: &Kit) -> El {
-    let host = link
-        .relay
-        .split_once("://")
-        .map_or(link.relay.as_str(), |(_, host)| host);
+/// The link's relay and whether it's connected, with buttons to link
+/// another phone (unless one is linking) and to unlink.
+fn linked(link: &RelayLink, can_link: bool, k: &Kit) -> El {
     let (color, status) = match link.status {
-        LinkStatus::Connected => (k.c.success.icon, format!("Connected to {host}")),
-        _ => (k.c.warning.icon, format!("Connecting to {host}…")),
+        LinkStatus::Connected => (
+            k.c.success.icon,
+            format!("Connected to {}", host(&link.relay)),
+        ),
+        _ => (
+            k.c.warning.icon,
+            format!("Connecting to {}…", host(&link.relay)),
+        ),
     };
     let mut info = col().grow(1.0).min_w(0.0).gap(2.0).child(
         row()
@@ -227,6 +275,23 @@ fn linked(link: &PhoneLink, k: &Kit) -> El {
                 .wrap(),
         );
     }
+    let mut buttons = row().gap(8.0);
+    if can_link {
+        buttons = buttons.child(
+            Button::new("Link a phone")
+                .variant(ButtonVariant::Neutral)
+                .help("Show a QR code to scan with another phone")
+                .on_press(State::link_phone)
+                .build(k),
+        );
+    }
+    buttons = buttons.child(
+        Button::new("Unlink")
+            .variant(ButtonVariant::Outline)
+            .help("Disconnect this Mac from the relay, so no phone reaches it")
+            .on_press(State::unlink_phone)
+            .build(k),
+    );
     row()
         .w_full()
         .px(PAD)
@@ -235,69 +300,113 @@ fn linked(link: &PhoneLink, k: &Kit) -> El {
         .center_y()
         .gap(12.0)
         .child(info)
-        .child(
-            Button::new("Unlink")
-                .variant(ButtonVariant::Outline)
-                .help("Disconnect from the relay. To link again, add the Mac on the phone.")
-                .on_press(State::unlink_phone)
-                .build(k),
-        )
+        .child(buttons)
 }
 
-/// The field for a link code from the phone's Add a Mac, with Link.
-fn code_field(page: &SettingsPage, k: &Kit, hint: &str) -> El {
-    let phone = &page.phone;
-    let input = TextInput::new(&phone.code)
-        .label("Link code")
-        .placeholder("Link code")
-        .width(None)
-        .invalid(phone.error.is_some())
+/// `relay` without its scheme, as people write an address.
+fn host(relay: &str) -> &str {
+    relay.split_once("://").map_or(relay, |(_, host)| host)
+}
+
+/// The relay to link through, which only a Mac that isn't linked yet picks.
+fn relay_field(page: &SettingsPage, editable: bool, k: &Kit) -> El {
+    let input = TextInput::new(&page.phone.relay)
+        .label("Relay")
+        .placeholder("https://")
+        .width(Some(CONTROL))
+        .disabled(!editable)
         .on_edit(|s: &mut State| {
             &mut s
                 .settings_page_mut()
                 .expect("the field is on the settings page")
                 .phone
-                .code
+                .relay
         })
         .on_submit(|s: &mut State, _| s.link_phone())
         .build(k);
-    let link = Button::new("Link")
-        .variant(if phone.linking {
-            ButtonVariant::Loading
-        } else {
-            ButtonVariant::Neutral
-        })
-        .disabled(phone.linking || phone.code.text.trim().is_empty())
-        .on_press(State::link_phone)
+    with_hint(
+        wide(k, "Relay", input),
+        k,
+        "The server your phone reaches this Mac through. Change it if you run your own.",
+    )
+}
+
+/// The button that starts linking, for a Mac that isn't linked.
+fn link_row(k: &Kit, rejected: bool) -> El {
+    let hint = if rejected {
+        "The relay forgot this Mac. Link your phone again."
+    } else {
+        "Scan a QR code with your phone's camera to use Ludolph there."
+    };
+    compact(
+        k,
+        "Phone",
+        Some(hint),
+        Button::new("Link a phone")
+            .variant(ButtonVariant::Neutral)
+            .on_press(State::link_phone)
+            .build(k),
+    )
+}
+
+/// A phone linking: getting a code, its QR code, or why it failed.
+fn pairing_block(page: &SettingsPage, pairing: &Pairing, k: &Kit) -> El {
+    let cancel = Button::new("Cancel")
+        .variant(ButtonVariant::Outline)
+        .on_press(State::stop_linking_phone)
         .build(k);
-    let mut block = col()
-        .w_full()
-        .px(PAD)
-        .py(10.0)
-        .gap(6.0)
-        .child(
-            row()
-                .w_full()
-                .gap(8.0)
-                .center_y()
-                .child(col().grow(1.0).min_w(0.0).child(input))
-                .child(link),
-        )
-        .child(
-            text(hint.to_owned())
-                .font(k.ty.text_small)
-                .color(k.c.text_muted)
-                .wrap(),
-        );
-    if let Some(why) = &phone.error {
-        block = block.child(
-            text(why.clone())
-                .font(k.ty.text_small)
-                .color(k.c.danger.fg)
-                .wrap(),
-        );
-    }
-    block
+    let note = |s: &str| {
+        text(s.to_owned())
+            .font(k.ty.text_small)
+            .color(k.c.text_muted)
+            .wrap()
+    };
+    let body = match pairing {
+        Pairing::Waiting { .. } => {
+            // White around the code, like paper, so cameras find it in dark mode too.
+            let mut tile = el()
+                .size(QR_SIZE + 16.0, QR_SIZE + 16.0)
+                .radius(10.0)
+                .fill(rune::Color::WHITE)
+                .center();
+            if let Some((_, qr)) = &page.phone.qr {
+                tile = tile.child(
+                    el().size(QR_SIZE, QR_SIZE)
+                        .pixels_fit(qr.pixels(), SurfaceFit::Fill),
+                );
+            }
+            col()
+                .items_center()
+                .gap(10.0)
+                .child(tile)
+                .child(text("Scan with your phone's camera").font(k.ty.ui).color(k.c.text_base))
+                .child(note("Open the link, then sign in or create a passkey. The code works for 10 minutes."))
+                .child(cancel)
+        }
+        Pairing::Failed { error } => col()
+            .items_center()
+            .gap(10.0)
+            .child(
+                text(format!("Couldn't link a phone: {error}"))
+                    .font(k.ty.ui)
+                    .color(k.c.danger.fg)
+                    .wrap(),
+            )
+            .child(
+                row().gap(8.0).child(cancel).child(
+                    Button::new("Try again")
+                        .variant(ButtonVariant::Neutral)
+                        .on_press(State::link_phone)
+                        .build(k),
+                ),
+            ),
+        Pairing::Starting | Pairing::Linked => col()
+            .items_center()
+            .gap(10.0)
+            .child(busy(18.0, k))
+            .child(note("Getting a code from the relay…")),
+    };
+    row().w_full().px(PAD).py(16.0).justify_center().child(body)
 }
 
 /// The version, and Quit, which stops the windows but not the engine.

@@ -322,6 +322,8 @@ pub struct Model {
 #[derive(Debug, Deserialize)]
 pub struct Models {
     pub models: Vec<Model>,
+    /// The model pi starts a chat on when none is picked.
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -441,13 +443,37 @@ pub enum Notify {
 
 /// The Mac's link to the relay, as `get_phone_link` and `link_phone`
 /// answer.
+/// This Mac's link to the relay, a phone linking through it, and the relay
+/// it links through.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PhoneLink {
+    pub link: Option<RelayLink>,
+    pub pairing: Option<Pairing>,
+    pub relay: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PhoneLink {
+pub struct RelayLink {
     pub relay: String,
     pub status: LinkStatus,
     /// Why the last try to connect failed, while it tries again.
     pub error: Option<String>,
+}
+
+/// A phone linking through this Mac.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Pairing {
+    Starting,
+    /// Waiting for a phone to open `url`, which the QR code holds.
+    Waiting {
+        url: String,
+    },
+    Linked,
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -455,6 +481,6 @@ pub struct PhoneLink {
 pub enum LinkStatus {
     Connecting,
     Connected,
-    /// The relay refused the token, so the Mac must be added again.
+    /// The relay forgot this Mac, so a phone must link again.
     Rejected,
 }

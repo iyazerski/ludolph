@@ -77,7 +77,6 @@ jobs:
           chmod 600 ~/.kube/config
 
       # The cluster already has cert-manager's letsencrypt-prod ClusterIssuer.
-      # The setup token secret is made once by hand (see crates/relay/README.md).
       - name: Record running release
         # Remember the live revision, so a failed deploy or smoke check can restore it.
         run: scripts/release_guard.sh record deployment/ludolph-relay

@@ -209,6 +209,23 @@ impl Pi {
     /// Fails if pi can't be started, refuses the command, or doesn't answer
     /// in time.
     pub async fn ask(program: &Path, cwd: &Path, grace: Duration, command: Value) -> Result<Value> {
+        let mut answers = Self::ask_all(program, cwd, grace, vec![command]).await?;
+        Ok(answers.remove(0))
+    }
+
+    /// [`Pi::ask`] with several commands, one after another, for one pi's
+    /// start-up cost. Returns their answers in order.
+    ///
+    /// # Errors
+    ///
+    /// Fails if pi can't be started, refuses a command, or doesn't answer
+    /// them all in time.
+    pub async fn ask_all(
+        program: &Path,
+        cwd: &Path,
+        grace: Duration,
+        commands: Vec<Value>,
+    ) -> Result<Vec<Value>> {
         let options = Options {
             program: program.to_owned(),
             cwd: cwd.to_owned(),
@@ -217,7 +234,14 @@ impl Pi {
             env: Vec::new(),
         };
         let (pi, _events) = Self::start(&options)?;
-        let answer = tokio::time::timeout(ASK_TIMEOUT, pi.call(command)).await;
+        let calls = async {
+            let mut answers = Vec::with_capacity(commands.len());
+            for command in commands {
+                answers.push(pi.call(command).await?);
+            }
+            Ok(answers)
+        };
+        let answer = tokio::time::timeout(ASK_TIMEOUT, calls).await;
         if let Err(e) = pi.stop(grace).await {
             eprintln!("stopping a pi that answered a question: {e:#}");
         }

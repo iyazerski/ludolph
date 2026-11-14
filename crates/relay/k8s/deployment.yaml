@@ -35,13 +35,6 @@ spec:
               value: https://__PUBLIC_HOST__
             - name: DATA_DIR
               value: /data
-            # Only needed until the first passkey exists.
-            - name: SETUP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: ludolph-relay-secrets
-                  key: SETUP_TOKEN
-                  optional: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

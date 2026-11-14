@@ -1,12 +1,17 @@
 //! The settings page, in the main window: the global shortcut, which the
 //! app registers itself, the engine's settings, and the phone's link.
 
-use rune::{Shortcut, ShortcutError, TextEdit};
+use qrcode::QrCode;
+use qrcode::render::svg;
+use rune::{Image, Shortcut, ShortcutError, TextEdit};
 use rune_kit::{ComboboxState, ShortcutRecorderState};
 use serde_json::{Value, json};
 
 use super::{Page, State, Window};
-use crate::data::{LinkStatus, PhoneLink, Settings};
+use crate::data::{LinkStatus, Pairing, PhoneLink, RelayLink, Settings};
+
+/// The QR code's side in points.
+pub const QR_SIZE: f32 = 184.0;
 
 /// The settings page's own state.
 pub struct SettingsPage {
@@ -22,26 +27,40 @@ pub struct SettingsPage {
     previous: Option<String>,
 }
 
-/// The phone's link, and the field to paste a new one's code in.
+/// The phone's link, the relay field, and the QR code a phone scans.
 pub struct Phone {
-    /// `None` until loaded, then the link, if the Mac has one.
-    pub link: Option<Option<PhoneLink>>,
-    pub code: TextEdit,
-    pub linking: bool,
+    /// `None` until loaded.
+    pub state: Option<PhoneLink>,
+    /// The relay to link through, until the Mac is linked.
+    pub relay: TextEdit,
+    /// The QR code of the page a waiting pairing opens, and that page.
+    pub qr: Option<(String, Image)>,
     pub error: Option<String>,
 }
 
+impl Phone {
+    pub fn link(&self) -> Option<&RelayLink> {
+        self.state.as_ref()?.link.as_ref()
+    }
+
+    pub fn pairing(&self) -> Option<&Pairing> {
+        self.state.as_ref()?.pairing.as_ref()
+    }
+}
+
 impl SettingsPage {
-    /// Whether the phone's link is trying to connect, so its status is
-    /// worth checking again.
+    /// Whether the phone's link is trying to connect, or a phone is
+    /// linking, so the state is worth checking again.
     pub fn connecting(&self) -> bool {
-        matches!(
-            &self.phone.link,
-            Some(Some(PhoneLink {
-                status: LinkStatus::Connecting,
-                ..
-            }))
-        )
+        let connecting = self
+            .phone
+            .link()
+            .is_some_and(|l| l.status == LinkStatus::Connecting);
+        let pairing = matches!(
+            self.phone.pairing(),
+            Some(Pairing::Starting | Pairing::Waiting { .. })
+        );
+        connecting || pairing
     }
 }
 
@@ -80,9 +99,9 @@ impl State {
                 shortcut,
                 model: ComboboxState::default(),
                 phone: Phone {
-                    link: None,
-                    code: TextEdit::default(),
-                    linking: false,
+                    state: None,
+                    relay: TextEdit::default(),
+                    qr: None,
                     error: None,
                 },
                 previous,
@@ -94,12 +113,22 @@ impl State {
         self.open();
     }
 
-    /// Leave the settings for the chat shown before them.
+    /// Leave the settings for the chat shown before them. A QR code shown
+    /// stops working.
     pub fn close_settings(&mut self) {
         let Some(page) = self.settings_page_mut() else {
             return;
         };
-        match page.previous.take() {
+        let pairing = page.phone.pairing().is_some();
+        let previous = page.previous.take();
+        if pairing {
+            self.api.call(
+                "stop_linking_phone",
+                json!({}),
+                |_, _: Result<Value, String>, _| {},
+            );
+        }
+        match previous {
             Some(id) => self.open_chat(id),
             None => self.new_chat(),
         }
@@ -156,64 +185,96 @@ impl State {
 
     /// Load how the phone's link stands.
     pub fn load_phone(&mut self) {
-        self.api.call(
+        self.phone_call(
             "get_phone_link",
             json!({}),
-            |s, result: Result<Option<PhoneLink>, String>, _| {
-                if let Some(page) = s.settings_page_mut() {
-                    match result {
-                        Ok(link) => page.phone.link = Some(link),
-                        Err(e) => page.phone.error = Some(e),
-                    }
-                }
-                s.sync_tick();
-            },
+            "Couldn't load the phone's link",
         );
     }
 
-    /// Link the Mac with the code pasted in the phone's field.
+    /// Show a QR code that links a phone through the relay in the field,
+    /// or the relay this Mac is linked to.
     pub fn link_phone(&mut self) {
         let Some(page) = self.settings_page_mut() else {
             return;
         };
-        let code = page.phone.code.text.trim().to_owned();
-        if code.is_empty() || page.phone.linking {
-            return;
-        }
-        page.phone.linking = true;
-        page.phone.error = None;
-        self.api.call(
+        let relay = page
+            .phone
+            .link()
+            .is_none()
+            .then(|| page.phone.relay.text.trim().to_owned());
+        self.phone_call(
             "link_phone",
-            json!({ "code": code }),
-            |s, result: Result<PhoneLink, String>, _| {
-                if let Some(page) = s.settings_page_mut() {
-                    page.phone.linking = false;
-                    match result {
-                        Ok(link) => {
-                            page.phone.link = Some(Some(link));
-                            page.phone.code = TextEdit::default();
+            json!({ "relay": relay }),
+            "Couldn't link a phone",
+        );
+    }
+
+    /// Stop showing the QR code; it stops working.
+    pub fn stop_linking_phone(&mut self) {
+        self.phone_call("stop_linking_phone", json!({}), "Couldn't stop linking");
+    }
+
+    pub fn unlink_phone(&mut self) {
+        self.phone_call("unlink_phone", json!({}), "Couldn't unlink the phone");
+    }
+
+    /// Call one of the engine's phone link tools, which all answer with the
+    /// link's state, and show it.
+    fn phone_call(&mut self, tool: &'static str, args: Value, failed: &'static str) {
+        self.api.call(
+            tool,
+            args,
+            move |s, result: Result<PhoneLink, String>, _| {
+                match result {
+                    Ok(state) => s.show_phone(state),
+                    Err(e) if tool == "get_phone_link" => {
+                        if let Some(page) = s.settings_page_mut() {
+                            page.phone.error = Some(e);
                         }
-                        Err(e) => page.phone.error = Some(e),
                     }
+                    Err(e) => s.fail(failed, e),
                 }
                 s.sync_tick();
             },
         );
     }
 
-    pub fn unlink_phone(&mut self) {
-        self.api.call(
-            "unlink_phone",
-            json!({}),
-            |s, result: Result<Value, String>, _| {
-                if let Err(e) = result {
-                    return s.fail("Couldn't unlink the phone", e);
-                }
-                if let Some(page) = s.settings_page_mut() {
-                    page.phone.link = Some(None);
-                }
-            },
-        );
+    /// Show the phone link's `state`: draw a new pairing's QR code, and
+    /// say when a phone has linked.
+    fn show_phone(&mut self, state: PhoneLink) {
+        let Some(page) = self.settings_page() else {
+            return;
+        };
+        let shown = page.phone.qr.as_ref().map(|(url, _)| url.as_str());
+        let fresh = match &state.pairing {
+            Some(Pairing::Waiting { url }) if shown != Some(url) => self
+                .images
+                .as_ref()
+                .and_then(|images| qr_code(images, url))
+                .map(|qr| (url.clone(), qr)),
+            _ => None,
+        };
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        if page.phone.state.is_none() {
+            page.phone.relay = TextEdit::new(state.relay.clone());
+        }
+        let was_waiting = matches!(page.phone.pairing(), Some(Pairing::Waiting { .. }));
+        let linked = state.pairing == Some(Pairing::Linked);
+        if fresh.is_some() || !matches!(state.pairing, Some(Pairing::Waiting { .. })) {
+            page.phone.qr = fresh;
+        }
+        page.phone.state = Some(state);
+        page.phone.error = None;
+        if linked {
+            if was_waiting {
+                self.notify("Phone linked");
+            }
+            // How it ended matters only once.
+            self.stop_linking_phone();
+        }
     }
 
     /// Register the saved global shortcut, as the app starts. One taken by
@@ -245,6 +306,13 @@ impl State {
         Ok(())
     }
 
+    /// Open a chat's tool groups from the start if `on`, else keep them
+    /// closed until clicked.
+    pub fn expand_tools(&mut self, on: bool) {
+        self.prefs.borrow_mut().expand_tools = on;
+        self.save_prefs();
+    }
+
     /// Register `shortcut` for the quick window, then let the old one go.
     fn register_shortcut(&mut self, shortcut: Shortcut) -> Result<(), ShortcutError> {
         let quick = self.quick();
@@ -268,4 +336,19 @@ impl State {
             Window::Main => self.api.peer().clone(),
         }
     }
+}
+
+/// `url` as a QR code, dark on white like a printed one, which every
+/// camera reads.
+fn qr_code(images: &rune::ImageCache, url: &str) -> Option<Image> {
+    let code = QrCode::new(url.as_bytes())
+        .inspect_err(|e| eprintln!("making the QR code: {e}"))
+        .ok()?;
+    let svg = code
+        .render::<svg::Color>()
+        .dark_color(svg::Color("#000000"))
+        .light_color(svg::Color("#ffffff"))
+        .build();
+    // At 2x, the size Retina screens draw it at.
+    Some(images.svg(svg.into_bytes(), QR_SIZE, 2.0))
 }

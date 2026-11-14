@@ -57,6 +57,7 @@ pub enum Tool {
     SetSettings,
     GetPhoneLink,
     LinkPhone,
+    StopLinkingPhone,
     UnlinkPhone,
 }
 
@@ -71,6 +72,7 @@ impl Tool {
                 | Self::SetSettings
                 | Self::GetPhoneLink
                 | Self::LinkPhone
+                | Self::StopLinkingPhone
                 | Self::UnlinkPhone
         )
     }
@@ -104,6 +106,7 @@ impl FromStr for Tool {
             "set_settings" => Self::SetSettings,
             "get_phone_link" => Self::GetPhoneLink,
             "link_phone" => Self::LinkPhone,
+            "stop_linking_phone" => Self::StopLinkingPhone,
             "unlink_phone" => Self::UnlinkPhone,
             _ => bail!("no tool {name}"),
         })
@@ -150,14 +153,19 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::SetSettings => Ok(serde_json::to_value(
             engine.set_settings(parse(args)?).await?,
         )?),
-        Tool::GetPhoneLink => Ok(serde_json::to_value(engine.phone())?),
+        Tool::GetPhoneLink => Ok(phone_link(engine)),
         Tool::LinkPhone => {
             let args: LinkArgs = parse(args)?;
-            Ok(serde_json::to_value(engine.link_phone(&args.code).await?)?)
+            engine.link_phone(args.relay.as_deref())?;
+            Ok(phone_link(engine))
+        }
+        Tool::StopLinkingPhone => {
+            engine.stop_pairing();
+            Ok(phone_link(engine))
         }
         Tool::UnlinkPhone => {
             engine.unlink_phone()?;
-            Ok(Value::Null)
+            Ok(phone_link(engine))
         }
     }
 }
@@ -171,8 +179,15 @@ fn parse<T: DeserializeOwned>(args: Value) -> Result<T> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LinkArgs {
-    /// From the phone's "Add a Mac".
-    code: String,
+    /// The relay to link through, if this Mac isn't linked yet; the default
+    /// relay if `None`.
+    relay: Option<String>,
+}
+
+/// This Mac's link to the relay, a phone linking through it, and the relay
+/// it links through.
+fn phone_link(engine: &Engine) -> Value {
+    json!({"link": engine.phone(), "pairing": engine.pairing(), "relay": engine.relay()})
 }
 
 #[derive(Deserialize)]
@@ -424,7 +439,7 @@ async fn turn_changes(engine: &Engine, args: TurnArgs) -> Result<Value> {
 async fn list_models(engine: &Engine) -> Result<Value> {
     let models = engine.models().await?;
     let models: Vec<Value> = models.iter().map(model).collect();
-    Ok(json!({"models": models}))
+    Ok(json!({"models": models, "default": engine.default_model().await?}))
 }
 
 fn model(model: &Model) -> Value {

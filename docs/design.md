@@ -296,25 +296,31 @@ They live in a `ui` crate. Each window gives them its own layout.
 
 The engine keeps most of them, since it's the one using them and it runs while the app is closed. The app reads and saves them with `get_settings` and `set_settings`, which take all the settings at once. The phone can't call either. A change shows at once, and goes back with a toast if the engine refuses it.
 
-- Sidecar model, for titles and dictation (`sidecarModel`), picked from pi's models with a search, or pi's default
+- Sidecar model, for titles and dictation (`sidecarModel`), picked from pi's models with a search, or pi's default model, which the picker names (`list_models` asks a fresh pi's `get_state` for it)
 - Notifications on the phone only while you're away from the Mac, or always (`notify`: `away` or `always`)
 - Open at login (`openAtLogin`, off until you turn it on)
-- Phone: paste a link code, see whether the link is connected, or unlink (`link_phone`, `get_phone_link`, `unlink_phone`; see "Phone and relay")
+- Phone: link a phone with a QR code, see whether the link is connected, or unlink (`link_phone`, `stop_linking_phone`, `get_phone_link`, `unlink_phone`; see "Phone and relay")
+- Tool calls collapsed or expanded: the app's own, in `ui.json`, since only the app draws them. A reply's work between two texts, its tool calls and thinking, is one group on a rail, and a click opens or closes one group either way.
 - Global shortcut: the app's own, since it registers it, so it's in `ui.json`. The recorder registers the new chord before it lets the old one go, so a chord another app holds is refused and the old one stays. If the saved one is taken when the app starts, the page says so.
 
 ## Phone and relay
 
 The relay, its Kubernetes manifests, and the phone app live in `crates/relay`, with the app in `assets`. The phone app keeps its look and flows.
 
-- **Linking a Mac:** the phone's **Add a Mac** gives a link code. You paste it into Ludolph's Settings. The code is the relay's address and the Mac's token, as URL-safe base64 JSON (`relay-proto`'s `LinkCode`). The engine's `link_phone` checks the token with the relay, saves the link in `relay.json`, and connects at once, in place of any earlier link. `get_phone_link` says whether it's connected, and `unlink_phone` disconnects and forgets the link. The phone can't call these.
+- **Linking a phone:** only from the Mac. **Link a phone** in Settings has the engine (`link_phone`) open a WebSocket on the relay's `/pair`, with the Mac's token if it has one. The relay answers with a single-use code that works for 10 minutes, kept in memory only. Settings shows `https://<relay>/#/pair/<code>` as a QR code; the code is in the fragment, so no server log keeps it. The phone's camera opens that page in the phone app, which claims the code:
+  - A signed-in phone claims it at once.
+  - Otherwise the phone signs in with its passkey, or creates one. It may create one through a Mac the relay already knows, or on a relay with no passkey yet, which makes the first link set the relay up. A Mac the relay doesn't know needs a signed-in phone.
+  - A passkey, not just a cookie, because a home-screen web app doesn't share Safari's cookies.
+  - A Mac new to the relay gets its token over the waiting socket, saves it in `relay.json`, and connects at once.
+  `get_phone_link` says whether the link is connected and how a pairing stands, `stop_linking_phone` drops the code, and `unlink_phone` disconnects, forgets the link, and has the relay forget the Mac (`Up::Forget`). The phone can't call these. The relay's address defaults to the maintainer's, and Settings takes another before the first link.
 - **Battery:** the phone shows the Mac's battery. The engine reads it from IOKit when it connects, and again on each `com.apple.system.powersources` notification, about once a minute while charging or on battery. It sends it only when it changed, so nothing polls.
-- **Protocol 5:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
+- **Protocol 6:** the relay refuses other versions. The maintainer's relay runs at ludolph.iyazerski.dev, deployed by `.github/workflows/deploy-relay.yml`.
 - **Notifications:** finished, needs you, failed, and interrupted. As now, a notice is dropped if the Mac's keyboard and mouse were used in the last 2 minutes, unless set to always notify. It isn't sent later. The engine raises these from pi's events: a run you stopped stays quiet, and so does a question answered before its notice went out. Runs by another pi aren't watched, so they don't notify.
-- **Self-hosting:** `crates/relay/README.md` explains how to run the relay (container image and manifests) and how to create the setup link.
+- **Self-hosting:** `crates/relay/README.md` explains how to run the relay (container image and manifests). Whoever links the first phone sets up the relay, so link one right after it starts.
 
 ### Trust
 
-The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac, and keep the Mac's relay token in the Keychain. For now the token is in `relay.json`, readable only by you. The Keychain ties an item to the program's signature, so it moves there with Settings, now that `make install` signs every build with one identity. End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
+The relay sees every call and answer in plain text, and it can call `send_message`. An agent can run commands, so whoever controls the relay can run code on your Mac. The engine allowing only the phone's tools doesn't change that. So the relay is trusted like your Mac. Run it yourself, keep passkey sign-in, origin checks, and revoking a Mac, and keep the Mac's relay token in the Keychain. For now the token is in `relay.json`, readable only by you. The Keychain ties an item to the program's signature, so it moves there next, now that `make install` signs every build with one identity. End-to-end encryption between the phone and the Mac would remove that trust. It's out of scope for now.
 
 ## Performance budget
 

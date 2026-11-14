@@ -30,7 +30,7 @@ pub use self::page::{
     Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending, QuestionForm, Sheet,
     SkillList, Target, Voice,
 };
-pub use self::settings::SettingsPage;
+pub use self::settings::{QR_SIZE, SettingsPage};
 
 /// The most chats the list loads, for its search.
 const LIST_LIMIT: usize = 200;
@@ -292,6 +292,10 @@ impl State {
         }
         if shown {
             self.follow();
+            // A phone may have linked, or a code expired, while nothing ticked.
+            if self.settings_page().is_some() {
+                self.load_phone();
+            }
         } else {
             self.list_feed = None;
             if let Some(chat) = self.chat_mut().and_then(ChatPage::existing_mut) {

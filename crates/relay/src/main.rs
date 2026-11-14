@@ -2,7 +2,8 @@
 //! engines on your Macs.
 //!
 //! Each Mac dials out to `/connect` ([`hub`]), the phone signs in with a
-//! passkey ([`auth`]), and its calls are routed to the chosen Mac.
+//! passkey ([`auth`]), and its calls are routed to the chosen Mac. A phone
+//! links by scanning a Mac's QR code ([`pair`]).
 //!
 //! It serves plain HTTP behind a TLS-terminating proxy. API calls must be
 //! JSON POSTs from the app's own origin, with the session cookie
@@ -10,6 +11,7 @@
 
 mod auth;
 mod hub;
+mod pair;
 mod push;
 mod store;
 
@@ -31,7 +33,7 @@ use axum_extra::extract::cookie::CookieJar;
 use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
 use clap::Parser;
-use ludolph_relay_proto::{CONNECT_PATH, LinkCode, Notice};
+use ludolph_relay_proto::{CONNECT_PATH, Notice, PAIR_PATH};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use url::Url;
@@ -39,6 +41,7 @@ use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use auth::Auth;
 use hub::Hub;
+use pair::Pairings;
 use push::{Kind, Payload, Push, Subscription};
 
 /// The largest tool call the phone sends, which leaves room for a message's
@@ -111,8 +114,6 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
     ),
 ];
 
-const MAX_MACHINE_NAME: usize = 60;
-
 #[derive(Parser)]
 #[command(version, about)]
 struct Opts {
@@ -126,9 +127,6 @@ struct Opts {
     /// Where the passkeys, Macs, and push key are kept
     #[arg(long, env = "DATA_DIR", default_value = "data")]
     data_dir: PathBuf,
-    /// A secret that allows creating a passkey without being signed in
-    #[arg(long, env = "SETUP_TOKEN", hide_env_values = true)]
-    setup_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -136,6 +134,7 @@ struct App {
     store: Arc<Store>,
     auth: Arc<Auth>,
     hub: Arc<Hub>,
+    pairings: Arc<Pairings>,
     push: Arc<Push>,
     /// The public URL's origin, which every API call must come from.
     origin: String,
@@ -146,21 +145,15 @@ async fn main() -> Result<()> {
     let opts = Opts::parse();
     let store = Arc::new(Store::open(&opts.data_dir)?);
     let app = App {
-        auth: Arc::new(Auth::new(&opts.public_url, opts.setup_token)?),
+        auth: Arc::new(Auth::new(&opts.public_url)?),
         push: Arc::new(Push::open(&opts.data_dir)?),
         hub: Arc::default(),
+        pairings: Arc::default(),
         origin: opts.public_url.origin().ascii_serialization(),
         store,
     };
     if !app.store.has_passkey() {
-        if app.auth.has_setup_token() {
-            eprintln!(
-                "no passkey yet: open {}#/setup/<SETUP_TOKEN> to create one",
-                opts.public_url
-            );
-        } else {
-            eprintln!("no passkey yet and no SETUP_TOKEN: nobody can sign in");
-        }
+        eprintln!("no passkey yet: link a phone from a Mac's Ludolph Settings to make one");
     }
     let mut router = Router::new();
     for &(path, mime, bytes) in ASSETS {
@@ -180,7 +173,6 @@ async fn main() -> Result<()> {
     }
     let signed_in = Router::new()
         .route("/api/machines", post(machines))
-        .route("/api/machines/add", post(add_machine))
         .route("/api/machines/remove", post(remove_machine))
         .route(
             "/api/call/{machine}/{tool}",
@@ -191,6 +183,7 @@ async fn main() -> Result<()> {
         .route("/push/subscribe", post(push_subscribe))
         .route("/push/unsubscribe", post(push_unsubscribe))
         .route("/push/test", post(push_test))
+        .route("/api/pair/claim", post(claim_pairing))
         .route_layer(middleware::from_fn_with_state(app.clone(), require_session));
     let router = router
         .merge(signed_in)
@@ -201,7 +194,9 @@ async fn main() -> Result<()> {
         .route("/auth/login/start", post(login_start))
         .route("/auth/login/finish", post(login_finish))
         .route("/auth/logout", post(logout))
+        .route("/auth/pair", post(pairing))
         .route(CONNECT_PATH, get(connect))
+        .route(PAIR_PATH, get(pair))
         .layer(middleware::from_fn_with_state(app.clone(), check_origin))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(opts.bind)
@@ -266,18 +261,65 @@ async fn auth_status(State(app): State<App>, jar: CookieJar) -> Response {
 
 #[derive(Deserialize)]
 struct RegisterStart {
-    setup: Option<String>,
+    /// The pairing code that allows it, when not signed in.
+    pair: Option<String>,
 }
 
+/// Start creating a passkey: when signed in, or through a pairing code that
+/// may make one (`pair`).
 async fn register_start(
     State(app): State<App>,
     jar: CookieJar,
     Json(body): Json<RegisterStart>,
 ) -> Response {
-    if !signed_in(&app, &jar) && !app.auth.setup_allowed(body.setup.as_deref()) {
-        return failure(StatusCode::FORBIDDEN, "this setup link isn't valid");
+    let code = body.pair.as_deref().and_then(|c| app.pairings.code(c));
+    let allowed = code.is_some_and(|c| c.known || !app.store.has_passkey());
+    if !signed_in(&app, &jar) && !allowed {
+        return failure(StatusCode::FORBIDDEN, "sign in with your passkey first");
     }
     respond(app.auth.start_register(&app.store))
+}
+
+#[derive(Deserialize)]
+struct PairCode {
+    code: String,
+}
+
+/// What the phone's pairing page needs: the Mac, and how this phone may
+/// claim its code.
+async fn pairing(State(app): State<App>, jar: CookieJar, Json(body): Json<PairCode>) -> Response {
+    let Some(code) = app.pairings.code(&body.code) else {
+        return failure(StatusCode::NOT_FOUND, "this code expired");
+    };
+    Json(json!({
+        "name": code.name,
+        "known": code.known,
+        "hasPasskey": app.store.has_passkey(),
+        "signedIn": signed_in(&app, &jar),
+    }))
+    .into_response()
+}
+
+/// Link the code's Mac to this signed-in phone: add the Mac if it's new,
+/// and tell it.
+async fn claim_pairing(State(app): State<App>, Json(body): Json<PairCode>) -> Response {
+    let Some(claim) = app.pairings.claim(&body.code) else {
+        return failure(StatusCode::NOT_FOUND, "this code expired");
+    };
+    let (machine, token) = match claim.machine.clone() {
+        Some(machine) => (machine, None),
+        None => match app.store.add_machine(&claim.name) {
+            Ok((machine, token)) => (machine, Some(token)),
+            Err(e) => return failure(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+        },
+    };
+    let new = token.is_some();
+    if !claim.finish(token) && new {
+        // The Mac left before it got its token, so nothing can use the record.
+        drop(app.store.remove_machine(&machine.id));
+        return failure(StatusCode::GONE, "the Mac stopped waiting");
+    }
+    Json(json!({ "machine": machine })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -346,28 +388,6 @@ async fn machines(State(app): State<App>, Json(_): Json<Value>) -> Response {
 }
 
 #[derive(Deserialize)]
-struct AddMachine {
-    name: String,
-}
-
-/// Add a Mac and return the link code that connects it (its token is shown
-/// once).
-async fn add_machine(State(app): State<App>, Json(body): Json<AddMachine>) -> Response {
-    let name = body.name.trim();
-    if name.is_empty() || name.chars().count() > MAX_MACHINE_NAME {
-        return failure(StatusCode::BAD_REQUEST, "give the Mac a short name");
-    }
-    match app.store.add_machine(name) {
-        Ok((machine, token)) => Json(json!({
-            "machine": machine,
-            "code": LinkCode { relay: app.origin.clone(), token }.encode(),
-        }))
-        .into_response(),
-        Err(e) => failure(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
-    }
-}
-
-#[derive(Deserialize)]
 struct MachineId {
     id: String,
 }
@@ -430,12 +450,37 @@ async fn connect(
             let store = store.clone();
             move |id: &str| store.has_machine(id)
         };
-        hub.serve(machine, socket, known, move |machine, notice| {
+        let forget = {
+            let store = store.clone();
+            move |machine: &Machine| {
+                if let Err(e) = store.remove_machine(&machine.id) {
+                    eprintln!("{}: forgetting it: {e:#}", machine.name);
+                }
+            }
+        };
+        let notify = move |machine: &Machine, notice| {
             let payload = payload(machine, notice, store.machine_count() > 1);
             let push = push.clone();
             tokio::spawn(async move { push.broadcast(&payload).await });
-        })
+        };
+        hub.serve(machine, socket, known, notify, forget)
     })
+}
+
+/// A Mac waiting for a phone to link, with its token if it has one.
+async fn pair(
+    State(app): State<App>,
+    bearer: Option<TypedHeader<Authorization<Bearer>>>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let machine = match bearer {
+        Some(TypedHeader(auth)) => match app.store.machine_for_token(auth.token()) {
+            Some(machine) => Some(machine),
+            None => return failure(StatusCode::UNAUTHORIZED, "unknown Mac token"),
+        },
+        None => None,
+    };
+    ws.on_upgrade(move |socket| async move { app.pairings.serve(socket, machine).await })
 }
 
 /// The notification for a Mac's notice. With several Macs, the body says which.

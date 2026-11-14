@@ -159,16 +159,21 @@ impl Hub {
     }
 
     /// Serve one Mac's connection until it ends, passing its notices to
-    /// `notify`. `known` says whether the Mac is still added: it may be
-    /// removed while it says hello, after its token was checked.
+    /// `notify`, and calling `forget` if it unlinks. `known` says whether
+    /// the Mac is still added: it may be removed while it says hello, after
+    /// its token was checked.
     pub async fn serve(
         self: Arc<Self>,
         machine: Machine,
         socket: WebSocket,
         known: impl Fn(&str) -> bool + Send,
         notify: impl Fn(&Machine, Notice) + Send,
+        forget: impl Fn(&Machine) + Send,
     ) {
-        if let Err(e) = self.serve_inner(&machine, socket, known, notify).await {
+        if let Err(e) = self
+            .serve_inner(&machine, socket, known, notify, forget)
+            .await
+        {
             eprintln!("{}: {e:#}", machine.name);
         }
     }
@@ -179,6 +184,7 @@ impl Hub {
         socket: WebSocket,
         known: impl Fn(&str) -> bool + Send,
         notify: impl Fn(&Machine, Notice) + Send,
+        forget: impl Fn(&Machine) + Send,
     ) -> Result<()> {
         let (mut sink, mut stream) = socket.split();
         let version = hello(&mut sink, &mut stream).await?;
@@ -219,6 +225,11 @@ impl Hub {
                         heard = Instant::now();
                         match frame {
                             Some(Ok(Message::Text(body))) => match serde_json::from_str(&body) {
+                                Ok(Up::Forget) => {
+                                    forget(machine);
+                                    let _ = sink.send(close("unlinked")).await;
+                                    return Ok(());
+                                }
                                 Ok(up) => {
                                     if let Some(down) = self.receive(machine, conn, &pending, &watches, up, &notify) {
                                         sink.send(Message::Text(serde_json::to_string(&down)?.into())).await?;
@@ -292,7 +303,7 @@ impl Hub {
             }
             Up::Notify(notice) => notify(machine, notice),
             Up::Power { battery } => self.update_link(machine, conn, |link| link.battery = battery),
-            Up::Hello { .. } => {}
+            Up::Hello { .. } | Up::Forget => {}
         }
         None
     }
@@ -351,7 +362,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// A close frame that tells the Mac why it's turned away.
-fn close(reason: &str) -> Message {
+pub fn close(reason: &str) -> Message {
     Message::Close(Some(CloseFrame {
         code: close_code::POLICY,
         reason: reason.into(),
@@ -382,7 +393,9 @@ mod tests {
             axum::routing::get(move |ws: WebSocketUpgrade| {
                 let (hub, mac) = (serve.clone(), mac.clone());
                 async move {
-                    ws.on_upgrade(move |socket| hub.serve(mac, socket, move |_| known, |_, _| {}))
+                    ws.on_upgrade(move |socket| {
+                        hub.serve(mac, socket, move |_| known, |_, _| {}, |_| {})
+                    })
                 }
             }),
         );

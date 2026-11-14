@@ -23,6 +23,7 @@ objc2-avf-audio.workspace = true
 objc2-foundation.workspace = true
 objc2-speech.workspace = true
 pulldown-cmark.workspace = true
+qrcode.workspace = true
 rune.workspace = true
 rune-kit.workspace = true
 rune-theme-opencode.workspace = true

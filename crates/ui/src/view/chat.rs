@@ -63,7 +63,10 @@ fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     }
     body = match &page.target {
         Target::New(_) => body.child(hero(k)),
-        Target::Existing(chat) => body.children(transcript(chat, k)),
+        Target::Existing(chat) => {
+            let expanded = s.prefs.borrow().expand_tools;
+            body.children(transcript(chat, k, expanded))
+        }
     };
     let mut scroll = col()
         .key("transcript")
@@ -252,7 +255,8 @@ fn errbox(k: &Kit, why: &str) -> El {
         )
 }
 
-fn transcript(page: &Existing, k: &Kit) -> Vec<El> {
+/// The chat's messages; `expanded` opens tool groups until clicked.
+fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
     let Some(shown) = &page.page else {
         return vec![
             row()
@@ -295,7 +299,7 @@ fn transcript(page: &Existing, k: &Kit) -> Vec<El> {
             Role::Assistant => {
                 let streaming = m.status == MessageStatus::Streaming
                     || (Some(m.id.as_str()) == last && working);
-                out.push(assistant(page, k, &style, m, streaming).key(key));
+                out.push(assistant(page, k, &style, m, streaming, expanded).key(key));
             }
             Role::System => out.push(system_note(k, m).key(key)),
         }
@@ -452,59 +456,87 @@ fn system_note(k: &Kit, m: &Message) -> El {
     )
 }
 
-/// A piece of an assistant message as the transcript shows it: consecutive
-/// tool calls go in one group.
+/// A piece of an assistant message as the transcript shows it: the work
+/// between two texts, tool calls and thinking, goes in one group.
 enum Piece<'a> {
     Part(usize, &'a Part),
-    Tools(usize, Vec<ToolCall<'a>>),
+    Work(usize, Vec<Step<'a>>),
+}
+
+/// One step of the work between two texts, by its part's index.
+enum Step<'a> {
+    Tool(ToolCall<'a>),
+    Thought(usize, &'a str),
 }
 
 fn pieces(parts: &[Part]) -> Vec<Piece<'_>> {
     let mut out: Vec<Piece> = Vec::new();
     for (i, part) in parts.iter().enumerate() {
-        let Part::Tool {
-            id,
-            name,
-            subject,
-            state,
-        } = part
-        else {
-            out.push(Piece::Part(i, part));
-            continue;
-        };
-        let call = ToolCall {
-            id,
-            name,
-            subject: subject.as_deref().unwrap_or_default(),
-            state: *state,
+        let step = match part {
+            Part::Tool {
+                id,
+                name,
+                subject,
+                state,
+            } => Step::Tool(ToolCall {
+                id,
+                name,
+                subject: subject.as_deref().unwrap_or_default(),
+                state: *state,
+            }),
+            Part::Thinking { text } => Step::Thought(i, text),
+            // The transcript shows a reply's images nowhere, so they don't split the work.
+            Part::Image { .. } => continue,
+            Part::Text { .. } | Part::Error { .. } => {
+                out.push(Piece::Part(i, part));
+                continue;
+            }
         };
         match out.last_mut() {
-            Some(Piece::Tools(_, calls)) => calls.push(call),
-            _ => out.push(Piece::Tools(i, vec![call])),
+            Some(Piece::Work(_, steps)) => steps.push(step),
+            _ => out.push(Piece::Work(i, vec![step])),
         }
     }
     out
 }
 
 /// Prose, thinking, tool groups and errors in transcript order, as on the desktop.
-fn assistant(page: &Existing, k: &Kit, style: &MarkdownStyle, m: &Message, streaming: bool) -> El {
+fn assistant(
+    page: &Existing,
+    k: &Kit,
+    style: &MarkdownStyle,
+    m: &Message,
+    streaming: bool,
+    expanded: bool,
+) -> El {
     let mut out = col().w_full().gap(10.0);
     let last = m.parts.len().saturating_sub(1);
     for piece in pieces(&m.parts) {
-        out = out.child(match piece {
-            Piece::Part(i, Part::Text { text }) => {
-                prose(page, k, style, text, streaming && i == last).key(format!("{}#{i}", m.id))
+        out = out.children(match piece {
+            Piece::Part(i, Part::Text { text }) => vec![
+                prose(page, k, style, text, streaming && i == last).key(format!("{}#{i}", m.id)),
+            ],
+            Piece::Part(_, Part::Error { error }) => vec![errbox(k, error)],
+            Piece::Part(..) => Vec::new(),
+            // Thinking alone stays a fold of its own; with tool calls it joins their rail.
+            Piece::Work(_, steps) if !steps.iter().any(|s| matches!(s, Step::Tool(_))) => steps
+                .iter()
+                .filter_map(|step| match step {
+                    Step::Thought(i, text) => Some(thinking(
+                        page,
+                        k,
+                        &format!("{}#{i}", m.id),
+                        text,
+                        streaming && *i == last,
+                    )),
+                    Step::Tool(_) => None,
+                })
+                .collect(),
+            Piece::Work(i, steps) => {
+                let key = format!("{}#{i}", m.id);
+                let live = streaming.then_some(last);
+                vec![tool_group(page, k, &key, &steps, live, expanded)]
             }
-            Piece::Part(i, Part::Thinking { text }) => thinking(
-                page,
-                k,
-                &format!("{}#{i}", m.id),
-                text,
-                streaming && i == last,
-            ),
-            Piece::Part(_, Part::Error { error }) => errbox(k, error),
-            Piece::Part(_, Part::Tool { .. } | Part::Image { .. }) => rune::el(),
-            Piece::Tools(i, tools) => tool_group(page, k, &format!("{}#{i}", m.id), &tools),
         });
     }
     if m.status == MessageStatus::Aborted {
@@ -650,9 +682,30 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     out
 }
 
-fn tool_group(page: &Existing, k: &Kit, key: &str, tools: &[ToolCall]) -> El {
-    let open = page.open_groups.contains(key);
-    let live = tools.iter().any(|t| t.state == ToolState::Running);
+/// The work between two texts on one rail, under a summary of its tool
+/// calls. It opens if `expanded` unless clicked; `live` is the streaming
+/// message's last part, so thinking there shows as under way.
+fn tool_group(
+    page: &Existing,
+    k: &Kit,
+    key: &str,
+    steps: &[Step],
+    live: Option<usize>,
+    expanded: bool,
+) -> El {
+    let open = expanded != page.open_groups.contains(key);
+    let tools: Vec<ToolCall> = steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Tool(tool) => Some(*tool),
+            Step::Thought(..) => None,
+        })
+        .collect();
+    let thinking = |i: usize| live == Some(i);
+    let busy_now = steps.iter().any(|step| match step {
+        Step::Tool(tool) => tool.state == ToolState::Running,
+        Step::Thought(i, _) => thinking(*i),
+    });
     let toggle = key.to_owned();
     // The chevron sits on the rail's trunk, the summary over the rows' icons.
     let mut head = row()
@@ -663,7 +716,7 @@ fn tool_group(page: &Existing, k: &Kit, key: &str, tools: &[ToolCall]) -> El {
         .min_w(0.0)
         .child(chevron(k, open))
         .child(
-            text(tool_summary(tools))
+            text(tool_summary(&tools))
                 .font(TextStyle {
                     size: TOOL_TEXT,
                     ..k.ty.ui
@@ -672,7 +725,7 @@ fn tool_group(page: &Existing, k: &Kit, key: &str, tools: &[ToolCall]) -> El {
                 .truncate()
                 .min_w(0.0),
         );
-    if live {
+    if busy_now {
         head = head.child(busy(11.0, k));
     }
     let head = k
@@ -683,11 +736,15 @@ fn tool_group(page: &Existing, k: &Kit, key: &str, tools: &[ToolCall]) -> El {
         .w_full()
         .child(row().w_full().child(head));
     if open {
-        let last = tools.len().saturating_sub(1);
-        let rail = tools
-            .iter()
-            .enumerate()
-            .map(|(i, tool)| tool_row(k, tool, i == last));
+        let last = steps.len().saturating_sub(1);
+        let rail = steps.iter().enumerate().map(|(n, step)| match step {
+            Step::Tool(tool) => tool_row(k, tool, n == last),
+            Step::Thought(i, text) => {
+                let key = format!("{key}:{i}");
+                let open = page.open_groups.contains(&key);
+                thought_row(k, &key, text, thinking(*i), open, n == last)
+            }
+        });
         group = group.child(col().w_full().ml(RAIL_X).children(rail));
     }
     group
@@ -710,11 +767,76 @@ fn tool_row(k: &Kit, tool: &ToolCall, last: bool) -> El {
     } else {
         k.c.text_muted
     };
-    let style = TextStyle {
+    let lead = match tool.state {
+        ToolState::Running => busy(12.0, k),
+        _ => icon(icons::tool(tool.name), 14.0).color(tint),
+    };
+    let subject = if tool.on_file() {
+        file_badge(k, tool.subject, failed)
+    } else {
+        text(single_line(&tool.arg()))
+            .font(rail_text(k))
+            .color(tint)
+            .truncate()
+            .min_w(0.0)
+    };
+    rail_row(k, last, lead, tool.verb(), tint, subject)
+}
+
+/// A step of thinking on the rail: its first line, which is often a
+/// heading, and the whole text below once clicked.
+fn thought_row(k: &Kit, key: &str, text_in: &str, live: bool, open: bool, last: bool) -> El {
+    let tint = k.c.text_muted;
+    let lead = if live {
+        busy(12.0, k)
+    } else {
+        icon(&icons::THOUGHT, 14.0).color(tint)
+    };
+    let first = text_in.lines().map(str::trim).find(|l| !l.is_empty());
+    let subject = text(first.unwrap_or_default().replace("**", ""))
+        .font(rail_text(k))
+        .color(k.c.text_faint)
+        .truncate()
+        .min_w(0.0);
+    let verb = if live { "Thinking" } else { "Thought" };
+    let toggle = key.to_owned();
+    let line = k
+        .interactive(rail_row(k, last && !open, lead, verb, tint, subject))
+        .on_press(move |s: &mut State| toggle_group(s, &toggle));
+    if !open {
+        return line;
+    }
+    // The trunk runs on beside the text, unless this is the rail's last step.
+    let trunk = if last { 0.0 } else { 1.0 };
+    let body = col()
+        .w_full()
+        .pl(RAIL_TEXT_X)
+        .pb(6.0)
+        .border_sides([0.0, 0.0, 0.0, trunk], k.c.border_muted)
+        .child(
+            text(text_in.trim().to_owned())
+                .font(rail_text(k))
+                .color(k.c.text_faint)
+                .wrap()
+                .selectable(true),
+        );
+    col().w_full().child(line).child(body)
+}
+
+/// Where a rail row's verb starts: past the elbow and the icon.
+const RAIL_TEXT_X: f32 = 12.0 + 4.0 + 14.0 + 8.0;
+
+fn rail_text(k: &Kit) -> TextStyle {
+    TextStyle {
         size: TOOL_TEXT,
         line_height: 18.0,
         ..k.ty.ui
-    };
+    }
+}
+
+/// A row on the rail: an elbow off the trunk, `lead`, `verb`, and `subject`
+/// on one line.
+fn rail_row(k: &Kit, last: bool, lead: El, verb: &str, tint: Color, subject: El) -> El {
     let elbow = rune::el()
         .w(12.0)
         .h(TOOL_ROW_HEIGHT / 2.0)
@@ -725,26 +847,13 @@ fn tool_row(k: &Kit, tool: &ToolCall, last: bool) -> El {
     if !last {
         branch = branch.border_sides([0.0, 0.0, 0.0, 1.0], k.c.border_muted);
     }
-    let lead = match tool.state {
-        ToolState::Running => busy(12.0, k),
-        _ => icon(icons::tool(tool.name), 14.0).color(tint),
-    };
-    let subject = if tool.on_file() {
-        file_badge(k, tool.subject, failed)
-    } else {
-        text(single_line(&tool.arg()))
-            .font(style)
-            .color(tint)
-            .truncate()
-            .min_w(0.0)
-    };
     row()
         .w_full()
         .h(TOOL_ROW_HEIGHT)
         .center_y()
         .child(branch)
         .child(rune::el().w(14.0).center().child(lead).ml(4.0).mr(8.0))
-        .child(text(tool.verb()).font(style).color(tint).mr(8.0))
+        .child(text(verb.to_owned()).font(rail_text(k)).color(tint).mr(8.0))
         .child(subject.shrink())
 }
 
