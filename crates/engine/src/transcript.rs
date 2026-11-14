@@ -12,6 +12,14 @@
 //! A message is a user prompt, a note like a compaction, or an assistant
 //! turn: every assistant reply and tool result until the next prompt.
 
+mod details;
+mod nested;
+
+pub use details::{Details, PullRequest};
+
+pub use nested::NestedCall;
+pub(crate) use nested::{merge as merge_calls, progress as call_progress};
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -102,6 +110,7 @@ pub enum Part {
         name: String,
         subject: Option<String>,
         state: ToolState,
+        calls: Vec<NestedCall>,
     },
     /// The message's `index`th image, which [`Transcripts::image`] has.
     Image {
@@ -123,6 +132,7 @@ pub enum ToolState {
     Running,
     Done,
     Failed,
+    Cancelled,
 }
 
 /// A tool call's details, which a view loads when it's opened.
@@ -163,6 +173,8 @@ pub struct Tail<'a> {
     pub messages: &'a [Value],
     /// The message pi is writing.
     pub streaming: Option<&'a Value>,
+    /// Live nested calls, overlaid after reading the cached transcript.
+    pub calls: Option<&'a HashMap<String, Vec<NestedCall>>>,
 }
 
 /// Messages a page shows when it isn't anchored, or its anchor is gone.
@@ -222,6 +234,31 @@ impl Transcripts {
             Some(path) => self.scan(path)?.page(path, tail, window),
             None => Scan::default().page(Path::new(""), tail, window),
         }
+    }
+
+    /// Read compact session details from its incremental scan.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the session file cannot be read.
+    pub fn details(&mut self, path: &Path) -> Result<Details> {
+        let scan = self.scan(path)?;
+        let mut seen = HashSet::new();
+        let pull_requests = scan
+            .chain()
+            .into_iter()
+            .flat_map(|i| &scan.entries[i].pull_requests)
+            .filter(|pr| seen.insert(pr.url.clone()))
+            .cloned()
+            .collect();
+        Ok(Details {
+            compactions: scan
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == Kind::Compaction)
+                .count(),
+            pull_requests,
+        })
     }
 
     /// The details of tool call `call` in the transcript in `path`, once its
@@ -365,6 +402,8 @@ struct Meta {
     /// A tool result that failed. Results are only rendered by this and
     /// their call, so their lines, often big, aren't read again.
     failed: bool,
+    calls: Vec<NestedCall>,
+    pull_requests: Vec<PullRequest>,
 }
 
 /// How an entry joins the transcript.
@@ -486,6 +525,19 @@ impl Scan {
             let kind = line.kind();
             let stamp = line.stamp();
             let failed = line.message.as_ref().is_some_and(|m| m.is_error);
+            let calls = line.message.as_ref().map_or_else(Vec::new, |m| {
+                let details = m
+                    .details
+                    .filter(|_| m.tool_name.as_deref() == Some("codemode"))
+                    .and_then(|raw| serde_json::from_str(raw.get()).ok());
+                nested::recorded(m.nested_calls.as_ref(), details.as_ref())
+            });
+            let pull_requests = line
+                .message
+                .as_ref()
+                .filter(|m| m.role == "assistant" && m.stop_reason.as_deref() == Some("stop"))
+                .and_then(|m| m.content)
+                .map_or_else(Vec::new, details::pull_requests);
             let Some(id) = line.id.map(Cow::into_owned) else {
                 continue;
             };
@@ -501,22 +553,29 @@ impl Scan {
                 kind,
                 stamp,
                 failed,
+                calls,
+                pull_requests,
             });
         }
         Ok(())
     }
 
-    /// The `window` of the path to the leaf, followed by the messages of
-    /// `tail` that the path doesn't have.
-    fn page(&mut self, path: &Path, tail: Tail, window: &Window) -> Result<Page> {
+    /// Follow the current leaf, leaving abandoned branches out.
+    fn chain(&self) -> Vec<usize> {
         let mut chain = Vec::new();
         let mut at = self.entries.len().checked_sub(1);
-        // A parent always comes before its child, so this ends.
         while let Some(i) = at {
             chain.push(i);
             at = self.entries[i].parent;
         }
         chain.reverse();
+        chain
+    }
+
+    /// The `window` of the path to the leaf, followed by the messages of
+    /// `tail` that the path doesn't have.
+    fn page(&mut self, path: &Path, tail: Tail, window: &Window) -> Result<Page> {
+        let chain = self.chain();
         // The file can be any number of entries ahead of the events.
         let written: HashSet<&Stamp> = chain
             .iter()
@@ -575,6 +634,20 @@ impl Scan {
                 self.rendered.insert((*first, *last), message.clone());
             }
         }
+        if let Some(live) = tail.calls {
+            for message in &mut messages {
+                for part in &mut message.parts {
+                    if let Part::Tool {
+                        id, state, calls, ..
+                    } = part
+                        && let Some(updates) = live.get(id)
+                    {
+                        *state = ToolState::Running;
+                        nested::merge(calls, updates.clone());
+                    }
+                }
+            }
+        }
         Ok(Page {
             total: groups.len(),
             messages,
@@ -596,6 +669,7 @@ impl Scan {
                 role: "toolResult".to_owned(),
                 tool_call_id: stamp.and_then(|s| s.call.as_deref()).map(Into::into),
                 is_error: meta.failed,
+                calls: meta.calls.clone(),
                 ..MessageView::default()
             };
             return Ok(Some(Piece::file(&meta.id, EntryView::message(message))));
@@ -675,6 +749,17 @@ struct Head<'a> {
     tool_call_id: Option<Cow<'a, str>>,
     #[serde(default)]
     is_error: bool,
+    #[serde(default)]
+    nested_calls: Option<nested::Calls>,
+    #[serde(default)]
+    #[serde(borrow)]
+    details: Option<&'a serde_json::value::RawValue>,
+    #[serde(borrow)]
+    tool_name: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    stop_reason: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    content: Option<&'a serde_json::value::RawValue>,
 }
 
 impl Line<'_> {
@@ -753,6 +838,8 @@ struct MessageView {
     tool_call_id: Option<String>,
     #[serde(default)]
     is_error: bool,
+    #[serde(skip)]
+    calls: Vec<NestedCall>,
     /// A `bashExecution` you stopped.
     #[serde(default)]
     cancelled: bool,
@@ -921,7 +1008,13 @@ impl Piece {
 
     /// Live message `i`; `None` if it isn't a message.
     fn live(i: usize, message: &Value, streaming: bool) -> Option<Self> {
-        let message = MessageView::deserialize(message).ok()?;
+        let record = nested::Calls::deserialize(&message["nestedCalls"]).ok();
+        let details = (message["toolName"] == "codemode")
+            .then(|| nested::Calls::deserialize(&message["details"]).ok())
+            .flatten();
+        let calls = nested::recorded(record.as_ref(), details.as_ref());
+        let mut message = MessageView::deserialize(message).ok()?;
+        message.calls = calls;
         Some(Self {
             id: format!("{LIVE_ID}{i}"),
             entry: EntryView::message(message),
@@ -980,6 +1073,7 @@ fn render(pieces: &[Piece]) -> Option<Message> {
                 } else {
                     ToolState::Done
                 },
+                calls: Vec::new(),
             }];
         }
         ("message", Some("custom"), Some(m)) => message.parts = content_parts(&m.content),
@@ -1007,7 +1101,7 @@ fn render(pieces: &[Piece]) -> Option<Message> {
 /// order.
 fn render_turn(pieces: &[Piece], message: &mut Message) {
     // Tool results come after their calls, so states are settled at the end.
-    let mut failed: HashMap<&str, bool> = HashMap::new();
+    let mut failed: HashMap<&str, &MessageView> = HashMap::new();
     // Each call's part, and whether it's from the live tail.
     let mut calls: Vec<(usize, bool)> = Vec::new();
     let mut parts = Vec::new();
@@ -1024,7 +1118,7 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
         match m.role.as_str() {
             "toolResult" => {
                 if let Some(id) = &m.tool_call_id {
-                    failed.insert(id, m.is_error);
+                    failed.insert(id, m);
                 }
             }
             "assistant" => {
@@ -1066,12 +1160,19 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
         }
     }
     for (at, live) in calls {
-        if let Part::Tool { id, state, .. } = &mut parts[at] {
-            *state = match failed.get(id.as_str()) {
-                Some(true) => ToolState::Failed,
+        if let Part::Tool {
+            id, state, calls, ..
+        } = &mut parts[at]
+        {
+            let result = failed.get(id.as_str());
+            *state = match result {
+                Some(result) if result.is_error => ToolState::Failed,
                 None if live => ToolState::Running,
                 _ => ToolState::Done,
             };
+            if let Some(result) = result {
+                calls.clone_from(&result.calls);
+            }
         }
     }
     message.parts = parts;
@@ -1100,7 +1201,17 @@ fn content_parts(content: &Content) -> Vec<Part> {
 /// what pi's built-in tools (its `docs/tools.md`) work on.
 fn tool_part(call: &Block) -> Part {
     let name = call.name.as_deref().unwrap_or("tool");
-    let args = call.arguments.as_ref();
+    Part::Tool {
+        id: call.id.clone().unwrap_or_default(),
+        name: name.to_owned(),
+        subject: tool_subject(name, call.arguments.as_ref()),
+        state: ToolState::Done,
+        calls: Vec::new(),
+    }
+}
+
+/// Describe the subject of a built-in tool without keeping its full arguments.
+fn tool_subject(name: &str, args: Option<&Arguments>) -> Option<String> {
     let arg = |field: fn(&Arguments) -> &Option<String>| args.and_then(|a| field(a).as_deref());
     let (path, pattern) = (arg(|a| &a.path), arg(|a| &a.pattern));
     let subject = match (name, path, pattern) {
@@ -1110,10 +1221,5 @@ fn tool_part(call: &Block) -> Part {
         ("grep" | "find", _, Some(pattern)) => Some(Cow::Borrowed(pattern)),
         _ => None,
     };
-    Part::Tool {
-        id: call.id.clone().unwrap_or_default(),
-        name: name.to_owned(),
-        subject: subject.and_then(|s| one_line(&s, TOOL_CHARS)),
-        state: ToolState::Done,
-    }
+    subject.and_then(|s| one_line(&s, TOOL_CHARS))
 }

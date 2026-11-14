@@ -17,7 +17,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let (pane, bar) = match &s.page {
         Page::Chat(page) => (
             chat::pane(s, page, k, &mut layer),
-            toolbar(page, k, &mut layer),
+            toolbar(s, page, k, &mut layer),
         ),
         Page::Settings(page) => (
             settings::view(s, page, k, &mut layer),
@@ -73,7 +73,7 @@ fn settings_title(k: &Kit) -> El {
 }
 
 /// The chat's title and project, then its actions.
-fn toolbar(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> Toolbar {
+fn toolbar(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> Toolbar {
     let (title, sub) = chat::titles(page);
     let mut titles = col().min_w(0.0).shrink().child(
         text(title)
@@ -101,6 +101,7 @@ fn toolbar(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> Toolbar {
                     .on_press(move |s: &mut State| s.open_in_peer(id.clone()))
                     .build(k),
             )
+            .trailing(super::details::toggle(s, k))
             .trailing(chat::more_menu(page, k, layer));
     }
     bar

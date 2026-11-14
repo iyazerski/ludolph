@@ -131,6 +131,42 @@ impl Engine {
         Ok(())
     }
 
+    /// Send one waiting prompt now, steering a running pi or starting a new turn.
+    ///
+    /// # Errors
+    ///
+    /// Fail if the message is gone or pi refuses it. Keep rejected drafts for retry.
+    pub async fn steer_queued(&self, id: &str, message: &str) -> Result<()> {
+        let stops = self.stops(id);
+        let ops = self.ops(id)?;
+        let _ops = ops.lock().await;
+        self.refuse_elsewhere(id)?;
+        let draft = {
+            let state = self.state();
+            state
+                .chats
+                .get(id)
+                .and_then(|chat| chat.waiting.iter().find(|draft| draft.id == message))
+                .cloned()
+                .context("this message has already started or was removed")?
+        };
+        let result = self.send_locked(id, &draft.text, draft.images, stops).await;
+        let mut state = self.state();
+        if let Some(chat) = state.chats.get_mut(id) {
+            if result.is_ok() {
+                chat.waiting.retain(|waiting| waiting.id != message);
+            } else if let Some(waiting) = chat
+                .waiting
+                .iter_mut()
+                .find(|waiting| waiting.id == message)
+            {
+                waiting.error = result.as_ref().err().map(|error| format!("{error:#}"));
+            }
+            chat.changed();
+        }
+        result.map(|_| ())
+    }
+
     /// Start the oldest waiting prompt if the chat is idle.
     ///
     /// # Errors

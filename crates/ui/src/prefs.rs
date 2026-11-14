@@ -28,6 +28,8 @@ pub struct Prefs {
     pub shortcut: Option<String>,
     /// Where the main window was last, to open it there next run.
     pub main_frame: Option<Frame>,
+    /// Show the chat details card beside the transcript.
+    pub show_details: bool,
 }
 
 /// A window's place, in physical pixels, as Rune reads and takes it.
@@ -47,6 +49,7 @@ impl Default for Prefs {
             new_chat: NewChat::default(),
             shortcut: Some(SHORTCUT.to_owned()),
             main_frame: None,
+            show_details: true,
         }
     }
 }

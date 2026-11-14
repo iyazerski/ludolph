@@ -1,4 +1,4 @@
-//! What a chat's run changed: the button under the transcript, and the page
+//! What a chat's run changed: the button in its reply's footer, and the page
 //! with its unified diff that opens in place of the chat.
 
 use rune::{El, Span, TextStyle, col, icon, rich, row, text};
@@ -7,18 +7,18 @@ use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 use super::icons;
 use super::widgets::{busy, head, head_titles, hide_button};
-use crate::app::{Changes, Existing, State, Window};
+use crate::app::{ChangeTarget, Changes, Existing, State, Window};
 use crate::data::TurnChanges;
 
-/// "3 files changed +12 −4", pressed to open the diff.
+/// Show compact file counts beside the timestamp, pressed to open the diff.
 pub fn button(k: &Kit, counts: &TurnChanges) -> El {
     let small = TextStyle {
         size: 12.0,
         ..k.ty.ui
     };
     let files = match counts.files {
-        1 => "1 file changed".to_owned(),
-        n => format!("{n} files changed"),
+        1 => "1 file".to_owned(),
+        n => format!("{n} files"),
     };
     let stats = format!("+{} −{}", counts.additions, counts.deletions);
     let plus = stats.find(' ').unwrap_or(stats.len());
@@ -29,27 +29,31 @@ pub fn button(k: &Kit, counts: &TurnChanges) -> El {
     let turn = counts.turn.clone();
     let face = row()
         .key("turn-changes")
-        .gap(8.0)
-        .px(10.0)
-        .h(30.0)
+        .gap(6.0)
+        .px(6.0)
+        .h(24.0)
         .center_y()
         .radius(8.0)
-        .child(icon(&icons::DIFF, 14.0).color(k.c.icon_base))
-        .child(text(files).font(small).color(k.c.text_muted))
+        .child(icon(&icons::DIFF, 12.0).color(k.c.icon_base))
+        .child(
+            text(files)
+                .font(small)
+                .color(k.c.text_muted)
+                .truncate()
+                .min_w(0.0),
+        )
         .child(rich(stats, spans).font(TextStyle {
             size: 11.0,
             ..k.ty.mono
         }))
         .child(
-            icon(&icons::CHEV_DOWN, 14.0)
+            icon(&icons::CHEV_DOWN, 12.0)
                 .color(k.c.icon_faint)
                 .rotate(-std::f32::consts::FRAC_PI_2),
         );
-    row().w_full().child(
-        k.interactive(face)
-            .label("Show the changes of this turn")
-            .on_press(move |s: &mut State| s.open_changes(&turn)),
-    )
+    k.interactive(face.shrink())
+        .label("Show the changes of this turn")
+        .on_press(move |s: &mut State| s.open_changes(&turn))
 }
 
 /// The diff page: the back button returns to the chat.
@@ -57,7 +61,7 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
     // The prompt that started the run names it; the chat's title if it's not shown.
     let prompt = chat
         .messages()
-        .find(|m| m.created_at.to_string() == chat.changes_of)
+        .find(|m| matches!(&chat.changes_of, ChangeTarget::Turn(turn) if m.created_at.to_string() == *turn))
         .map(|m| m.text().split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|t| !t.is_empty());
     let title = prompt.unwrap_or_else(|| {
@@ -73,10 +77,13 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
     let titles = head_titles()
         .gap(1.0)
         .child(
-            text("Turn changes")
-                .font(k.ty.ui_medium)
-                .color(k.c.text_base)
-                .truncate(),
+            text(match chat.changes_of {
+                ChangeTarget::Turn(_) => "Turn changes",
+                ChangeTarget::WorkingTree => "Uncommitted changes",
+            })
+            .font(k.ty.ui_medium)
+            .color(k.c.text_base)
+            .truncate(),
         )
         .child(
             text(title)
@@ -97,9 +104,12 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
                 .wrap(),
         ),
         Changes::Ready { diff, .. } if diff.files().is_empty() => note().child(
-            text("No changes this turn")
-                .font(k.ty.ui)
-                .color(k.c.text_muted),
+            text(match chat.changes_of {
+                ChangeTarget::Turn(_) => "No changes this turn",
+                ChangeTarget::WorkingTree => "No uncommitted changes",
+            })
+            .font(k.ty.ui)
+            .color(k.c.text_muted),
         ),
         Changes::Ready { truncated, .. } => {
             let mut out = col().w_full().grow(1.0).min_h(0.0);

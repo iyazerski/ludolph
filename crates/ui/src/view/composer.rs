@@ -20,13 +20,20 @@ const SKILL_MENU_WIDTH: f32 = 320.0;
 
 pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let working = page.is_working();
-    let typed = !page.composer.text.trim().is_empty() || !page.attached.is_empty();
-    let stop = !typed && working;
+    let editing = page.queue_edit.as_ref();
+    let typed = !page.composer.text.trim().is_empty()
+        || !page.attached.is_empty()
+        || editing.is_some_and(|edit| edit.images > 0);
+    let stop = editing.is_none() && !typed && working;
     let dictating = !matches!(page.voice, Voice::Idle);
     let field = text_input(&page.composer, k.ty.ui.lh(19.0))
         .key("composer")
         .label("Message")
-        .description("Press Return to send. Press Shift-Return for a new line.")
+        .description(if editing.is_some() {
+            "Press Return to save. Press Escape to cancel."
+        } else {
+            "Press Return to send. Press Shift-Return for a new line."
+        })
         .w_full()
         .color(k.c.text_base)
         .placeholder(
@@ -51,18 +58,35 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .on_submit(State::send);
     let creating = page.draft().is_some_and(|d| d.creating);
     let ready = page.can_send() && page.images_ready();
-    let send = IconButton::new(if stop { &icons::STOP } else { &icons::SEND })
-        .variant(if stop {
-            IconButtonVariant::Neutral
-        } else {
-            IconButtonVariant::Submit
-        })
-        .label(if stop { "Stop" } else { "Send" })
-        .disabled(creating || dictating || !(stop || typed && ready))
-        .on_press_tx(move |s: &mut State, tx: &mut Tx| if stop { s.stop() } else { s.send(tx) })
-        .build(k)
-        // Round: a regular icon button is 24 points square.
-        .radius(12.0);
+    let send = IconButton::new(if editing.is_some() {
+        &icons::CHECK
+    } else if stop {
+        &icons::STOP
+    } else {
+        &icons::SEND
+    })
+    .variant(if stop {
+        IconButtonVariant::Neutral
+    } else {
+        IconButtonVariant::Submit
+    })
+    .label(if editing.is_some() {
+        "Save queued message"
+    } else if stop {
+        "Stop"
+    } else {
+        "Send"
+    })
+    .disabled(
+        creating
+            || dictating
+            || editing.is_some_and(|edit| edit.saving)
+            || !(stop || typed && ready),
+    )
+    .on_press_tx(move |s: &mut State, tx: &mut Tx| if stop { s.stop() } else { s.send(tx) })
+    .build(k)
+    // Round: a regular icon button is 24 points square.
+    .radius(12.0);
     let listening = page.voice.listening().is_some();
     let dictate = IconButton::new(&icons::MIC)
         .variant(if listening {
@@ -98,6 +122,29 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         // A faint tint over the window's own glass: the transcript never scrolls under it.
         .fill(k.c.text_base.alpha(0.035))
         .border(1.0, k.c.border_base);
+    if let Some(edit) = editing {
+        let label = if edit.images == 0 {
+            "Editing queued message".to_owned()
+        } else {
+            format!("Editing queued message · {} image(s) kept", edit.images)
+        };
+        field_box = field_box.child(
+            row()
+                .w_full()
+                .center_y()
+                .gap(8.0)
+                .child(text(label).font(k.ty.small).color(k.c.text_muted))
+                .child(rune::spacer())
+                .child(
+                    IconButton::new(&icons::CLOSE)
+                        .variant(IconButtonVariant::GhostMuted)
+                        .label("Cancel queued message edit")
+                        .disabled(edit.saving)
+                        .on_press(State::cancel_queue_edit)
+                        .build(k),
+                ),
+        );
+    }
     if !page.attached.is_empty() {
         field_box = field_box.child(attachments(page, k));
     }

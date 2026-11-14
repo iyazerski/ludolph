@@ -170,6 +170,10 @@ struct Chat {
     /// The run Ludolph started, from its snapshot until its changes are
     /// saved.
     run: Option<Run>,
+    /// The latest run boundary, including while its snapshot is being saved.
+    latest_turn: Option<i64>,
+    /// Bumped when a run starts or its changes finish saving.
+    turns_revision: u64,
     /// Bumped whenever the chat's view changes.
     changes: watch::Sender<u64>,
 }
@@ -187,6 +191,8 @@ impl Default for Chat {
             named: None,
             titling: false,
             run: None,
+            latest_turn: None,
+            turns_revision: 0,
             changes: watch::channel(0).0,
         }
     }
@@ -302,6 +308,10 @@ pub struct View {
     pub page: Page,
     /// Changes whenever the page would, while the chat is working.
     pub revision: u64,
+    /// The latest run boundary, before its diff has necessarily been saved.
+    pub latest_turn: Option<i64>,
+    /// Changes when run boundaries or saved diffs change, not on streamed text.
+    pub turns_revision: u64,
     /// The oldest dialog the chat's pi waits on.
     pub question: Option<Question>,
     /// What the chat's run waits on, while one is going.
@@ -538,7 +548,20 @@ impl Engine {
     ///
     /// Fails if there's no such chat, or its session file can't be read.
     pub async fn view(&self, id: &str, window: Window) -> Result<View> {
-        let (chat, path, messages, streaming, revision, question, run, failure, queued) = {
+        let (
+            chat,
+            path,
+            messages,
+            streaming,
+            revision,
+            question,
+            run,
+            failure,
+            queued,
+            latest_turn,
+            turns_revision,
+            calls,
+        ) = {
             let state = self.state();
             let chat = state.chats.get(id);
             let info = match state.index.find(id) {
@@ -564,7 +587,18 @@ impl Engine {
             let revision = chat.map_or(0, |chat| *chat.changes.borrow());
             let queued = Self::queued(chat);
             (
-                info, path, messages, streaming, revision, question, run, failure, queued,
+                info,
+                path,
+                messages,
+                streaming,
+                revision,
+                question,
+                run,
+                failure,
+                queued,
+                chat.and_then(|c| c.latest_turn),
+                chat.map_or(0, |c| c.turns_revision),
+                live.map(|live| live.calls().clone()).unwrap_or_default(),
             )
         };
         let transcripts = self.0.transcripts.clone();
@@ -572,6 +606,7 @@ impl Engine {
             let tail = Tail {
                 messages: &messages,
                 streaming: streaming.as_ref(),
+                calls: Some(&calls),
             };
             let mut transcripts = transcripts.lock().expect("lock poisoned");
             transcripts.page(path.as_deref().filter(|p| p.exists()), tail, &window)
@@ -581,6 +616,8 @@ impl Engine {
             chat,
             page,
             revision,
+            latest_turn,
+            turns_revision,
             question,
             run,
             failure,
@@ -793,11 +830,58 @@ impl Engine {
         };
         match saved.await {
             Ok(()) => {
-                if let Some(chat) = self.state().chats.get(id) {
+                if let Some(chat) = self.state().chats.get_mut(id) {
+                    chat.turns_revision += 1;
                     chat.changed();
                 }
             }
             Err(e) => eprintln!("chat {id}: saving this run's changes: {e:#}"),
+        }
+    }
+
+    /// Read the chat's session details and cumulative saved usage without starting pi.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the chat is gone or its session cannot be read.
+    pub async fn details(&self, id: &str) -> Result<(transcript::Details, Spent)> {
+        let (path, spent) = {
+            let state = self.state();
+            known(&state, id)?;
+            let summary = state.index.find(id);
+            (
+                file_of(
+                    &state.index,
+                    id,
+                    state.chats.get(id).and_then(|chat| chat.draft.as_ref()),
+                ),
+                summary.map_or_else(Spent::default, |(_, summary)| summary.spent),
+            )
+        };
+        let transcripts = self.0.transcripts.clone();
+        let details =
+            tokio::task::spawn_blocking(move || match path.filter(|path| path.exists()) {
+                Some(path) => transcripts.lock().expect("lock poisoned").details(&path),
+                None => Ok(transcript::Details::default()),
+            })
+            .await??;
+        Ok((details, spent))
+    }
+
+    /// Read the current uncommitted diff of the chat's whole repository.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the chat is gone, or the diff exceeds the snapshot limits.
+    pub async fn working_changes(&self, id: &str) -> Result<Option<Diff>> {
+        let cwd = {
+            let state = self.state();
+            known(&state, id)?;
+            cwd_of(&state, id)
+        };
+        match cwd {
+            Some(cwd) => self.0.turns.working(&cwd).await,
+            None => Ok(None),
         }
     }
 
@@ -924,6 +1008,75 @@ impl Engine {
             chat.changed();
         }
         drop(state);
+        self.changed();
+        Ok(())
+    }
+
+    /// Move an idle chat to `cwd`, keeping its session id and history.
+    ///
+    /// # Errors
+    ///
+    /// Fail if the destination isn't a folder, the chat is busy or open elsewhere,
+    /// or its session files can't be moved.
+    pub async fn move_chat(&self, id: &str, cwd: &Path) -> Result<()> {
+        if !cwd.is_absolute() {
+            bail!("the project path must be absolute");
+        }
+        if !cwd.is_dir() {
+            bail!("{} isn't a folder", cwd.display());
+        }
+        let ops = self.ops(id)?;
+        let _ops = ops
+            .try_lock()
+            .context("this chat is busy; try again once it is idle")?;
+        self.refuse_elsewhere(id)?;
+        let pi = {
+            let state = self.state();
+            let chat = state.chats.get(id).context("no such chat")?;
+            if !chat.waiting.is_empty()
+                || chat.run.is_some()
+                || chat
+                    .process
+                    .as_ref()
+                    .is_some_and(|r| r.live.working() || !r.questions.is_empty())
+            {
+                bail!("stop the agent and clear queued messages before moving this chat");
+            }
+            let (_, summary) = state
+                .index
+                .find(id)
+                .context("send a message before moving this chat")?;
+            if summary.cwd == cwd {
+                return Ok(());
+            }
+            chat.process.as_ref().map(|r| r.pi.clone())
+        };
+        if let Some(pi) = pi {
+            pi.stop(self.0.config.grace).await?;
+            self.detach(id, &pi)?;
+        }
+        {
+            let mut state = self.state();
+            let (source, _) = state.index.find(id).context("the session is gone")?;
+            let target = crate::session::relocate(source, &self.0.config.sessions_dir, cwd)?;
+            let copies: Vec<_> = state
+                .index
+                .iter()
+                .filter(|(_, summary)| summary.id == id)
+                .map(|(path, _)| path.to_owned())
+                .collect();
+            state.index.refresh_file(&target)?;
+            for path in copies {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("removing {}", path.display()))?;
+                state.index.refresh_file(&path)?;
+            }
+            if let Some(chat) = state.chats.get_mut(id) {
+                chat.draft = None;
+                chat.changed();
+            }
+        }
+        self.save_index()?;
         self.changed();
         Ok(())
     }
@@ -1650,6 +1803,8 @@ impl Engine {
                 && message["role"] == "user"
             {
                 run.key = message["timestamp"].as_i64();
+                chat.latest_turn = run.key;
+                chat.turns_revision += 1;
             }
         }
         let mut finish = false;

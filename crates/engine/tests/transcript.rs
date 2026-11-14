@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::path::Path;
 
+use ludolph_engine::live::Live;
+use ludolph_engine::pi::Event;
 use ludolph_engine::transcript::{
     Image, Message, MessageStatus, Page, Part, Role, Tail, ToolState, Transcripts, Window,
 };
@@ -46,6 +48,7 @@ fn tool(id: &str, name: &str, subject: &str, state: ToolState) -> Part {
         name: name.into(),
         subject: Some(subject.into()),
         state,
+        calls: Vec::new(),
     }
 }
 
@@ -55,6 +58,239 @@ fn shown(page: &Page) -> Vec<(Role, MessageStatus, Vec<Part>)> {
         .iter()
         .map(|m: &Message| (m.role, m.status, m.parts.clone()))
         .collect()
+}
+
+#[test]
+fn details_follow_final_answers_on_the_current_branch_but_count_all_compactions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    std::fs::write(&path, format!("{HEADER}\n")).unwrap();
+    let answer = |text: &str, reason: &str| json!({"role":"assistant", "timestamp":2, "stopReason":reason, "content":[{"type":"text","text":text}]});
+    append(
+        &path,
+        &[
+            message("u1", None, user("review", 1)),
+            message(
+                "a1",
+                Some("u1"),
+                answer("Checking https://github.com/acme/repo/pull/99", "toolUse"),
+            ),
+            message(
+                "r1",
+                Some("a1"),
+                json!({"role":"toolResult","timestamp":2,"toolCallId":"c1","content":[{"type":"text","text":"https://github.com/acme/repo/pull/98"}]}),
+            ),
+            message(
+                "a2",
+                Some("r1"),
+                answer(
+                    "Opened [PR](https://github.com/acme/repo/pull/10#discussion). Also https://git.corp.test/team/repo/pull/20/files. Duplicate https://github.com/acme/repo/pull/10?x=y. Not a PR: https://github.com/acme/repo/issues/7. `https://github.com/acme/repo/pull/97`\n\n```\nhttps://github.com/acme/repo/pull/96\n```",
+                    "stop",
+                ),
+            ),
+            message(
+                "old",
+                Some("a2"),
+                answer("Abandoned https://github.com/acme/repo/pull/999", "stop"),
+            ),
+            json!({"type":"compaction", "id":"old-c", "parentId":"old", "summary":"old branch"}),
+            message("u2", Some("a2"), user("continue", 3)),
+            message(
+                "a3",
+                Some("u2"),
+                answer(
+                    "Still [the same PR](https://github.com/acme/repo/pull/10).",
+                    "stop",
+                ),
+            ),
+            json!({"type":"compaction", "id":"c2", "parentId":"a3", "summary":"current branch"}),
+        ],
+    );
+    let mut transcripts = Transcripts::default();
+    let first = transcripts.details(&path).unwrap();
+    assert_eq!(first.compactions, 2);
+    assert_eq!(
+        first
+            .pull_requests
+            .iter()
+            .map(|pr| pr.url.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "https://github.com/acme/repo/pull/10",
+            "https://git.corp.test/team/repo/pull/20"
+        ]
+    );
+    assert_eq!(first.pull_requests[0].label, "acme/repo #10");
+    append(
+        &path,
+        &[
+            message("u3", Some("c2"), user("next", 4)),
+            message(
+                "a4",
+                Some("u3"),
+                answer("Done: https://github.com/acme/repo/pull/42.", "stop"),
+            ),
+        ],
+    );
+    let updated = transcripts.details(&path).unwrap();
+    assert_eq!(updated.pull_requests.len(), 3);
+    let mut parent = "a4".to_owned();
+    for i in 0..45 {
+        let (user_id, answer_id) = (format!("later-u{i}"), format!("later-a{i}"));
+        append(
+            &path,
+            &[
+                message(&user_id, Some(&parent), user("more", 100 + i)),
+                message(&answer_id, Some(&user_id), answer("Done.", "stop")),
+            ],
+        );
+        parent = answer_id;
+    }
+    assert_eq!(
+        transcripts
+            .page(Some(&path), Tail::default(), &Window::Latest(40))
+            .unwrap()
+            .messages
+            .len(),
+        40
+    );
+    assert_eq!(
+        transcripts.details(&path).unwrap(),
+        updated,
+        "PR links survive outside the visible transcript page"
+    );
+    assert_eq!(Transcripts::default().details(&path).unwrap(), updated);
+    append(
+        &path,
+        &[message(
+            "new-branch",
+            Some("u1"),
+            answer("Only https://github.com/acme/repo/pull/33", "stop"),
+        )],
+    );
+    let switched = transcripts.details(&path).unwrap();
+    assert_eq!(switched.compactions, 2);
+    assert_eq!(switched.pull_requests.len(), 1);
+    assert_eq!(switched.pull_requests[0].label, "acme/repo #33");
+}
+
+#[test]
+fn nested_calls_show_live_and_reopen_without_losing_their_own_outcomes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    std::fs::write(&path, format!("{HEADER}\n")).unwrap();
+    let call = json!({"type": "toolCall", "id": "c1", "name": "codemode", "arguments": {"code": "await Promise.all([tools.bash({command: 'cargo test'}), tools.mcp__check({})])"}});
+    append(
+        &path,
+        &[
+            message("u1", None, user("check", 1)),
+            message(
+                "a1",
+                Some("u1"),
+                json!({"role": "assistant", "content": [call], "timestamp": 2, "stopReason": "toolUse"}),
+            ),
+        ],
+    );
+    let mut transcripts = Transcripts::default();
+    let original = transcripts
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
+    let mut live = Live::new();
+    for event in [
+        json!({"type": "tool_execution_start", "toolCallId": "c1", "toolName": "codemode", "args": {}}),
+        json!({"type": "tool_execution_update", "toolCallId": "c1", "partialResult": {"details": {"calls": [
+            {"id": "c1/?", "name": "bash", "args": "{truncated", "status": "running"},
+            {"id": "c1/?", "name": "mcp__check", "args": "{}", "status": "running"}
+        ]}}}),
+        json!({"type": "tool_execution_start", "toolCallId": "c1/1", "parentToolCallId": "c1", "toolName": "bash", "args": {"command": "cargo test"}}),
+        json!({"type": "tool_execution_start", "toolCallId": "c1/2", "parentToolCallId": "c1", "toolName": "mcp__check", "args": {"query": "diagnostics"}}),
+        json!({"type": "tool_execution_end", "toolCallId": "c1/2", "parentToolCallId": "c1", "isError": true, "durationMs": 4, "result": {"content": [{"type": "text", "text": "permission denied"}]}}),
+    ] {
+        live.apply(&serde_json::from_value::<Event>(event).unwrap());
+    }
+    let running = transcripts
+        .page(
+            Some(&path),
+            Tail {
+                calls: Some(live.calls()),
+                ..Tail::default()
+            },
+            &Window::Latest(40),
+        )
+        .unwrap();
+    let Part::Tool { calls, state, .. } = &running.messages[1].parts[0] else {
+        panic!("expected a tool")
+    };
+    assert_eq!(*state, ToolState::Running);
+    assert_eq!(
+        calls.len(),
+        2,
+        "provisional ids must not duplicate actual calls"
+    );
+    assert_eq!(calls[0].state, ToolState::Running);
+    assert_eq!(calls[0].subject.as_deref(), Some("cargo test"));
+    assert_eq!(calls[1].state, ToolState::Failed);
+    assert_eq!(calls[1].error.as_deref(), Some("permission denied"));
+    assert_eq!(
+        transcripts
+            .page(Some(&path), Tail::default(), &Window::Latest(40))
+            .unwrap(),
+        original,
+        "live overlays must not alter the cached page"
+    );
+
+    let result = json!({
+        "role": "toolResult", "toolName": "codemode", "toolCallId": "c1", "timestamp": 3,
+        "isError": true, "content": [{"type": "text", "text": "Script failed"}],
+        "nestedCalls": {"calls": [
+            {"id": "c1/1", "name": "bash", "arguments": {"command": "cargo test"}, "status": "ok", "durationMs": 10},
+            {"id": "c1/2", "name": "mcp__check", "arguments": {"query": "diagnostics"}, "status": "error", "error": "permission denied"},
+            {"id": "c1/3", "name": "read", "arguments": {"path": "src/lib.rs"}, "status": "unfinished"}
+        ]},
+        "details": {"calls": [
+            {"id": "c1/1", "name": "bash", "args": "{truncated", "status": "ok"},
+            {"id": "c1/2", "name": "mcp__check", "args": "{}", "status": "error"},
+            {"id": "c1/model1", "name": "models.classify", "args": "{truncated", "status": "ok", "durationMs": 20},
+            {"id": "c1/3", "name": "read", "args": "{}", "status": "cancelled"}
+        ]}
+    });
+    live.apply(&Event::MessageEnd {
+        message: result.clone(),
+    });
+    assert!(live.calls().is_empty(), "the result replaces live metadata");
+    append(&path, &[message("r1", Some("a1"), result)]);
+    let saved = transcripts
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
+    let Part::Tool { calls, state, .. } = &saved.messages[1].parts[0] else {
+        panic!("expected a tool")
+    };
+    assert_eq!(*state, ToolState::Failed);
+    assert_eq!(
+        calls.iter().map(|call| call.state).collect::<Vec<_>>(),
+        [
+            ToolState::Done,
+            ToolState::Failed,
+            ToolState::Done,
+            ToolState::Cancelled
+        ]
+    );
+    assert_eq!(
+        calls[0].subject.as_deref(),
+        Some("cargo test"),
+        "prefer recorded arguments over truncated display JSON"
+    );
+    assert_eq!(calls[1].error.as_deref(), Some("permission denied"));
+    assert_eq!(calls[3].subject.as_deref(), Some("src/lib.rs"));
+    assert_eq!(
+        calls[2].name, "models.classify",
+        "preserve helper launch order"
+    );
+    assert_eq!(calls[2].subject.as_deref(), Some("{truncated"));
+    let reopened = Transcripts::default()
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
+    assert_eq!(saved, reopened);
 }
 
 #[test]
@@ -88,7 +324,7 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
             message(
                 "r1",
                 Some("a1"),
-                json!({"role": "toolResult", "toolCallId": "c1", "toolName": "bash", "isError": true, "content": [{"type": "text", "text": "1 failed"}], "timestamp": 4}),
+                json!({"role": "toolResult", "toolCallId": "c1", "toolName": "bash", "isError": true, "details": [{"calls": "not nested metadata"}], "content": [{"type": "text", "text": "1 failed"}], "timestamp": 4}),
             ),
             message(
                 "r2",
@@ -306,6 +542,7 @@ fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
     let tail = Tail {
         messages: &messages,
         streaming: Some(&streaming),
+        ..Tail::default()
     };
 
     let mut transcripts = Transcripts::default();

@@ -1,6 +1,6 @@
-//! Unsent messages above the composer, each with edit and delete controls.
+//! Waiting messages above the composer, with edit, delete and steer controls.
 
-use rune::{El, Tx, auto_grow, col, row, text, text_input};
+use rune::{El, col, row, text};
 use rune_kit::{Button, ButtonVariant, IconButton, IconButtonVariant, Kit};
 
 use super::icons;
@@ -9,7 +9,7 @@ use crate::app::{ChatPage, State};
 /// Show waiting prompts without putting them in the transcript before they are sent.
 pub fn view(page: &ChatPage, k: &Kit) -> Option<El> {
     let chat = page.existing()?;
-    if chat.queued.is_empty() && page.queue_edit.is_none() {
+    if chat.queued.is_empty() {
         return None;
     }
     let mut header = row()
@@ -34,6 +34,7 @@ pub fn view(page: &ChatPage, k: &Kit) -> Option<El> {
     for message in &chat.queued {
         let edit_id = message.id.clone();
         let delete_id = edit_id.clone();
+        let steer_id = edit_id.clone();
         let mut entry = col()
             .w_full()
             .gap(3.0)
@@ -63,7 +64,7 @@ pub fn view(page: &ChatPage, k: &Kit) -> Option<El> {
                     IconButton::new(&icons::EDIT)
                         .variant(IconButtonVariant::GhostMuted)
                         .label("Edit queued message")
-                        .on_press(move |s: &mut State| s.edit_queued(&edit_id))
+                        .on_press_tx(move |s: &mut State, tx| s.edit_queued(&edit_id, tx))
                         .build(k),
                 )
                 .child(
@@ -71,6 +72,14 @@ pub fn view(page: &ChatPage, k: &Kit) -> Option<El> {
                         .variant(IconButtonVariant::GhostMuted)
                         .label("Delete queued message")
                         .on_press(move |s: &mut State| s.delete_queued(&delete_id))
+                        .build(k),
+                )
+                .child(
+                    IconButton::new(&icons::SEND)
+                        .variant(IconButtonVariant::GhostMuted)
+                        .label("Steer queued message")
+                        .help("Send now to the agent")
+                        .on_press(move |s: &mut State| s.steer_queued(&steer_id))
                         .build(k),
                 ),
         );
@@ -83,41 +92,6 @@ pub fn view(page: &ChatPage, k: &Kit) -> Option<El> {
             );
         }
         body = body.child(entry.key(format!("queue-{}", message.id)));
-    }
-    if let Some(edit) = &page.queue_edit {
-        let field = text_input(&edit.field, k.ty.ui)
-            .key("queue-editor")
-            .label("Edit queued message")
-            .color(k.c.text_base)
-            .caret(k.c.text_base, k.selection())
-            .spellcheck(true)
-            .on_edit(State::queued_field)
-            .on_submit(State::save_queued);
-        body = body.child(
-            col().w_full().gap(6.0).child(auto_grow(field, 1, 4)).child(
-                row()
-                    .w_full()
-                    .justify_end()
-                    .gap(6.0)
-                    .child(
-                        Button::new("Cancel")
-                            .variant(ButtonVariant::Ghost)
-                            .disabled(edit.saving)
-                            .on_press(|s: &mut State| {
-                                if let Some(page) = s.chat_mut() {
-                                    page.queue_edit = None;
-                                }
-                            })
-                            .build(k),
-                    )
-                    .child(
-                        Button::new("Save")
-                            .disabled(edit.saving)
-                            .on_press_tx(|s: &mut State, tx: &mut Tx| s.save_queued(tx))
-                            .build(k),
-                    ),
-            ),
-        );
     }
     Some(
         body.key("waiting-messages")

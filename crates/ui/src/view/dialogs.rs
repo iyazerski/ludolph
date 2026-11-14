@@ -1,4 +1,4 @@
-//! The dialogs a chat's menus open: its new title, and whether to delete it.
+//! Dialogs for renaming and deleting chats.
 
 use rune::{El, Tx, row, text};
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, TextInput};

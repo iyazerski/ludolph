@@ -104,6 +104,7 @@ pub enum Event {
         tool_call_id: String,
         tool_name: String,
         args: Value,
+        parent_tool_call_id: Option<String>,
     },
     ToolExecutionUpdate {
         tool_call_id: String,
@@ -112,6 +113,10 @@ pub enum Event {
     ToolExecutionEnd {
         tool_call_id: String,
         is_error: bool,
+        parent_tool_call_id: Option<String>,
+        duration_ms: Option<f64>,
+        #[serde(default)]
+        result: Value,
     },
     /// The whole steering and follow-up queue.
     QueueUpdate {

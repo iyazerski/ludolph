@@ -33,7 +33,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     col()
         .w_full()
         .h_full()
-        .child(header(page, k, layer))
+        .child(header(s, page, k, layer))
         .child(body(s, page, k, layer))
 }
 
@@ -50,6 +50,30 @@ pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
 
 /// The transcript, or a new chat's greeting, over the composer.
 fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
+    let chat = chat_body(s, page, k, layer);
+    let Some(existing) = page.existing().filter(|_| s.prefs.borrow().show_details) else {
+        return chat;
+    };
+    let card = super::details::card(existing, k);
+    if s.window == Window::Main {
+        row()
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .child(chat.min_w(0.0))
+            .child(col().w(280.0).shrink().pt(12.0).pr(12.0).child(card))
+    } else {
+        col()
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .child(col().w_full().px(14.0).pt(10.0).child(card))
+            .child(chat)
+    }
+}
+
+/// Keep the transcript and composer together when the details card is shown.
+fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let wide = s.window == Window::Main;
     let mut body = col().key("transcript").w_full().px(14.0).py(10.0).gap(14.0);
     if wide {
@@ -153,7 +177,7 @@ pub fn titles(page: &ChatPage) -> (String, String) {
     }
 }
 
-fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
+fn header(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let (title, sub) = titles(page);
     let back = IconButton::new(&icons::BACK)
         .variant(IconButtonVariant::Ghost)
@@ -187,13 +211,14 @@ fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
                     .on_press(move |s: &mut State| s.open_in_peer(id.clone()))
                     .build(k),
             )
+            .child(super::details::toggle(s, k))
             .child(more_menu(page, k, layer));
     }
     bar = bar.child(hide_button(k));
     bar
 }
 
-/// The chat's menu: stop the agent, rename, delete.
+/// The chat's menu: agent controls and session actions.
 pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let trigger = IconButton::new(&icons::MORE)
         .variant(IconButtonVariant::Ghost)
@@ -227,7 +252,16 @@ pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         return menu.build(k, layer);
     };
     let (rename, delete) = (chat.id.clone(), chat.id.clone());
+    let copy = chat.id.clone();
     menu.item(
+        MenuItem::new("Copy Chat ID")
+            .icon(&icons::COPY)
+            .on_select_tx(move |s: &mut State, tx| {
+                close_menu(s);
+                tx.copy(&copy);
+            }),
+    )
+    .item(
         MenuItem::new("Rename…")
             .icon(&icons::EDIT)
             .on_select(move |s: &mut State| {
@@ -307,9 +341,6 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
         );
     }
     let last = shown.last().map(|m| m.id.as_str());
-    // The latest run's button waits until it's over and nothing is asked.
-    let settled = !working && page.question.is_none();
-    let changes = page.before_changes.iter().chain(&page.turn_changes);
     // When the turn of the reply next shown began: its prompt's time.
     let mut started = None;
     for m in page.messages() {
@@ -333,11 +364,6 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
                 out.push(assistant(page, k, &style, m, started, streaming, expanded).key(key));
             }
             Role::System => out.push(system_note(k, m).key(key)),
-        }
-        if let Some(counts) = changes.clone().find(|t| t.after == m.id)
-            && (settled || Some(m.id.as_str()) != last)
-        {
-            out.push(super::changes::button(k, counts).key(format!("changes-{}", counts.turn)));
         }
     }
     for (i, p) in page.pending.iter().enumerate() {
@@ -519,11 +545,13 @@ fn pieces(parts: &[Part]) -> Vec<Piece<'_>> {
                 name,
                 subject,
                 state,
+                calls,
             } => Step::Tool(ToolCall {
                 id,
                 name,
                 subject: subject.as_deref().unwrap_or_default(),
                 state: *state,
+                calls,
             }),
             Part::Thinking { text } => Step::Thought(i, text),
             // The transcript shows a reply's images nowhere, so they don't split the work.
@@ -742,10 +770,9 @@ fn toggle_group(s: &mut State, key: &str, open: bool) {
     }
 }
 
-/// When the message started, and a button that copies its closing answer as
-/// Markdown, as the desktop shows under a finished reply.
+/// Show a finished reply's timestamp, copy action and saved turn diff.
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
-    let mut out = row().gap(8.0).center_y();
+    let mut out = row().w_full().gap(8.0).center_y();
     if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {
         out = out.child(
             text(
@@ -769,6 +796,16 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_answer(&id, tx))
                 .build(k),
         );
+    }
+    if let Some(counts) = page
+        .before_changes
+        .iter()
+        .chain(&page.turn_changes)
+        .find(|counts| counts.after == m.id)
+    {
+        out = out
+            .child(rune::spacer())
+            .child(super::changes::button(k, counts));
     }
     out
 }
@@ -829,7 +866,7 @@ fn tool_group(
     if open {
         let last = steps.len().saturating_sub(1);
         let rail = steps.iter().enumerate().map(|(n, step)| match step {
-            Step::Tool(tool) => tool_row(k, tool, n == last),
+            Step::Tool(tool) => tool_step(page, k, tool, n == last),
             Step::Thought(i, text) => {
                 let key = format!("{key}:{i}");
                 let open = is_open(page, &key, false);
@@ -839,6 +876,143 @@ fn tool_group(
         group = group.child(col().w_full().ml(RAIL_X).children(rail));
     }
     group
+}
+
+/// Nest actual calls under their wrapper, expanded independently of the outer work.
+fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
+    if tool.calls.is_empty() && tool.name != "codemode" {
+        return tool_row(k, tool, last);
+    }
+    let key = format!("{}#calls", tool.id);
+    let open = is_open(page, &key, true);
+    let tint = if tool.state == ToolState::Failed {
+        tones(k).failed
+    } else {
+        k.c.text_muted
+    };
+    let lead = if tool.state == ToolState::Running {
+        busy(12.0, k)
+    } else {
+        icon(icons::tool(tool.name), 14.0).color(tint)
+    };
+    let subject = row().center_y().gap(6.0).child(chevron(k, open)).child(
+        text(format!("{} calls", tool.calls.len()))
+            .font(rail_text(k))
+            .color(tint),
+    );
+    let title = if tool.name == "codemode" {
+        "Codemode"
+    } else {
+        tool.name
+    };
+    let head = k
+        .interactive(rail_row(k, last && !open, lead, title, tint, subject))
+        .on_press(move |s: &mut State| toggle_group(s, &key, open));
+    let mut out = col().w_full().child(head);
+    if open {
+        let mut children = col().w_full().pl(RAIL_TEXT_X).border_sides(
+            [0.0, 0.0, 0.0, if last { 0.0 } else { 1.0 }],
+            k.c.border_muted,
+        );
+        for call in tool.calls {
+            let mut line = row().w_full().center_y().child(
+                tool_row(k, &ToolCall::from(call), false)
+                    .min_w(0.0)
+                    .grow(1.0),
+            );
+            if let Some(ms) = call.duration_ms {
+                line = line.child(
+                    text(format!("{:.2}s", ms / 1000.0))
+                        .font(rail_text(k))
+                        .color(k.c.text_faint)
+                        .pr(8.0),
+                );
+            }
+            children = children.child(line);
+            let detail = call.error.clone().or_else(|| {
+                (call.state == ToolState::Cancelled).then(|| "Cancelled or unfinished".to_owned())
+            });
+            if let Some(detail) = detail {
+                children = children.child(
+                    text(detail)
+                        .font(rail_text(k))
+                        .color(if call.error.is_some() {
+                            tones(k).failed
+                        } else {
+                            k.c.text_faint
+                        })
+                        .wrap()
+                        .selectable(true)
+                        .pl(RAIL_TEXT_X)
+                        .border_sides([0.0, 0.0, 0.0, 1.0], k.c.border_muted),
+                );
+            }
+        }
+        let call = tool.id.to_owned();
+        let opened = page.tool_outputs.contains_key(tool.id);
+        let label = if tool.name == "codemode" {
+            "Script & combined output"
+        } else {
+            "Arguments & output"
+        };
+        let details = rail_row(k, true, chevron(k, opened), label, k.c.text_faint, el());
+        children = children.child(
+            k.interactive(details)
+                .on_press(move |s: &mut State| s.toggle_tool_output(&call)),
+        );
+        if let Some(output) = page.tool_outputs.get(tool.id) {
+            let body = match output {
+                None => busy(12.0, k),
+                Some(Err(error)) => text(error.clone())
+                    .font(rail_text(k))
+                    .color(tones(k).failed)
+                    .wrap(),
+                Some(Ok(output)) => {
+                    let args = output.args["code"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            serde_json::to_string_pretty(&output.args).unwrap_or_default()
+                        });
+                    let mut body = col()
+                        .w_full()
+                        .gap(8.0)
+                        .child(
+                            text(args)
+                                .font(rail_text(k))
+                                .color(k.c.text_faint)
+                                .wrap()
+                                .selectable(true),
+                        )
+                        .child(
+                            text(output.text.clone())
+                                .font(rail_text(k))
+                                .color(k.c.text_muted)
+                                .wrap()
+                                .selectable(true),
+                        );
+                    if output.truncated {
+                        body = body.child(
+                            text("Output truncated")
+                                .font(rail_text(k))
+                                .color(k.c.text_faint),
+                        );
+                    }
+                    if tool.state == ToolState::Running {
+                        body = body.child(
+                            text("Live snapshot. Close and reopen to refresh.")
+                                .font(rail_text(k))
+                                .color(k.c.text_faint),
+                        );
+                    }
+                    body
+                }
+            };
+            children = children.child(col().w_full().pl(RAIL_TEXT_X).pb(8.0).child(body));
+        }
+        out = out.child(children);
+    }
+    out
 }
 
 /// Where the rail's trunk runs, from the group's left edge.
@@ -860,7 +1034,9 @@ fn tool_row(k: &Kit, tool: &ToolCall, last: bool) -> El {
     };
     let lead = match tool.state {
         ToolState::Running => busy(12.0, k),
-        _ => icon(icons::tool(tool.name), 14.0).color(tint),
+        ToolState::Done => icon(icons::tool(tool.name), 14.0).color(tones(k).done),
+        ToolState::Cancelled => icon(&icons::STOP, 14.0).color(k.c.text_faint),
+        ToolState::Failed => icon(icons::tool(tool.name), 14.0).color(tint),
     };
     let subject = if tool.on_file() {
         file_badge(k, tool.subject, failed)

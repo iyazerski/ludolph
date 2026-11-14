@@ -10,7 +10,7 @@ use rune_kit::diff::{self, DiffState};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::page::{Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
+use super::page::{ChangeTarget, Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
 use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
 use crate::data::{
     ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Polished, Role, Skills,
@@ -126,9 +126,14 @@ impl State {
         chat.file_links.borrow_mut().clear();
         // A run's every step grows the context, and its end may also have changed the
         // model or the branch.
-        let configured = chat.chat.as_ref().is_some_and(|before| {
-            before.model != frame.chat.model || before.reasoning != frame.chat.reasoning
-        });
+        let moved = chat
+            .chat
+            .as_ref()
+            .is_some_and(|before| before.cwd != frame.chat.cwd);
+        let configured = moved
+            || chat.chat.as_ref().is_some_and(|before| {
+                before.model != frame.chat.model || before.reasoning != frame.chat.reasoning
+            });
         let working = frame.chat.is_working();
         let settled = chat.chat.as_ref().is_some_and(|c| c.is_working()) && !working;
         let seen = self.prefs.borrow_mut().mark_seen(&frame.chat);
@@ -137,12 +142,19 @@ impl State {
         }
         if let Some(chat) = self.existing_at(nav) {
             let due = configured || settled || (working && chat.info_due());
+            if configured || settled || frame.reset {
+                chat.details_at = None;
+            }
             chat.chat = Some(frame.chat);
             self.load_thumbs();
             if due {
                 self.load_info();
             }
         }
+        if moved {
+            self.reload_skills();
+        }
+        self.load_details();
         self.sync_tick();
     }
 
@@ -164,19 +176,32 @@ impl State {
 
     /// Open the diff of the chat's run `turn` in place of its transcript.
     pub fn open_changes(&mut self, turn: &str) {
+        self.load_changes(ChangeTarget::Turn(turn.to_owned()));
+    }
+
+    /// Show the current uncommitted diff, independent of any agent turn.
+    pub fn open_working_changes(&mut self) {
+        self.load_changes(ChangeTarget::WorkingTree);
+    }
+
+    fn load_changes(&mut self, target: ChangeTarget) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
         let Some(chat) = page.existing_mut() else {
             return;
         };
         chat.changes = Some(Changes::Loading);
-        turn.clone_into(&mut chat.changes_of);
-        let args = json!({ "chat": chat.id, "turn": turn });
-        self.api.call(
-            "turn_changes",
-            args,
-            move |s, result: Result<Diff, String>, _| {
-                let Some(chat) = s.existing_at(nav).filter(|c| c.changes.is_some()) else {
+        chat.changes_of = target.clone();
+        let (method, args) = match &target {
+            ChangeTarget::Turn(turn) => ("turn_changes", json!({"chat": chat.id, "turn": turn})),
+            ChangeTarget::WorkingTree => ("working_changes", json!({"chat": chat.id})),
+        };
+        self.api
+            .call(method, args, move |s, result: Result<Diff, String>, _| {
+                let Some(chat) = s
+                    .existing_at(nav)
+                    .filter(|c| c.changes.is_some() && c.changes_of == target)
+                else {
                     return;
                 };
                 chat.changes = Some(match result {
@@ -191,8 +216,7 @@ impl State {
                     }
                     Err(e) => Changes::Failed(e),
                 });
-            },
-        );
+            });
     }
 
     /// Load the messages before the first one shown. They stay until the
@@ -235,6 +259,32 @@ impl State {
                 // reader was at the top to press the button: keep their place instead.
                 tx.keep_on_screen(format!("m-{first}"));
                 s.load_thumbs();
+            },
+        );
+    }
+
+    /// Open a script's details on demand, or drop its output when closing it.
+    pub fn toggle_tool_output(&mut self, call: &str) {
+        let Some(page) = self.chat_mut() else { return };
+        let nav = page.nav;
+        let Some(chat) = page.existing_mut() else {
+            return;
+        };
+        if chat.tool_outputs.remove(call).is_some() {
+            return;
+        }
+        chat.tool_outputs.insert(call.to_owned(), None);
+        let id = chat.id.clone();
+        let call = call.to_owned();
+        self.api.call(
+            "tool_output",
+            json!({"chat": id, "call": call}),
+            move |s, result: Result<crate::data::ToolOutput, String>, _| {
+                if let Some(chat) = s.existing_at(nav)
+                    && let Some(output) = chat.tool_outputs.get_mut(&call)
+                {
+                    *output = Some(result);
+                }
             },
         );
     }
@@ -298,6 +348,10 @@ impl State {
     /// Send the composer's text and images: to the chat, or as a new chat's
     /// first message.
     pub fn send(&mut self, tx: &mut Tx) {
+        if self.chat().is_some_and(|page| page.queue_edit.is_some()) {
+            self.save_queued(tx);
+            return;
+        }
         let Some(page) = self.chat_mut() else { return };
         let typed = page.composer.text.trim().to_owned();
         let creating = page.draft().is_some_and(|d| d.creating);

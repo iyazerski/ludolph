@@ -157,6 +157,7 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
                         name: "bash".into(),
                         subject: Some("ls".into()),
                         state: ToolState::Done,
+                        calls: Vec::new(),
                     },
                     text("Done.")
                 ]
@@ -238,6 +239,15 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     // as another pi's.
     let refused = engine.send("s1", "mine", Vec::new()).await.unwrap_err();
     assert!(refused.to_string().contains("another pi"), "{refused:#}");
+    let refused = tool(
+        &engine,
+        "move_chat",
+        json!({"chat": "s1", "project": dir.path()}),
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.to_string().contains("another pi"), "{refused:#}");
+    assert!(path.exists());
     engine.take_over("s1").await.unwrap();
     engine.send("s1", "mine", Vec::new()).await.unwrap();
     until(&engine, |c| {
@@ -330,6 +340,15 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
     let id = engine.create(dir.path()).await.unwrap();
     engine.send(&id, "ask", Vec::new()).await.unwrap();
     until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    assert!(
+        tool(
+            &engine,
+            "move_chat",
+            json!({"chat": id, "project": dir.path()}),
+        )
+        .await
+        .is_err()
+    );
     let image = ludolph_engine::transcript::Image {
         mime_type: "image/png".into(),
         data: "aGk=".into(),
@@ -343,6 +362,45 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
         .await
         .unwrap()["delivery"],
         "queued"
+    );
+    engine
+        .send(&id, "steer this now", Vec::new())
+        .await
+        .unwrap();
+    let view = engine.view(&id, Window::Latest(40)).await.unwrap();
+    let steering = view
+        .queued
+        .iter()
+        .find(|message| message.text == "steer this now")
+        .unwrap();
+    let steer_id = steering.id.clone();
+    tool(
+        &engine,
+        "steer_queued_message",
+        json!({"chat": id, "id": steer_id}),
+    )
+    .await
+    .unwrap();
+    let steered = view_until(&engine, &id, |view| {
+        view.run
+            .as_ref()
+            .is_some_and(|run| run.steering == ["steer this now"])
+    })
+    .await;
+    assert_eq!(steered.queued.len(), 1);
+    assert_eq!(steered.queued[0].text, "first");
+    assert!(
+        tool(
+            &engine,
+            "steer_queued_message",
+            json!({"chat": id, "id": steer_id})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        tool(&engine, "get_settings", json!({})).await.unwrap()["sendBehavior"],
+        "queue"
     );
     engine.send(&id, "remove this", Vec::new()).await.unwrap();
     engine.send(&id, "last", Vec::new()).await.unwrap();
@@ -422,7 +480,7 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(prompts, ["ask", "revised", "last"]);
+    assert_eq!(prompts, ["ask", "steer this now", "revised", "last"]);
     let revised = view
         .page
         .messages
@@ -597,9 +655,31 @@ async fn chats_list_by_project_until_deleted() {
     let more = json!({"limit": 2, "more": [{"project": "/work/app", "limit": 12}]});
     assert_eq!(groups(&engine, more).await[1].2, ["c", "b", "a"]);
 
+    let destination = dir.path().join("another-project");
+    let real = dir.path().join("project-folder");
+    std::fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &destination).unwrap();
+    tool(
+        &engine,
+        "move_chat",
+        json!({"chat": "b", "project": destination}),
+    )
+    .await
+    .unwrap();
+    assert!(!folder.join("b.jsonl").exists() && !copy.join("b.jsonl").exists());
+    let index =
+        ludolph_engine::index::Index::load(&engine.config().state_dir.join("index.json")).unwrap();
+    let moved = index.find("b").unwrap().0.to_owned();
+    assert!(moved.exists());
+    let moved_groups = groups(&engine, json!({})).await;
+    assert_eq!(moved_groups.len(), 3);
+    assert!(moved_groups.iter().any(|(project, total, chats)| {
+        *project == json!(destination) && *total == 1 && chats == &["b"]
+    }));
     tool(&engine, "delete_chat", json!({"chat": "b"}))
         .await
         .unwrap();
+    assert!(!moved.exists());
     assert_eq!(listed(&engine, json!({})).await, ["d", "c", "a"]);
     assert_eq!(groups(&engine, json!({})).await[1].1, 2);
     assert!(!folder.join("b.jsonl").exists() && !copy.join("b.jsonl").exists());
@@ -609,6 +689,103 @@ async fn chats_list_by_project_until_deleted() {
             .is_err()
     );
     engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_a_chat_preserves_its_session_and_resumes_in_the_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("old");
+    let destination = dir.path().join("new project");
+    std::fs::create_dir(&original).unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let id = engine.create(&original).await.unwrap();
+    engine.send(&id, "hi", Vec::new()).await.unwrap();
+    until(&engine, |c| {
+        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("hi")
+    })
+    .await;
+    tool(
+        &engine,
+        "rename_chat",
+        json!({"chat": id, "title": "Keep this title"}),
+    )
+    .await
+    .unwrap();
+    let source = dir.path().join(format!("sessions/--fake--/{id}.jsonl"));
+    let before = std::fs::read_to_string(&source).unwrap();
+    let page = engine.view(&id, Window::Latest(40)).await.unwrap().page;
+    let mut changed = engine.subscribe_chat(&id).unwrap();
+
+    assert!(
+        tool(
+            &engine,
+            "move_chat",
+            json!({"chat": id, "project": dir.path().join("missing")})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), before);
+
+    tool(
+        &engine,
+        "move_chat",
+        json!({"chat": id, "project": destination}),
+    )
+    .await
+    .unwrap();
+    changed.changed().await.unwrap();
+    let listed = tool(&engine, "list_chats", json!({})).await.unwrap();
+    let cwd = destination.clone();
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["chats"][0]["id"], id);
+    assert_eq!(listed["chats"][0]["cwd"], json!(cwd));
+    assert_eq!(listed["chats"][0]["title"], "Keep this title");
+    assert!(!source.exists());
+
+    let index =
+        ludolph_engine::index::Index::load(&engine.config().state_dir.join("index.json")).unwrap();
+    let (moved, _) = index.find(&id).unwrap();
+    let moved = moved.to_owned();
+    let contents = std::fs::read_to_string(&moved).unwrap();
+    let (header, history) = contents.split_once('\n').unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(header).unwrap()["cwd"],
+        json!(cwd)
+    );
+    assert_eq!(history, before.split_once('\n').unwrap().1);
+    assert_eq!(
+        engine.view(&id, Window::Latest(40)).await.unwrap().page,
+        page
+    );
+    all_exited(dir.path()).await;
+
+    tool(
+        &engine,
+        "move_chat",
+        json!({"chat": id, "project": destination}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&moved).unwrap(), contents);
+    engine.shutdown().await.unwrap();
+
+    let restarted = self::engine(dir.path(), Duration::from_secs(60)).await;
+    assert_eq!(restarted.chats()[0].cwd, cwd);
+    restarted.send(&id, "edit", Vec::new()).await.unwrap();
+    until(&restarted, |c| {
+        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("edit")
+    })
+    .await;
+    assert!(destination.join("new.txt").exists());
+    assert!(!original.join("new.txt").exists());
+    assert!(
+        std::fs::read_to_string(&moved)
+            .unwrap()
+            .starts_with(&contents)
+    );
+    restarted.shutdown().await.unwrap();
 }
 
 /// Run git in `repo`, and return what it printed.
@@ -656,6 +833,66 @@ fn state_runs(engine: &Engine) -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn working_changes_handle_new_repositories_and_non_git_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let id = engine.create(&repo).await.unwrap();
+    let status = git(&repo, &["status", "--porcelain"]);
+    let objects = git(&repo, &["count-objects"]);
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        details["changes"],
+        json!({"files": 1, "additions": 1, "deletions": 0})
+    );
+    assert_eq!(details["changesError"], Value::Null);
+    let diff = tool(&engine, "working_changes", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert!(diff["patch"].as_str().unwrap().contains("+new"));
+    assert_eq!(git(&repo, &["status", "--porcelain"]), status);
+    assert_eq!(git(&repo, &["count-objects"]), objects);
+    assert_eq!(std::fs::read_dir(state_runs(&engine)).unwrap().count(), 0);
+    std::fs::File::create(repo.join("large.bin"))
+        .unwrap()
+        .set_len(10 * 1024 * 1024 + 1)
+        .unwrap();
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(details["changes"], Value::Null);
+    assert!(
+        details["changesError"]
+            .as_str()
+            .unwrap()
+            .contains("over 10 MB")
+    );
+    assert_eq!(details["spent"], json!({"tokens": 0, "cost": 0.0}));
+    let other = dir.path().join("not-git");
+    std::fs::create_dir(&other).unwrap();
+    let id = engine.create(&other).await.unwrap();
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(details["changes"], Value::Null);
+    assert_eq!(details["changesError"], Value::Null);
+    assert_eq!(details["spent"], json!({"tokens": 0, "cost": 0.0}));
+    assert!(
+        tool(&engine, "working_changes", json!({"chat": id}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not in a git")
+    );
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
@@ -683,6 +920,20 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         (&json!(2), &json!(2), &json!(0))
     );
     assert_eq!(run["after"], messages.last().unwrap()["id"]);
+    append(
+        &dir.path().join(format!("sessions/--fake--/{id}.jsonl")),
+        &json!({
+            "type": "compaction", "id": "footer-compaction", "parentId": run["after"],
+            "timestamp": chrono::Utc::now().to_rfc3339(), "summary": "Earlier work",
+            "firstKeptEntryId": messages[0]["id"], "tokensBefore": 1000
+        }),
+    );
+    let (noted, with_note) = turn_changes(&engine, &id, 1).await;
+    assert_eq!(with_note.last().unwrap()["role"], "system");
+    assert_eq!(
+        noted[0]["after"], run["after"],
+        "a trailing compaction does not take the reply's diff"
+    );
 
     let diff = tool(
         &engine,
@@ -701,12 +952,58 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         "{patch}"
     );
 
+    // The previous diff stays on its reply while the next run is still working.
+    let mut feed = ludolph_engine::feed::Feed::new(engine.clone(), id.clone(), true);
+    let first = feed.frame().await.unwrap();
+    assert_eq!(first["turnChanges"][0]["after"], run["after"]);
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    view_until(&engine, &id, |view| {
+        view.chat.status == Status::AwaitingInput
+    })
+    .await;
+    let running = tool(&engine, "chat_view", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(running["read"]["turnChanges"][0]["after"], run["after"]);
+    let frame = feed.frame().await.unwrap();
+    assert_eq!(frame["turnChanges"][0]["after"], run["after"]);
+
     // A run that changes nothing gets no button, and ends the one before.
-    engine.send(&id, "hi", Vec::new()).await.unwrap();
+    tool(
+        &engine,
+        "respond_to_input",
+        json!({"chat": id, "id": "d1", "value": "red"}),
+    )
+    .await
+    .unwrap();
     let (changes, messages) = turn_changes(&engine, &id, 2).await;
     let second = messages.iter().rposition(|m| m["role"] == "user").unwrap();
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0]["after"], messages[second - 1]["id"]);
+    let reply = messages[..second]
+        .iter()
+        .rfind(|message| message["role"] == "assistant")
+        .unwrap();
+    assert_eq!(changes[0]["after"], reply["id"]);
+
+    // The working-tree diff includes your staged edit, not just agent changes.
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        details["changes"],
+        json!({"files": 3, "additions": 3, "deletions": 1})
+    );
+    assert_eq!(details["compactions"], 1);
+    assert_eq!(details["pullRequests"], json!([]));
+    let working = tool(&engine, "working_changes", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        working["files"],
+        json!([{"path":"a.txt"}, {"path":"b.txt"}, {"path":"new.txt"}])
+    );
+    assert!(working["patch"].as_str().unwrap().contains("+two"));
+    assert!(!working["patch"].as_str().unwrap().contains("secret"));
 
     assert_eq!(status, "M  b.txt\n");
     let status = git(&repo, &["status", "--porcelain"]);
@@ -760,12 +1057,12 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let asked = std::fs::read_to_string(dir.path().join("pi.log-titles")).unwrap();
     assert_eq!(asked, "fix the build\nrename the old\n");
 
-    // Dictation goes through the same sidecar model, with thinking off.
+    // Dictation uses the same sidecar model and reasoning level as titles.
     let heard = json!({"text": " uh fix the um build "});
     let polished = tool(&engine, "polish_dictation", heard.clone())
         .await
         .unwrap();
-    assert_eq!(polished, json!({"text": "Fix the build. (default, off)"}));
+    assert_eq!(polished, json!({"text": "Fix the build. (default, low)"}));
     let blank = tool(&engine, "polish_dictation", json!({"text": " "})).await;
     assert!(blank.is_err());
 
@@ -782,7 +1079,7 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
     assert_eq!(
         polished,
-        json!({"text": "Fix the build. (fake/quick, off)"})
+        json!({"text": "Fix the build. (fake/quick, low)"})
     );
     assert_eq!(
         tool(&engine, "get_settings", json!({})).await.unwrap(),
@@ -838,6 +1135,13 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     // start one.
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
     assert_eq!(composer(&engine).await.unwrap(), info, "as its file says");
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        details["spent"], info["spent"],
+        "details use the same session-wide totals"
+    );
     all_exited(dir.path()).await;
 
     let models = tool(&engine, "list_models", json!({})).await.unwrap();

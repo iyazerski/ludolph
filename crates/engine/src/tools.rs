@@ -43,14 +43,18 @@ pub enum Tool {
     SendMessage,
     EditQueuedMessage,
     DeleteQueuedMessage,
+    SteerQueuedMessage,
     ResumeQueue,
     CreateChat,
     InterruptChat,
     TakeOverChat,
     RespondToInput,
     RenameChat,
+    MoveChat,
     DeleteChat,
     TurnChanges,
+    ChatDetails,
+    WorkingChanges,
     ListModels,
     SetChatModel,
     ComposerInfo,
@@ -95,14 +99,18 @@ impl FromStr for Tool {
             "send_message" => Self::SendMessage,
             "edit_queued_message" => Self::EditQueuedMessage,
             "delete_queued_message" => Self::DeleteQueuedMessage,
+            "steer_queued_message" => Self::SteerQueuedMessage,
             "resume_queue" => Self::ResumeQueue,
             "create_chat" => Self::CreateChat,
             "interrupt_chat" => Self::InterruptChat,
             "take_over_chat" => Self::TakeOverChat,
             "respond_to_input" => Self::RespondToInput,
             "rename_chat" => Self::RenameChat,
+            "move_chat" => Self::MoveChat,
             "delete_chat" => Self::DeleteChat,
             "turn_changes" => Self::TurnChanges,
+            "chat_details" => Self::ChatDetails,
+            "working_changes" => Self::WorkingChanges,
             "list_models" => Self::ListModels,
             "set_chat_model" => Self::SetChatModel,
             "composer_info" => Self::ComposerInfo,
@@ -158,6 +166,11 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
             engine.delete_queued(&args.chat, &args.id).await?;
             Ok(json!({}))
         }
+        Tool::SteerQueuedMessage => {
+            let args: QueueArgs = parse(args)?;
+            engine.steer_queued(&args.chat, &args.id).await?;
+            Ok(json!({}))
+        }
         Tool::ResumeQueue => {
             let args: ChatArgs = parse(args)?;
             engine.resume_queue(&args.chat).await?;
@@ -168,8 +181,38 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
         Tool::RespondToInput => respond_to_input(engine, parse(args)?).await,
         Tool::RenameChat => rename_chat(engine, parse(args)?).await,
+        Tool::MoveChat => move_chat(engine, parse(args)?).await,
         Tool::DeleteChat => delete_chat(engine, parse(args)?).await,
         Tool::TurnChanges => turn_changes(engine, parse(args)?).await,
+        Tool::ChatDetails => {
+            let args: ChatArgs = parse(args)?;
+            let (session, changes) = tokio::join!(
+                engine.details(&args.chat),
+                engine.working_changes(&args.chat)
+            );
+            let (details, spent) = session?;
+            let (changes, error) = match changes {
+                Ok(Some(diff)) => (
+                    Some(
+                        json!({"files": diff.files.len(), "additions": diff.additions, "deletions": diff.deletions}),
+                    ),
+                    None,
+                ),
+                Ok(None) => (None, None),
+                Err(error) => (None, Some(format!("{error:#}"))),
+            };
+            Ok(
+                json!({"compactions": details.compactions, "pullRequests": details.pull_requests, "spent": spent, "changes": changes, "changesError": error}),
+            )
+        }
+        Tool::WorkingChanges => {
+            let args: ChatArgs = parse(args)?;
+            let diff = engine
+                .working_changes(&args.chat)
+                .await?
+                .context("the chat is not in a git repository")?;
+            Ok(serde_json::to_value(diff)?)
+        }
         Tool::ListModels => list_models(engine).await,
         Tool::SetChatModel => set_chat_model(engine, parse(args)?).await,
         Tool::ComposerInfo => composer_info(engine, parse(args)?).await,
@@ -365,7 +408,7 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
         None
     } else {
         let runs = match engine.run_counts(&args.chat).await {
-            Ok(runs) => turn_changes_of(&view.page.messages, &runs),
+            Ok(runs) => turn_changes_of(&view.page.messages, &runs, view.latest_turn),
             // The chat still shows; it only loses its changes buttons.
             Err(e) => {
                 eprintln!("reading chat {}'s run changes: {e:#}", args.chat);
@@ -392,11 +435,18 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
 
 /// The saved runs among `messages` that changed files, as
 /// `{turn, after, files, additions, deletions}`. `turn` names the run for
-/// `turn_changes`, and `after` is its last message, which the button
-/// follows. A run lasts until the next one starts, so steering messages
+/// `turn_changes`, and `after` is its last assistant reply, whose footer
+/// holds the button. A run lasts until the next one starts, so steering messages
 /// stay in it.
-pub(crate) fn turn_changes_of(messages: &[Message], runs: &BTreeMap<i64, Counts>) -> Vec<Value> {
-    let starts = |m: &Message| m.role == Role::User && runs.contains_key(&m.created_at);
+pub(crate) fn turn_changes_of(
+    messages: &[Message],
+    runs: &BTreeMap<i64, Counts>,
+    latest_turn: Option<i64>,
+) -> Vec<Value> {
+    let starts = |m: &Message| {
+        m.role == Role::User
+            && (runs.contains_key(&m.created_at) || latest_turn == Some(m.created_at))
+    };
     let mut out = Vec::new();
     for (i, message) in messages.iter().enumerate() {
         let Some(counts) = runs.get(&message.created_at).filter(|_| starts(message)) else {
@@ -409,9 +459,15 @@ pub(crate) fn turn_changes_of(messages: &[Message], runs: &BTreeMap<i64, Counts>
             .iter()
             .position(starts)
             .map_or(messages.len(), |n| i + 1 + n);
+        let Some(reply) = messages[i..end]
+            .iter()
+            .rfind(|message| message.role == Role::Assistant)
+        else {
+            continue;
+        };
         out.push(json!({
             "turn": message.created_at.to_string(),
-            "after": messages[end - 1].id,
+            "after": reply.id,
             "files": counts.files,
             "additions": counts.additions,
             "deletions": counts.deletions,
@@ -727,6 +783,19 @@ struct RenameArgs {
 async fn rename_chat(engine: &Engine, args: RenameArgs) -> Result<Value> {
     engine.rename(&args.chat, &args.title).await?;
     Ok(json!({"chatId": args.chat, "title": args.title.trim()}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveArgs {
+    chat: String,
+    project: PathBuf,
+}
+
+/// Move a chat's session to the destination project.
+async fn move_chat(engine: &Engine, args: MoveArgs) -> Result<Value> {
+    engine.move_chat(&args.chat, &args.project).await?;
+    Ok(json!({"chatId": args.chat}))
 }
 
 async fn delete_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {

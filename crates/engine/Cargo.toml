@@ -24,14 +24,14 @@ objc2-core-graphics.workspace = true
 objc2-core-services.workspace = true
 objc2-io-kit.workspace = true
 plist.workspace = true
+pulldown-cmark.workspace = true
 ring.workspace = true
 rustls.workspace = true
 security-framework.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+url.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
