@@ -7,7 +7,7 @@ use rune::{Cx, El, col, el, row, text};
 use rune_kit::shell::{SidebarToggle, SplitView, Toolbar};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
-use super::{chat, icons, settings, sidebar, toast};
+use super::{chat, dialogs, icons, settings, sidebar, toast};
 use crate::app::{ChatPage, Page, State};
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
@@ -25,6 +25,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         ),
         Page::List => (el(), Toolbar::new()),
     };
+    dialogs::chat_dialog(s, k, &mut layer);
     layer.extend(toast(s, k));
     let split = SplitView::new(pane)
         .sidebar(

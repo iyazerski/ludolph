@@ -46,7 +46,7 @@ pub enum Tool {
     TakeOverChat,
     RespondToInput,
     RenameChat,
-    ArchiveChat,
+    DeleteChat,
     TurnChanges,
     ListModels,
     SetChatModel,
@@ -95,7 +95,7 @@ impl FromStr for Tool {
             "take_over_chat" => Self::TakeOverChat,
             "respond_to_input" => Self::RespondToInput,
             "rename_chat" => Self::RenameChat,
-            "archive_chat" => Self::ArchiveChat,
+            "delete_chat" => Self::DeleteChat,
             "turn_changes" => Self::TurnChanges,
             "list_models" => Self::ListModels,
             "set_chat_model" => Self::SetChatModel,
@@ -141,7 +141,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
         Tool::RespondToInput => respond_to_input(engine, parse(args)?).await,
         Tool::RenameChat => rename_chat(engine, parse(args)?).await,
-        Tool::ArchiveChat => archive_chat(engine, parse(args)?),
+        Tool::DeleteChat => delete_chat(engine, parse(args)?).await,
         Tool::TurnChanges => turn_changes(engine, parse(args)?).await,
         Tool::ListModels => list_models(engine).await,
         Tool::SetChatModel => set_chat_model(engine, parse(args)?).await,
@@ -194,16 +194,11 @@ fn phone_link(engine: &Engine) -> Value {
 #[serde(deny_unknown_fields)]
 struct ListChatsArgs {
     limit: Option<usize>,
-    /// List the archived chats instead.
-    #[serde(default)]
-    archived: bool,
 }
 
-/// The chats that aren't archived, or only the archived ones, most recently
-/// active first.
+/// The chats, most recently active first.
 fn list_chats(engine: &Engine, args: ListChatsArgs) -> Result<Value> {
-    let mut chats = engine.chats();
-    chats.retain(|chat| chat.archived == args.archived);
+    let chats = engine.chats();
     let limit = args.limit.unwrap_or(DEFAULT_CHATS).clamp(1, MAX_CHATS);
     let summaries: Vec<Value> = chats
         .iter()
@@ -231,7 +226,7 @@ struct GroupLimit {
     limit: usize,
 }
 
-/// The chats that aren't archived, by project, with "No project" as one
+/// The chats by project, with "No project" as one
 /// group. Groups come most recently active first, each with its newest
 /// chats and its total, so a list can offer to show more.
 fn list_chat_groups(engine: &Engine, args: ListChatGroupsArgs) -> Result<Value> {
@@ -242,7 +237,7 @@ fn list_chat_groups(engine: &Engine, args: ListChatGroupsArgs) -> Result<Value> 
         .clamp(1, MAX_CHATS);
     let mut groups: Vec<(Option<PathBuf>, Vec<ChatInfo>)> = Vec::new();
     let mut positions: HashMap<Option<PathBuf>, usize> = HashMap::new();
-    for chat in engine.chats().into_iter().filter(|chat| !chat.archived) {
+    for chat in engine.chats() {
         let project = config.is_project(&chat.cwd).then(|| chat.cwd.clone());
         let at = *positions.entry(project.clone()).or_insert_with(|| {
             groups.push((project, Vec::new()));
@@ -693,19 +688,9 @@ async fn rename_chat(engine: &Engine, args: RenameArgs) -> Result<Value> {
     Ok(json!({"chatId": args.chat, "title": args.title.trim()}))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ArchiveArgs {
-    chat: String,
-    /// `false` unarchives.
-    archived: Option<bool>,
-}
-
-fn archive_chat(engine: &Engine, args: ArchiveArgs) -> Result<Value> {
-    let archived = args.archived.unwrap_or(true);
-    engine.archive(&args.chat, archived)?;
-    let title = find(engine, &args.chat)?.title;
-    Ok(json!({"chatId": args.chat, "title": title, "archived": archived}))
+async fn delete_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
+    engine.delete(&args.chat).await?;
+    Ok(json!({"chatId": args.chat}))
 }
 
 async fn take_over_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {
@@ -731,7 +716,6 @@ pub(crate) fn summary(chat: &ChatInfo, config: &Config) -> Value {
         "cwd": chat.cwd,
         "model": summary.and_then(|s| s.model.as_deref()),
         "reasoning": summary.and_then(|s| s.thinking.as_deref()),
-        "archived": chat.archived,
         "status": label(chat.status),
         "openElsewhere": chat.elsewhere,
         "lastMessageAt": summary.and_then(|s| s.last_activity),

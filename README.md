@@ -28,7 +28,7 @@ To build it from source instead, run `make install`. It builds Ludolph.app, puts
 
 ## Use
 
-- **Chats:** the main window lists your pi sessions by project, whichever tool started them, and you can start, follow and steer chats there. Chats you don't need any more are one click to archive, and archived chats stay searchable.
+- **Chats:** the main window lists your pi sessions by project, whichever tool started them, and you can start, follow and steer chats there. Right-click a chat to rename it, delete it, or open it in the other window.
 - **Quick window:** ⌃⌥Space shows a floating window over any app. You can record another shortcut in Settings (⌘,).
 - **Phone:** choose **Link a phone** in Settings and scan the QR code with your phone's camera. It opens the phone app, where you sign in with a passkey. You can link several phones, and one phone can follow several Macs. The phone app goes through a relay, by default the maintainer's at ludolph.iyazerski.dev, and what the phone and your Mac say is end-to-end encrypted, so the relay can't read it. You can host your own: see [crates/relay](crates/relay/README.md).
 - **In the background:** the app starts its engine, which keeps running when you quit the app, so agents and the phone carry on until you log out. Nothing starts at login unless you turn on **Open at login** in Settings. The engine logs to `~/Library/Logs/Ludolph/engine.log`.
@@ -41,7 +41,7 @@ Ideas and questions are welcome in [Discussions](https://github.com/iyazerski/lu
 - **Made for pi only.** It drives pi through pi's RPC mode, with no extra agent engine in between.
 - **Light on your Mac.** A native Rust app built on [Rune](https://github.com/anomalyco/rune), with no Electron and no web view. Idle agents don't keep a process running.
 - **pi's sessions are the history.** Ludolph reads pi's own session files and keeps only a small index beside them, so it never holds a second copy of your chats.
-- **Tidy by default.** It titles new chats with a small model as soon as you send the first message. Each project shows its newest chats, and archived chats stay searchable and can be resumed.
+- **Tidy by default.** It titles new chats with a small model as soon as you send the first message. Each project shows its five newest chats, and **Show more** lists the rest.
 - **Three ways to follow your agents.** A full window with chats grouped by project, a floating window on a global shortcut, and a phone web app with notifications.
 - **Your phone, privately.** The phone connects through a small relay, with passkey sign-in, and everything it says to your Mac is end-to-end encrypted. Your Mac dials out, so no VPN or open ports are needed, and you can host the relay yourself.
 

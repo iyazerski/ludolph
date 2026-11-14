@@ -372,7 +372,11 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
             .py(7.0)
             .radius(8.0),
     )
-    .on_press(move |s: &mut State| s.open_chat(id.clone()))
+    .on_press({
+        let id = id.clone();
+        move |s: &mut State| s.open_chat(id.clone())
+    })
+    .on_secondary_press(move |s: &mut State, at, tx| s.chat_menu(id.clone(), at, tx))
 }
 
 fn labelled(k: &Kit, lead: El, label: &str, color: rune::Color) -> El {

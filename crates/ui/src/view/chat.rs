@@ -178,7 +178,7 @@ fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     bar
 }
 
-/// The chat's menu: stop the agent, archive.
+/// The chat's menu: stop the agent, rename, delete.
 pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let trigger = IconButton::new(&icons::MORE)
         .variant(IconButtonVariant::Ghost)
@@ -208,13 +208,25 @@ pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
                 }),
         );
     }
+    let Some(chat) = page.existing() else {
+        return menu.build(k, layer);
+    };
+    let (rename, delete) = (chat.id.clone(), chat.id.clone());
     menu.item(
-        MenuItem::new("Archive")
-            .icon(&icons::ARCHIVE)
-            .danger(true)
-            .on_select(|s: &mut State| {
+        MenuItem::new("Rename…")
+            .icon(&icons::EDIT)
+            .on_select(move |s: &mut State| {
                 close_menu(s);
-                s.archive();
+                s.ask_rename(rename.clone());
+            }),
+    )
+    .item(
+        MenuItem::new("Delete…")
+            .icon(&icons::DELETE)
+            .danger(true)
+            .on_select(move |s: &mut State| {
+                close_menu(s);
+                s.ask_delete(delete.clone());
             }),
     )
     .build(k, layer)

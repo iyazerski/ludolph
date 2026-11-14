@@ -4,6 +4,7 @@
 
 mod actions;
 mod attach;
+mod chats;
 mod draft;
 mod page;
 mod settings;
@@ -25,6 +26,7 @@ use super::prefs::{Frame, Prefs, ProjectPick};
 
 pub use self::actions::Answer;
 pub use self::attach::Prep;
+pub use self::chats::ChatDialog;
 pub use self::draft::{Catalog, Config, Draft, Load, Pick};
 pub use self::page::{
     Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending, QuestionForm, Sheet,
@@ -68,6 +70,10 @@ pub struct State {
     pub sidebar: PaneState,
     pub list: ListState,
     pub toast: Option<Toast>,
+    /// The rename or delete dialog a chat's menu opened.
+    pub chat_dialog: Option<ChatDialog>,
+    /// Edits aimed at the rename field once its dialog is gone land here.
+    scratch_title: TextEdit,
     /// pi's models and their thinking levels, loaded once.
     pub catalog: Catalog,
     /// Decodes images off the UI thread; set once the app starts.
@@ -179,6 +185,8 @@ impl State {
             sidebar: PaneState::new(320.0).range(260.0, 480.0),
             list: ListState::default(),
             toast: None,
+            chat_dialog: None,
+            scratch_title: TextEdit::default(),
             catalog: Catalog::default(),
             images: None,
             drafts: HashMap::new(),

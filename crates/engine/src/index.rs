@@ -16,18 +16,13 @@ use crate::session::{Freshness, Summary};
 /// index is built again from the session files.
 const FORMAT: u32 = 4;
 
-/// Every session file pi has written, by path, and the chats you archived.
+/// Every session file pi has written, by path, and the chats whose run the
+/// engine cut short.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Index {
     sessions: BTreeMap<PathBuf, Summary>,
-    /// Archived chats by session id, with their last activity then. A chat
-    /// with newer activity is no longer archived. Unlike the summaries, this
-    /// can't be rebuilt from the files, so it's kept when their format
-    /// changes.
-    #[serde(default)]
-    archived: BTreeMap<String, DateTime<Utc>>,
     /// Chats whose run the engine cut short, by session id, with their last
-    /// activity then; newer activity ends it, as with `archived`. The file
+    /// activity then; newer activity ends it. The file
     /// can't tell: pi writes the same abort for a stop and a shutdown.
     #[serde(default)]
     interrupted: BTreeMap<String, DateTime<Utc>>,
@@ -40,7 +35,7 @@ pub struct Index {
 
 impl Index {
     /// Load the index saved at `path`, or an empty one if there's none or it's
-    /// in an older format.
+    /// in another format.
     ///
     /// # Errors
     ///
@@ -49,16 +44,11 @@ impl Index {
         let Some(saved) = ludolph_json_file::load::<serde_json::Value>(path)? else {
             return Ok(Self::default());
         };
-        let parsing = || format!("parsing {}", path.display());
         if saved["format"] != FORMAT {
-            let archived = saved.get("archived").cloned().unwrap_or_default();
-            let archived: Option<_> = serde_json::from_value(archived).with_context(parsing)?;
-            return Ok(Self {
-                archived: archived.unwrap_or_default(),
-                ..Self::default()
-            });
+            return Ok(Self::default());
         }
-        let mut index = Self::deserialize(saved).with_context(parsing)?;
+        let mut index =
+            Self::deserialize(saved).with_context(|| format!("parsing {}", path.display()))?;
         for (path, summary) in &index.sessions {
             let best = index.ids.get(&summary.id);
             if best.is_none_or(|best| rank(path, summary) > rank(best, &index.sessions[best])) {
@@ -169,19 +159,16 @@ impl Index {
     }
 
     /// Pick session `id`'s file again after one of its files changed, and
-    /// unarchive the chat if it has new activity or is gone.
+    /// end its interrupted mark if it has new activity or is gone.
     fn elect(&mut self, id: &str) {
         let files = self.sessions.iter().filter(|(_, s)| s.id == id);
         let best = files.max_by_key(|(path, summary)| rank(path, summary));
         let Some((path, summary)) = best else {
             self.ids.remove(id);
-            self.archived.remove(id);
             self.interrupted.remove(id);
             return;
         };
         let activity = summary.activity();
-        self.archived
-            .retain(|chat, at| chat != id || activity <= *at);
         self.interrupted
             .retain(|chat, at| chat != id || activity <= *at);
         self.ids.insert(id.to_owned(), path.clone());
@@ -210,24 +197,6 @@ impl Index {
         self.sessions
             .iter()
             .map(|(path, summary)| (path.as_path(), summary))
-    }
-
-    /// Whether you archived chat `id`, and it has had no activity since.
-    pub fn is_archived(&self, id: &str) -> bool {
-        self.archived.contains_key(id)
-    }
-
-    /// Archive or unarchive chat `id`, and return whether that changed
-    /// anything. A chat pi hasn't written yet can't be archived.
-    pub fn set_archived(&mut self, id: &str, archived: bool) -> bool {
-        if !archived {
-            return self.archived.remove(id).is_some();
-        }
-        let Some((_, summary)) = self.find(id) else {
-            return false;
-        };
-        let at = summary.activity();
-        self.archived.insert(id.to_owned(), at) != Some(at)
     }
 
     /// Whether the engine cut chat `id`'s run short, and it has had no

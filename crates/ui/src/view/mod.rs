@@ -7,6 +7,7 @@ mod changes;
 mod chat;
 mod code;
 mod composer;
+mod dialogs;
 mod icons;
 mod list;
 mod main_window;
@@ -38,6 +39,7 @@ fn quick(s: &State, cx: &mut Cx<State>) -> El {
         Page::List | Page::Settings(_) => list::view(s, k),
         Page::Chat(page) => chat::view(s, page, k, &mut layer),
     };
+    dialogs::chat_dialog(s, k, &mut layer);
     layer.extend(toast(s, k));
     let (tint, edge) = if k.dark {
         // macOS draws dark windows' rims itself; a light line on top reads as a seam.
@@ -87,6 +89,13 @@ fn toast(s: &State, k: &Kit) -> Option<El> {
 }
 
 pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
+    if s.chat_dialog.is_some() {
+        if key.key == Key::Escape {
+            s.close_chat_dialog();
+            return true;
+        }
+        return false;
+    }
     if let Some(page) = s.settings_page_mut() {
         // The recorder takes every key while it records, Escape included.
         if page.shortcut.is_recording() {

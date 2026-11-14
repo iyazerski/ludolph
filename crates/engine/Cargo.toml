@@ -1,6 +1,6 @@
 [package]
 name = "ludolph-engine"
-description = "Ludolph's engine: pi processes, the chat index, titles and archiving"
+description = "Ludolph's engine: pi processes, the chat index, titles and deleting chats"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

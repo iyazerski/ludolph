@@ -180,17 +180,12 @@ fn a_sessions_copies_are_one_chat_the_last_written() {
 }
 
 #[test]
-fn a_missing_or_older_index_starts_empty_but_keeps_its_marks() {
+fn a_missing_or_older_index_starts_empty() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("index.json");
     assert!(Index::load(&state).unwrap().is_empty());
     std::fs::write(&state, r#"{"format": 0, "rows": []}"#).unwrap();
     assert!(Index::load(&state).unwrap().is_empty());
-    let marked = r#"{"format": 0, "rows": [], "archived": {"s1": "2026-05-01T10:00:00Z"}}"#;
-    std::fs::write(&state, marked).unwrap();
-    let index = Index::load(&state).unwrap();
-    assert!(index.is_empty());
-    assert!(index.is_archived("s1"));
     let mut index = Index::default();
     assert!(
         index

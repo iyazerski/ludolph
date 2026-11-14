@@ -284,7 +284,6 @@ pub struct ChatInfo {
     pub status: Status,
     /// Another pi wrote to the session, so sending is off until a take-over.
     pub elsewhere: bool,
-    pub archived: bool,
 }
 
 /// A chat and the latest messages of its transcript.
@@ -881,24 +880,51 @@ impl Engine {
         Ok(())
     }
 
-    /// Archive or unarchive chat `id`. Either holds until the chat has new
-    /// activity, so the rule doesn't undo it.
+    /// Delete chat `id`: stop its pi, then remove every copy of its
+    /// session file and its saved turn changes.
     ///
     /// # Errors
     ///
-    /// Fails if there's no such chat, pi hasn't written it yet, or the
-    /// index can't be saved.
-    pub fn archive(&self, id: &str, archived: bool) -> Result<()> {
-        {
-            let mut state = self.state();
-            if state.index.find(id).is_none() {
-                known(&state, id)?;
-                bail!("chat {id} has no messages yet");
-            }
-            if !state.index.set_archived(id, archived) {
-                return Ok(());
+    /// Fails if there's no such chat, another pi has it open, its pi can't
+    /// be stopped, or a file can't be removed.
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        let ops = self.ops(id)?;
+        let _ops = ops.lock().await;
+        self.refuse_elsewhere(id)?;
+        // Taken first, so the stop doesn't count as an interrupted run.
+        let running = self
+            .state()
+            .chats
+            .get_mut(id)
+            .and_then(|chat| chat.process.take());
+        if let Some(running) = running {
+            running.pi.stop(self.0.config.grace).await?;
+        }
+        let files: Vec<PathBuf> = {
+            let state = self.state();
+            let draft = state.chats.get(id).and_then(|chat| chat.draft.as_ref());
+            let copies = state.index.iter().filter(|(_, summary)| summary.id == id);
+            copies
+                .map(|(path, _)| path.to_owned())
+                .chain(draft.and_then(|draft| draft.path.clone()))
+                .collect()
+        };
+        for file in &files {
+            match std::fs::remove_file(file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(e).with_context(|| format!("removing {}", file.display()));
+                }
+                _ => {}
             }
         }
+        {
+            let mut state = self.state();
+            for file in &files {
+                state.index.refresh_file(file)?;
+            }
+            state.chats.remove(id);
+        }
+        self.0.turns.forget(id)?;
         self.save_index()?;
         self.changed();
         Ok(())
@@ -1937,7 +1963,6 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
             .or_else(|| summary.title.clone()),
         summary: Some(summary.clone()),
         elsewhere: chat.is_some_and(|chat| chat.elsewhere),
-        archived: state.index.is_archived(&summary.id),
     }
 }
 
@@ -1953,7 +1978,6 @@ fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
         title: chat.named.clone(),
         status: status(Some(chat), None, false),
         elsewhere: chat.elsewhere,
-        archived: false,
     })
 }
 
