@@ -349,10 +349,35 @@ pub enum Checkout {
     Worktree,
 }
 
-/// A chat's cumulative cost in US dollars.
+/// A chat's cumulative tokens and cost in US dollars.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Spent {
+    pub tokens: u64,
     pub cost: f64,
+}
+
+/// The details card, independent of per-turn diffs and transcript paging.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDetails {
+    pub compactions: usize,
+    pub spent: Spent,
+    pub pull_requests: Vec<PullRequest>,
+    pub changes: Option<ChangeCounts>,
+    pub changes_error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PullRequest {
+    pub url: String,
+    pub label: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangeCounts {
+    pub files: usize,
+    pub additions: u64,
+    pub deletions: u64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

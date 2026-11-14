@@ -220,6 +220,16 @@ A chat you're done with is deleted, not archived. Right-clicking a chat in eithe
 - It refuses a chat another pi has open, since that pi would write the file again.
 - The windows leave a deleted chat's page, and the list's notice drops its row.
 
+## Chat details
+
+The Mac shows a details card beside an existing chat in the main window and above its transcript in the quick window. The header button beside the quick-window and More actions shows or hides it. It starts shown, and the preference is shared by both windows and saved locally. There is no Sources section.
+
+- **Changes** opens the current checkout's uncommitted diff, independent of agent turns. It includes staged, unstaged and untracked files across the whole repository, respecting `.gitignore`. Like turn snapshots, it uses a private index and object store, so reading it leaves the real index and repository objects untouched. A repository without commits compares against an empty tree. Existing snapshot limits apply, and a large patch is marked truncated.
+- **Pull requests** lists explicit HTTPS GitHub-style PR URLs mentioned in final assistant answers on the current branch. Markdown and bare links are normalized and deduplicated. Tool output, intermediate commentary and code examples do not add PRs. The links are derived incrementally from pi's file, across the whole history rather than just the visible transcript page. There is no PR status polling, auth requirement, or second history store. Bare references such as `#123` are not resolved.
+- **Usage** shows all recorded compactions, cumulative tokens in millions, and cost in US dollars. Counts include earlier branches, as pi's terminal totals do. Failed compaction attempts without a saved entry do not count.
+
+`chat_details` returns session metadata, saved usage and current change counts. `working_changes` loads a fresh patch for the existing diff viewer, headed **Uncommitted changes** rather than **Turn changes**. A Git error leaves usage and PR links available. The card refreshes at most every eight seconds while visible, and after a run settles or its project changes. Hidden cards and windows do not poll. Reading details never starts pi or contacts the network.
+
 ## Turn changes
 
 A completed turn's diff button sits at the right of its final reply's timestamp and copy row. A trailing compaction stays a separate note and doesn't take the reply's button.

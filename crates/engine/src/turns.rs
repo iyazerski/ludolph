@@ -157,59 +157,32 @@ impl Turns {
     /// Fails if git fails, takes too long, or a changed file is too big.
     pub async fn after(&self, before: Snapshot) -> Result<Diff> {
         let after = tree(&before).await?;
-        let range = [before.tree.as_str(), after.as_str()];
-        let numstat = git(
-            &before,
-            &[
-                &["diff-tree", "-r", "--no-renames", "--numstat", "-z"][..],
-                &range,
-            ]
-            .concat(),
+        compare(&before, &before.tree, &after).await
+    }
+
+    /// Diff the current staged, unstaged and untracked files against HEAD.
+    /// Use a private index and object store, leaving the checkout untouched.
+    ///
+    /// # Errors
+    ///
+    /// Fails under the same git, size and time limits as a run snapshot.
+    pub async fn working(&self, cwd: &Path) -> Result<Option<Diff>> {
+        let Some(snapshot) = self.before(cwd).await? else {
+            return Ok(None);
+        };
+        let base = match git(
+            &snapshot,
+            &["rev-parse", "--verify", "--quiet", "HEAD^{tree}"],
         )
-        .await?;
-        let mut files = Vec::new();
-        let (mut additions, mut deletions) = (0, 0);
-        // `<added>\t<deleted>\t<path>\0`, with `-` for a binary file's counts.
-        for record in numstat.split('\0').filter(|r| !r.is_empty()) {
-            let mut fields = record.splitn(3, '\t');
-            let (Some(added), Some(deleted), Some(path)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
-                bail!("git diff-tree printed {record:?}");
-            };
-            additions += added.parse::<u64>().unwrap_or(0);
-            deletions += deleted.parse::<u64>().unwrap_or(0);
-            files.push(File {
-                path: path.to_owned(),
-            });
-        }
-        let patch_args = [
-            "diff-tree",
-            "-r",
-            "-p",
-            "--no-renames",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-        ];
-        let mut patch = git(&before, &[&patch_args[..], &range].concat()).await?;
-        let truncated = patch.len() > PATCH_LIMIT;
-        if truncated {
-            // At a line's end, so the patch still parses.
-            let mut end = PATCH_LIMIT;
-            while !patch.is_char_boundary(end) {
-                end -= 1;
-            }
-            end = patch[..end].rfind('\n').map_or(0, |at| at + 1);
-            patch.truncate(end);
-        }
-        Ok(Diff {
-            patch,
-            files,
-            additions,
-            deletions,
-            truncated,
-        })
+        .await
+        {
+            Ok(head) => head,
+            // A new repository has no HEAD yet.
+            Err(_) => git(&snapshot, &["hash-object", "-w", "-t", "tree", "--stdin"]).await?,
+        };
+        compare(&snapshot, base.trim(), &snapshot.tree)
+            .await
+            .map(Some)
     }
 
     /// Save `changes` as session `session`'s run `key`, then drop the oldest
@@ -360,6 +333,63 @@ fn read_dir(dir: &Path) -> Result<Vec<PathBuf>> {
         .map(|entry| Ok(entry?.path()))
         .collect::<std::io::Result<_>>()
         .with_context(|| format!("reading {}", dir.display()))
+}
+
+/// Read one snapshot range as the same capped diff used for saved runs.
+async fn compare(snapshot: &Snapshot, before: &str, after: &str) -> Result<Diff> {
+    let range = [before, after];
+    let numstat = git(
+        snapshot,
+        &[
+            &["diff-tree", "-r", "--no-renames", "--numstat", "-z"][..],
+            &range,
+        ]
+        .concat(),
+    )
+    .await?;
+    let mut files = Vec::new();
+    let (mut additions, mut deletions) = (0, 0);
+    // `<added>\t<deleted>\t<path>\0`, with `-` for a binary file's counts.
+    for record in numstat.split('\0').filter(|r| !r.is_empty()) {
+        let mut fields = record.splitn(3, '\t');
+        let (Some(added), Some(deleted), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            bail!("git diff-tree printed {record:?}");
+        };
+        additions += added.parse::<u64>().unwrap_or(0);
+        deletions += deleted.parse::<u64>().unwrap_or(0);
+        files.push(File {
+            path: path.to_owned(),
+        });
+    }
+    let patch_args = [
+        "diff-tree",
+        "-r",
+        "-p",
+        "--no-renames",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+    ];
+    let mut patch = git(snapshot, &[&patch_args[..], &range].concat()).await?;
+    let truncated = patch.len() > PATCH_LIMIT;
+    if truncated {
+        // At a line's end, so the patch still parses.
+        let mut end = PATCH_LIMIT;
+        while !patch.is_char_boundary(end) {
+            end -= 1;
+        }
+        end = patch[..end].rfind('\n').map_or(0, |at| at + 1);
+        patch.truncate(end);
+    }
+    Ok(Diff {
+        patch,
+        files,
+        additions,
+        deletions,
+        truncated,
+    })
 }
 
 /// The repo whose working tree holds `cwd`, if any.

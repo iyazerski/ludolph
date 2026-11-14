@@ -61,6 +61,120 @@ fn shown(page: &Page) -> Vec<(Role, MessageStatus, Vec<Part>)> {
 }
 
 #[test]
+fn details_follow_final_answers_on_the_current_branch_but_count_all_compactions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    std::fs::write(&path, format!("{HEADER}\n")).unwrap();
+    let answer = |text: &str, reason: &str| json!({"role":"assistant", "timestamp":2, "stopReason":reason, "content":[{"type":"text","text":text}]});
+    append(
+        &path,
+        &[
+            message("u1", None, user("review", 1)),
+            message(
+                "a1",
+                Some("u1"),
+                answer("Checking https://github.com/acme/repo/pull/99", "toolUse"),
+            ),
+            message(
+                "r1",
+                Some("a1"),
+                json!({"role":"toolResult","timestamp":2,"toolCallId":"c1","content":[{"type":"text","text":"https://github.com/acme/repo/pull/98"}]}),
+            ),
+            message(
+                "a2",
+                Some("r1"),
+                answer(
+                    "Opened [PR](https://github.com/acme/repo/pull/10#discussion). Also https://git.corp.test/team/repo/pull/20/files. Duplicate https://github.com/acme/repo/pull/10?x=y. Not a PR: https://github.com/acme/repo/issues/7. `https://github.com/acme/repo/pull/97`\n\n```\nhttps://github.com/acme/repo/pull/96\n```",
+                    "stop",
+                ),
+            ),
+            message(
+                "old",
+                Some("a2"),
+                answer("Abandoned https://github.com/acme/repo/pull/999", "stop"),
+            ),
+            json!({"type":"compaction", "id":"old-c", "parentId":"old", "summary":"old branch"}),
+            message("u2", Some("a2"), user("continue", 3)),
+            message(
+                "a3",
+                Some("u2"),
+                answer(
+                    "Still [the same PR](https://github.com/acme/repo/pull/10).",
+                    "stop",
+                ),
+            ),
+            json!({"type":"compaction", "id":"c2", "parentId":"a3", "summary":"current branch"}),
+        ],
+    );
+    let mut transcripts = Transcripts::default();
+    let first = transcripts.details(&path).unwrap();
+    assert_eq!(first.compactions, 2);
+    assert_eq!(
+        first
+            .pull_requests
+            .iter()
+            .map(|pr| pr.url.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "https://github.com/acme/repo/pull/10",
+            "https://git.corp.test/team/repo/pull/20"
+        ]
+    );
+    assert_eq!(first.pull_requests[0].label, "acme/repo #10");
+    append(
+        &path,
+        &[
+            message("u3", Some("c2"), user("next", 4)),
+            message(
+                "a4",
+                Some("u3"),
+                answer("Done: https://github.com/acme/repo/pull/42.", "stop"),
+            ),
+        ],
+    );
+    let updated = transcripts.details(&path).unwrap();
+    assert_eq!(updated.pull_requests.len(), 3);
+    let mut parent = "a4".to_owned();
+    for i in 0..45 {
+        let (user_id, answer_id) = (format!("later-u{i}"), format!("later-a{i}"));
+        append(
+            &path,
+            &[
+                message(&user_id, Some(&parent), user("more", 100 + i)),
+                message(&answer_id, Some(&user_id), answer("Done.", "stop")),
+            ],
+        );
+        parent = answer_id;
+    }
+    assert_eq!(
+        transcripts
+            .page(Some(&path), Tail::default(), &Window::Latest(40))
+            .unwrap()
+            .messages
+            .len(),
+        40
+    );
+    assert_eq!(
+        transcripts.details(&path).unwrap(),
+        updated,
+        "PR links survive outside the visible transcript page"
+    );
+    assert_eq!(Transcripts::default().details(&path).unwrap(), updated);
+    append(
+        &path,
+        &[message(
+            "new-branch",
+            Some("u1"),
+            answer("Only https://github.com/acme/repo/pull/33", "stop"),
+        )],
+    );
+    let switched = transcripts.details(&path).unwrap();
+    assert_eq!(switched.compactions, 2);
+    assert_eq!(switched.pull_requests.len(), 1);
+    assert_eq!(switched.pull_requests[0].label, "acme/repo #33");
+}
+
+#[test]
 fn nested_calls_show_live_and_reopen_without_losing_their_own_outcomes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.jsonl");

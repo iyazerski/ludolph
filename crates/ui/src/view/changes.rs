@@ -7,7 +7,7 @@ use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 use super::icons;
 use super::widgets::{busy, head, head_titles, hide_button};
-use crate::app::{Changes, Existing, State, Window};
+use crate::app::{ChangeTarget, Changes, Existing, State, Window};
 use crate::data::TurnChanges;
 
 /// Show compact file counts beside the timestamp, pressed to open the diff.
@@ -61,7 +61,7 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
     // The prompt that started the run names it; the chat's title if it's not shown.
     let prompt = chat
         .messages()
-        .find(|m| m.created_at.to_string() == chat.changes_of)
+        .find(|m| matches!(&chat.changes_of, ChangeTarget::Turn(turn) if m.created_at.to_string() == *turn))
         .map(|m| m.text().split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|t| !t.is_empty());
     let title = prompt.unwrap_or_else(|| {
@@ -77,10 +77,13 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
     let titles = head_titles()
         .gap(1.0)
         .child(
-            text("Turn changes")
-                .font(k.ty.ui_medium)
-                .color(k.c.text_base)
-                .truncate(),
+            text(match chat.changes_of {
+                ChangeTarget::Turn(_) => "Turn changes",
+                ChangeTarget::WorkingTree => "Uncommitted changes",
+            })
+            .font(k.ty.ui_medium)
+            .color(k.c.text_base)
+            .truncate(),
         )
         .child(
             text(title)
@@ -101,9 +104,12 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
                 .wrap(),
         ),
         Changes::Ready { diff, .. } if diff.files().is_empty() => note().child(
-            text("No changes this turn")
-                .font(k.ty.ui)
-                .color(k.c.text_muted),
+            text(match chat.changes_of {
+                ChangeTarget::Turn(_) => "No changes this turn",
+                ChangeTarget::WorkingTree => "No uncommitted changes",
+            })
+            .font(k.ty.ui)
+            .color(k.c.text_muted),
         ),
         Changes::Ready { truncated, .. } => {
             let mut out = col().w_full().grow(1.0).min_h(0.0);

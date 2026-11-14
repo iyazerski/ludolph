@@ -839,6 +839,52 @@ impl Engine {
         }
     }
 
+    /// Read the chat's session details and cumulative saved usage without starting pi.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the chat is gone or its session cannot be read.
+    pub async fn details(&self, id: &str) -> Result<(transcript::Details, Spent)> {
+        let (path, spent) = {
+            let state = self.state();
+            known(&state, id)?;
+            let summary = state.index.find(id);
+            (
+                file_of(
+                    &state.index,
+                    id,
+                    state.chats.get(id).and_then(|chat| chat.draft.as_ref()),
+                ),
+                summary.map_or_else(Spent::default, |(_, summary)| summary.spent),
+            )
+        };
+        let transcripts = self.0.transcripts.clone();
+        let details =
+            tokio::task::spawn_blocking(move || match path.filter(|path| path.exists()) {
+                Some(path) => transcripts.lock().expect("lock poisoned").details(&path),
+                None => Ok(transcript::Details::default()),
+            })
+            .await??;
+        Ok((details, spent))
+    }
+
+    /// Read the current uncommitted diff of the chat's whole repository.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the chat is gone, or the diff exceeds the snapshot limits.
+    pub async fn working_changes(&self, id: &str) -> Result<Option<Diff>> {
+        let cwd = {
+            let state = self.state();
+            known(&state, id)?;
+            cwd_of(&state, id)
+        };
+        match cwd {
+            Some(cwd) => self.0.turns.working(&cwd).await,
+            None => Ok(None),
+        }
+    }
+
     /// The sizes of chat `id`'s saved runs, by the timestamp of the user
     /// message that started each.
     ///

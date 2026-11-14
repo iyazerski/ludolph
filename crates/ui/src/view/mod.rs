@@ -7,6 +7,7 @@ mod changes;
 mod chat;
 mod code;
 mod composer;
+mod details;
 mod dialogs;
 mod icons;
 mod list;

@@ -129,12 +129,21 @@ pub struct Existing {
     /// The latest turn's diff, shown in place of the transcript while open.
     pub changes: Option<Changes>,
     /// The turn the changes page shows: the user message that started it.
-    pub changes_of: String,
+    pub changes_of: ChangeTarget,
+    pub details: Option<Result<crate::data::ChatDetails, String>>,
+    pub(super) details_loading: bool,
+    pub(super) details_at: Option<Instant>,
 }
 
 /// The file each inline code names, by its text, looked up once per
 /// frame. The view fills it, as Rune's Markdown asks for links while it draws.
 pub type FileLinks = Rc<RefCell<HashMap<String, Option<String>>>>;
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ChangeTarget {
+    Turn(String),
+    WorkingTree,
+}
 
 pub enum Changes {
     Loading,
@@ -362,7 +371,10 @@ impl Existing {
             info_at: None,
             copied: None,
             changes: None,
-            changes_of: String::new(),
+            changes_of: ChangeTarget::WorkingTree,
+            details: None,
+            details_loading: false,
+            details_at: None,
         }
     }
 

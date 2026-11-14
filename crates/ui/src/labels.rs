@@ -36,18 +36,18 @@ pub fn worked(secs: i64) -> String {
 /// Format the context's used/capacity counts and cumulative chat cost.
 pub fn context_readout(tokens: Option<u64>, window: u64, spent: Option<Spent>) -> (String, String) {
     let used = tokens.map_or_else(|| "—".to_owned(), thousands);
-    let cost = spent.map_or_else(
-        || "—".to_owned(),
-        |spent| {
-            if spent.cost > 0.0 && spent.cost < 0.01 {
-                "<$0.01".to_owned()
-            } else {
-                let rounded = (spent.cost * 100.0).round() / 100.0;
-                format!("${rounded:.2}")
-            }
-        },
-    );
+    let cost = spent.map_or_else(|| "—".to_owned(), |spent| dollars(spent.cost));
     (format!("{used}/{}", thousands(window)), cost)
+}
+
+/// Format US dollars without rounding a small nonzero cost to zero.
+pub fn dollars(cost: f64) -> String {
+    if cost > 0.0 && cost < 0.01 {
+        "<$0.01".to_owned()
+    } else {
+        let rounded = (cost * 100.0).round() / 100.0;
+        format!("${rounded:.2}")
+    }
 }
 
 /// Round a token count to tenths of a thousand without trailing zeroes.
@@ -237,7 +237,7 @@ mod tests {
             (None, Some(0.001), ("—/272k", "<$0.01")),
             (None, None, ("—/272k", "—")),
         ] {
-            let spent = cost.map(|cost| Spent { cost });
+            let spent = cost.map(|cost| Spent { cost, tokens: 0 });
             let got = context_readout(tokens, 272_000, spent);
             assert_eq!((got.0.as_str(), got.1.as_str()), want);
         }

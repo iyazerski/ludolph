@@ -33,7 +33,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     col()
         .w_full()
         .h_full()
-        .child(header(page, k, layer))
+        .child(header(s, page, k, layer))
         .child(body(s, page, k, layer))
 }
 
@@ -50,6 +50,30 @@ pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
 
 /// The transcript, or a new chat's greeting, over the composer.
 fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
+    let chat = chat_body(s, page, k, layer);
+    let Some(existing) = page.existing().filter(|_| s.prefs.borrow().show_details) else {
+        return chat;
+    };
+    let card = super::details::card(existing, k);
+    if s.window == Window::Main {
+        row()
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .child(chat.min_w(0.0))
+            .child(col().w(280.0).shrink().pt(12.0).pr(12.0).child(card))
+    } else {
+        col()
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .child(col().w_full().px(14.0).pt(10.0).child(card))
+            .child(chat)
+    }
+}
+
+/// Keep the transcript and composer together when the details card is shown.
+fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let wide = s.window == Window::Main;
     let mut body = col().key("transcript").w_full().px(14.0).py(10.0).gap(14.0);
     if wide {
@@ -153,7 +177,7 @@ pub fn titles(page: &ChatPage) -> (String, String) {
     }
 }
 
-fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
+fn header(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let (title, sub) = titles(page);
     let back = IconButton::new(&icons::BACK)
         .variant(IconButtonVariant::Ghost)
@@ -187,6 +211,7 @@ fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
                     .on_press(move |s: &mut State| s.open_in_peer(id.clone()))
                     .build(k),
             )
+            .child(super::details::toggle(s, k))
             .child(more_menu(page, k, layer));
     }
     bar = bar.child(hide_button(k));

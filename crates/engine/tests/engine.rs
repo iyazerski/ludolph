@@ -833,6 +833,66 @@ fn state_runs(engine: &Engine) -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn working_changes_handle_new_repositories_and_non_git_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let id = engine.create(&repo).await.unwrap();
+    let status = git(&repo, &["status", "--porcelain"]);
+    let objects = git(&repo, &["count-objects"]);
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        details["changes"],
+        json!({"files": 1, "additions": 1, "deletions": 0})
+    );
+    assert_eq!(details["changesError"], Value::Null);
+    let diff = tool(&engine, "working_changes", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert!(diff["patch"].as_str().unwrap().contains("+new"));
+    assert_eq!(git(&repo, &["status", "--porcelain"]), status);
+    assert_eq!(git(&repo, &["count-objects"]), objects);
+    assert_eq!(std::fs::read_dir(state_runs(&engine)).unwrap().count(), 0);
+    std::fs::File::create(repo.join("large.bin"))
+        .unwrap()
+        .set_len(10 * 1024 * 1024 + 1)
+        .unwrap();
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(details["changes"], Value::Null);
+    assert!(
+        details["changesError"]
+            .as_str()
+            .unwrap()
+            .contains("over 10 MB")
+    );
+    assert_eq!(details["spent"], json!({"tokens": 0, "cost": 0.0}));
+    let other = dir.path().join("not-git");
+    std::fs::create_dir(&other).unwrap();
+    let id = engine.create(&other).await.unwrap();
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(details["changes"], Value::Null);
+    assert_eq!(details["changesError"], Value::Null);
+    assert_eq!(details["spent"], json!({"tokens": 0, "cost": 0.0}));
+    assert!(
+        tool(&engine, "working_changes", json!({"chat": id}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not in a git")
+    );
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
@@ -924,6 +984,26 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         .rfind(|message| message["role"] == "assistant")
         .unwrap();
     assert_eq!(changes[0]["after"], reply["id"]);
+
+    // The working-tree diff includes your staged edit, not just agent changes.
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        details["changes"],
+        json!({"files": 3, "additions": 3, "deletions": 1})
+    );
+    assert_eq!(details["compactions"], 1);
+    assert_eq!(details["pullRequests"], json!([]));
+    let working = tool(&engine, "working_changes", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        working["files"],
+        json!([{"path":"a.txt"}, {"path":"b.txt"}, {"path":"new.txt"}])
+    );
+    assert!(working["patch"].as_str().unwrap().contains("+two"));
+    assert!(!working["patch"].as_str().unwrap().contains("secret"));
 
     assert_eq!(status, "M  b.txt\n");
     let status = git(&repo, &["status", "--porcelain"]);
@@ -1055,6 +1135,13 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     // start one.
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
     assert_eq!(composer(&engine).await.unwrap(), info, "as its file says");
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        details["spent"], info["spent"],
+        "details use the same session-wide totals"
+    );
     all_exited(dir.path()).await;
 
     let models = tool(&engine, "list_models", json!({})).await.unwrap();

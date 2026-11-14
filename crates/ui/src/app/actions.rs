@@ -10,7 +10,7 @@ use rune_kit::diff::{self, DiffState};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::page::{Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
+use super::page::{ChangeTarget, Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
 use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
 use crate::data::{
     ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Polished, Role, Skills,
@@ -142,6 +142,9 @@ impl State {
         }
         if let Some(chat) = self.existing_at(nav) {
             let due = configured || settled || (working && chat.info_due());
+            if configured || settled || frame.reset {
+                chat.details_at = None;
+            }
             chat.chat = Some(frame.chat);
             self.load_thumbs();
             if due {
@@ -151,6 +154,7 @@ impl State {
         if moved {
             self.reload_skills();
         }
+        self.load_details();
         self.sync_tick();
     }
 
@@ -172,19 +176,32 @@ impl State {
 
     /// Open the diff of the chat's run `turn` in place of its transcript.
     pub fn open_changes(&mut self, turn: &str) {
+        self.load_changes(ChangeTarget::Turn(turn.to_owned()));
+    }
+
+    /// Show the current uncommitted diff, independent of any agent turn.
+    pub fn open_working_changes(&mut self) {
+        self.load_changes(ChangeTarget::WorkingTree);
+    }
+
+    fn load_changes(&mut self, target: ChangeTarget) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
         let Some(chat) = page.existing_mut() else {
             return;
         };
         chat.changes = Some(Changes::Loading);
-        turn.clone_into(&mut chat.changes_of);
-        let args = json!({ "chat": chat.id, "turn": turn });
-        self.api.call(
-            "turn_changes",
-            args,
-            move |s, result: Result<Diff, String>, _| {
-                let Some(chat) = s.existing_at(nav).filter(|c| c.changes.is_some()) else {
+        chat.changes_of = target.clone();
+        let (method, args) = match &target {
+            ChangeTarget::Turn(turn) => ("turn_changes", json!({"chat": chat.id, "turn": turn})),
+            ChangeTarget::WorkingTree => ("working_changes", json!({"chat": chat.id})),
+        };
+        self.api
+            .call(method, args, move |s, result: Result<Diff, String>, _| {
+                let Some(chat) = s
+                    .existing_at(nav)
+                    .filter(|c| c.changes.is_some() && c.changes_of == target)
+                else {
                     return;
                 };
                 chat.changes = Some(match result {
@@ -199,8 +216,7 @@ impl State {
                     }
                     Err(e) => Changes::Failed(e),
                 });
-            },
-        );
+            });
     }
 
     /// Load the messages before the first one shown. They stay until the

@@ -27,6 +27,13 @@ pub static FOLDER_OPEN: Icon = icon(
     r#"<path d="M1.33337 13.3333V2H6.66671L8.66671 4H13.3334V6.66667M1.33337 13.3333L3.33337 6.66667H15.3334L13.3334 13.3333H1.33337Z" stroke="currentColor" stroke-miterlimit="10" stroke-linecap="square" stroke-linejoin="round" fill="none"/>"#,
 );
 
+/// The optional details card beside the chat.
+pub static DETAILS: Icon = icon(
+    "chat-details",
+    24.0,
+    r#"<rect x="3" y="4" width="18" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M15 4v16M17.5 8h1M17.5 12h1M17.5 16h1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>"#,
+);
+
 pub static BACK: Icon = icon(
     "back",
     24.0,

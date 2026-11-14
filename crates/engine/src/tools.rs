@@ -53,6 +53,8 @@ pub enum Tool {
     MoveChat,
     DeleteChat,
     TurnChanges,
+    ChatDetails,
+    WorkingChanges,
     ListModels,
     SetChatModel,
     ComposerInfo,
@@ -107,6 +109,8 @@ impl FromStr for Tool {
             "move_chat" => Self::MoveChat,
             "delete_chat" => Self::DeleteChat,
             "turn_changes" => Self::TurnChanges,
+            "chat_details" => Self::ChatDetails,
+            "working_changes" => Self::WorkingChanges,
             "list_models" => Self::ListModels,
             "set_chat_model" => Self::SetChatModel,
             "composer_info" => Self::ComposerInfo,
@@ -180,6 +184,35 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::MoveChat => move_chat(engine, parse(args)?).await,
         Tool::DeleteChat => delete_chat(engine, parse(args)?).await,
         Tool::TurnChanges => turn_changes(engine, parse(args)?).await,
+        Tool::ChatDetails => {
+            let args: ChatArgs = parse(args)?;
+            let (session, changes) = tokio::join!(
+                engine.details(&args.chat),
+                engine.working_changes(&args.chat)
+            );
+            let (details, spent) = session?;
+            let (changes, error) = match changes {
+                Ok(Some(diff)) => (
+                    Some(
+                        json!({"files": diff.files.len(), "additions": diff.additions, "deletions": diff.deletions}),
+                    ),
+                    None,
+                ),
+                Ok(None) => (None, None),
+                Err(error) => (None, Some(format!("{error:#}"))),
+            };
+            Ok(
+                json!({"compactions": details.compactions, "pullRequests": details.pull_requests, "spent": spent, "changes": changes, "changesError": error}),
+            )
+        }
+        Tool::WorkingChanges => {
+            let args: ChatArgs = parse(args)?;
+            let diff = engine
+                .working_changes(&args.chat)
+                .await?
+                .context("the chat is not in a git repository")?;
+            Ok(serde_json::to_value(diff)?)
+        }
         Tool::ListModels => list_models(engine).await,
         Tool::SetChatModel => set_chat_model(engine, parse(args)?).await,
         Tool::ComposerInfo => composer_info(engine, parse(args)?).await,

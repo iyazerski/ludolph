@@ -5,6 +5,7 @@
 mod actions;
 mod attach;
 mod chats;
+mod details;
 mod draft;
 mod page;
 mod queue;
@@ -30,8 +31,8 @@ pub use self::attach::Prep;
 pub use self::chats::{ChatDialog, project_drop_key};
 pub use self::draft::{Catalog, Config, Draft, Load, Pick};
 pub use self::page::{
-    Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending, QuestionForm, SkillList,
-    Target, Voice,
+    ChangeTarget, Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending,
+    QuestionForm, SkillList, Target, Voice,
 };
 pub use self::settings::{QR_SIZE, SettingsPage, Update};
 
@@ -315,6 +316,7 @@ impl State {
         }
         if shown {
             self.follow();
+            self.load_details();
             // A phone may have linked, or a code expired, while nothing ticked.
             if self.settings_page().is_some() {
                 self.load_phone();
@@ -381,7 +383,14 @@ impl State {
                 || c.run.as_ref().is_some_and(|r| r.retry.is_some())
         });
         let linking = self.settings_page().is_some_and(SettingsPage::connecting);
-        self.api.tick(self.shown && (toast || chat || linking));
+        let details = self.engine_up
+            && self.prefs.borrow().show_details
+            && self
+                .chat()
+                .and_then(ChatPage::existing)
+                .is_some_and(|chat| chat.changes.is_none());
+        self.api
+            .tick(self.shown && (toast || chat || linking || details));
     }
 
     /// Show or hide the window; it opens where it was left.
@@ -511,6 +520,7 @@ impl State {
             // The working clock and a retry's countdown count seconds.
             changed |= chat.shows_clock() || chat.run.as_ref().is_some_and(|r| r.retry.is_some());
         }
+        self.load_details();
         self.sync_tick();
         changed
     }
@@ -557,6 +567,8 @@ impl State {
         self.show(Target::Existing(Existing::new(id, chat)));
         self.follow();
         self.load_info();
+        self.load_details();
+        self.sync_tick();
     }
 
     /// Whether the window shows chat `id`'s page.
@@ -586,6 +598,8 @@ impl State {
         if let Some(chat) = self.chat_mut().and_then(ChatPage::existing_mut)
             && chat.changes.take().is_some()
         {
+            self.load_details();
+            self.sync_tick();
             return;
         }
         if self.window == Window::Quick {
