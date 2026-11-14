@@ -18,6 +18,7 @@ dispatch2.workspace = true
 futures-util.workspace = true
 libc.workspace = true
 ludolph-json-file.workspace = true
+ludolph-prompt.workspace = true
 ludolph-relay-proto.workspace = true
 objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true

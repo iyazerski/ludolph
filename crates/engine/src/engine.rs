@@ -755,7 +755,8 @@ impl Engine {
         // Stop can come while pi starts or the tree is taken, before there's
         // a run to abort.
         let delivery = if self.stops(id) == stops {
-            self.prompt(&pi, &skills::to_front(text), images).await
+            self.prompt(&pi, &ludolph_prompt::to_front(text), images)
+                .await
         } else {
             Err(anyhow!("stopped before it was sent"))
         };

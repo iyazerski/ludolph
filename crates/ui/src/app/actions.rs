@@ -12,16 +12,12 @@ use serde_json::{Value, json};
 
 use super::page::{ChangeTarget, Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
 use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
-use crate::data::{
-    ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Polished, Role, Skills,
-};
+use crate::data::{ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Polished, Skills};
 use crate::dictation::{self, Heard, Listening};
 use crate::message::with_skill_refs;
 
 /// How many more messages "Load earlier messages" adds.
 const EARLIER: usize = 40;
-/// How much earlier than its send a message's own timestamp may be.
-const CLOCK_SLACK_MS: i64 = 2000;
 
 /// A call on the open chat; the feed shows what it changes.
 enum ChatAction {
@@ -94,20 +90,7 @@ impl State {
             .iter()
             .filter_map(|id| fresh.remove(id).or_else(|| kept.remove(id)))
             .collect();
-        let queued = frame
-            .run
-            .iter()
-            .flat_map(|r| r.steering.iter().chain(&r.follow_up));
-        let queued: Vec<&str> = queued.map(|t| t.trim()).collect();
-        chat.pending.retain(|p| {
-            let arrived = page.iter().any(|m| {
-                m.role == Role::User
-                    && m.created_at >= p.at - CLOCK_SLACK_MS
-                    && m.text().trim() == p.text
-                    && m.images().count() == p.images.len()
-            });
-            !arrived && !(p.images.is_empty() && queued.contains(&p.text.as_str()))
-        });
+        chat.confirm_pending(&page, frame.run.as_ref());
         if chat.question.as_ref().map(|q| &q.dialog.id)
             != frame.pending_input.as_ref().map(|d| &d.id)
         {
@@ -372,6 +355,7 @@ impl State {
         let id = chat.id.clone();
         chat.pending.push(Pending {
             text: typed.clone(),
+            sent: ludolph_prompt::to_front(&text).into_owned(),
             images: images.iter().map(|(_, thumb)| thumb.clone()).collect(),
             at: chrono::Utc::now().timestamp_millis(),
         });

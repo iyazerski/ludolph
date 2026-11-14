@@ -184,6 +184,7 @@ impl State {
             return;
         };
         draft.creating = true;
+        let sent = ludolph_prompt::to_front(&text).into_owned();
         let mut args = json!({ "prompt": text });
         for (key, value) in [
             ("project", &draft.project),
@@ -236,6 +237,7 @@ impl State {
                 if let Some(chat) = s.chat_mut().and_then(|p| p.existing_mut()) {
                     chat.pending.push(Pending {
                         text: typed,
+                        sent,
                         images: thumbs,
                         at,
                     });

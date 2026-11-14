@@ -22,6 +22,8 @@ use crate::dictation::Listening;
 const INFO_EVERY: Duration = Duration::from_secs(8);
 /// How long a reply's copy button shows a check after a copy.
 const COPIED_FOR: Duration = Duration::from_secs(2);
+/// How much earlier than its send a message's own timestamp may be.
+const CLOCK_SLACK_MS: i64 = 2000;
 
 pub struct ChatPage {
     pub nav: u64,
@@ -201,6 +203,8 @@ pub struct QueueEdit {
 /// A message sent but not in the transcript yet.
 pub struct Pending {
     pub text: String,
+    /// The prompt after resolving skill references and moving the first one.
+    pub sent: String,
     pub images: Vec<Option<Image>>,
     /// When it was sent, in epoch milliseconds, so an older message with the
     /// same text doesn't stand for it.
@@ -383,6 +387,24 @@ impl Existing {
     pub(super) fn info_due(&self) -> bool {
         self.info_at.is_none_or(|t| t.elapsed() >= INFO_EVERY)
     }
+
+    /// Remove send previews once their messages reach the transcript or pi's queue.
+    pub fn confirm_pending(&mut self, page: &[Message], run: Option<&Run>) {
+        let queued: Vec<&str> = run
+            .iter()
+            .flat_map(|r| r.steering.iter().chain(&r.follow_up))
+            .map(|t| t.trim())
+            .collect();
+        self.pending.retain(|p| {
+            let arrived = page.iter().any(|m| {
+                m.role == Role::User
+                    && m.created_at >= p.at - CLOCK_SLACK_MS
+                    && m.text().trim() == p.sent
+                    && m.images().count() == p.images.len()
+            });
+            !arrived && !(p.images.is_empty() && queued.contains(&p.sent.as_str()))
+        });
+    }
 }
 
 impl QuestionForm {
@@ -396,5 +418,85 @@ impl QuestionForm {
             dialog,
             sending: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::{MessageStatus, Skill};
+    use crate::message::with_skill_refs;
+
+    #[test]
+    fn skill_previews_clear_when_the_transcript_arrives() {
+        let skills = [Skill {
+            name: "commit".into(),
+            description: String::new(),
+            reference: "/skill:commit".into(),
+        }];
+        let typed = "[Image 1](</tmp/image.png>) - review this.\nPlease $commit the fix";
+        let mut chat = Existing::new("chat".into(), None);
+        chat.pending.push(Pending {
+            text: typed.into(),
+            sent: ludolph_prompt::to_front(&with_skill_refs(typed, &skills)).into_owned(),
+            images: vec![None],
+            at: 10_000,
+        });
+        let mut message = Message {
+            id: "user".into(),
+            role: Role::User,
+            created_at: 10_100,
+            ended_at: 10_100,
+            status: MessageStatus::Complete,
+            parts: vec![
+                Part::Text {
+                    text:
+                        "/skill:commit [Image 1](</tmp/image.png>) - review this.\nPlease the fix"
+                            .into(),
+                },
+                Part::Image { index: 0 },
+            ],
+        };
+        message.created_at = 1;
+        chat.confirm_pending(std::slice::from_ref(&message), None);
+        assert_eq!(chat.pending.len(), 1, "an old message is not this send");
+
+        message.created_at = 10_100;
+        message.parts.pop();
+        chat.confirm_pending(std::slice::from_ref(&message), None);
+        assert_eq!(chat.pending.len(), 1, "the attachment has not arrived");
+
+        message.parts.push(Part::Image { index: 0 });
+        chat.confirm_pending(std::slice::from_ref(&message), None);
+        assert!(
+            chat.pending.is_empty(),
+            "the delivered skill still has a preview"
+        );
+        chat.confirm_pending(&[message], None);
+        assert!(
+            chat.pending.is_empty(),
+            "later frames keep the preview cleared"
+        );
+    }
+
+    #[test]
+    fn steering_previews_match_the_normalized_prompt() {
+        let mut chat = Existing::new("chat".into(), None);
+        chat.pending.push(Pending {
+            text: "please $commit".into(),
+            sent: "/skill:commit please".into(),
+            images: Vec::new(),
+            at: 10_000,
+        });
+        chat.confirm_pending(&[], None);
+        assert_eq!(chat.pending.len(), 1, "keep the preview until delivery");
+        chat.confirm_pending(
+            &[],
+            Some(&Run {
+                steering: vec!["/skill:commit please".into()],
+                ..Run::default()
+            }),
+        );
+        assert!(chat.pending.is_empty(), "pi already shows the queued send");
     }
 }

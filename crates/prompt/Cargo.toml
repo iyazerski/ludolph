@@ -1,0 +1,11 @@
+[package]
+name = "ludolph-prompt"
+description = "Shared prompt normalization for pi skill commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
