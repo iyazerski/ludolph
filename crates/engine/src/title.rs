@@ -45,7 +45,7 @@ Rules:
 10. Return only the cleaned-up text, with no notes.";
 
 /// Asks the sidecar model for chat titles and clean dictation. Each call
-/// names its model, or `None` for pi's default, and runs without thinking:
+/// names its model, or `None` for pi's default, and requests low thinking:
 /// both jobs are small, and someone waits on them.
 #[derive(Debug)]
 pub struct Titler {
@@ -111,7 +111,7 @@ impl Titler {
         // Nothing of the user's setup loads: the model only sees the prompt,
         // and can't act on it.
         let mut child = command
-            .args(["--thinking", "off"])
+            .args(["--thinking", "low"])
             .args([
                 "--no-session",
                 "--no-tools",

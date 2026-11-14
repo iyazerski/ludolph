@@ -198,7 +198,7 @@ Titles are part of the main flow:
 4. When the title comes back, the engine asks the chat's pi for its state. If the session got a name in the meantime, from you or from pi, the new title is dropped. Otherwise it stores the title with `set_session_name`. pi keeps the name until it writes the session file, then adds it as a `session_info` entry, so pi's own `/resume` shows the same title. The list shows the title at once, even before the file exists.
 5. If any step fails, or the chat's pi stopped before the title came back, the next message tries again.
 
-Titles and dictation cleanup use the **sidecar model** from Settings, or pi's default model if none is picked. It always runs with thinking off, so the setting is just a model, and a small, fast one keeps the delay short. The engine only accepts a model that pi lists, and a new pick applies from the next call.
+Titles and dictation cleanup use the **sidecar model** from Settings, or pi's default model if none is picked. It requests Low thinking, which pi clamps to the model's supported levels. Some reasoning models reject Off, even for a short title. The setting is just a model, and a small, fast one keeps the delay short. The engine only accepts a model that pi lists, and a new pick applies from the next call.
 
 Renaming a chat by hand (`rename_chat`) goes through the same `set_session_name`, and starts the chat's pi if it has stopped, since pi owns the file. The list shows the new title at once. The engine never replaces a title that a person or pi set. Calls that change one chat (title, rename, model) go through one queue per chat, so they can't overtake each other.
 

@@ -760,12 +760,12 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let asked = std::fs::read_to_string(dir.path().join("pi.log-titles")).unwrap();
     assert_eq!(asked, "fix the build\nrename the old\n");
 
-    // Dictation goes through the same sidecar model, with thinking off.
+    // Dictation uses the same sidecar model and reasoning level as titles.
     let heard = json!({"text": " uh fix the um build "});
     let polished = tool(&engine, "polish_dictation", heard.clone())
         .await
         .unwrap();
-    assert_eq!(polished, json!({"text": "Fix the build. (default, off)"}));
+    assert_eq!(polished, json!({"text": "Fix the build. (default, low)"}));
     let blank = tool(&engine, "polish_dictation", json!({"text": " "})).await;
     assert!(blank.is_err());
 
@@ -782,7 +782,7 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
     assert_eq!(
         polished,
-        json!({"text": "Fix the build. (fake/quick, off)"})
+        json!({"text": "Fix the build. (fake/quick, low)"})
     );
     assert_eq!(
         tool(&engine, "get_settings", json!({})).await.unwrap(),
