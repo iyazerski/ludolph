@@ -7,6 +7,7 @@ mod attach;
 mod chats;
 mod draft;
 mod page;
+mod queue;
 mod settings;
 
 use std::cell::{Cell, OnceCell, RefCell};

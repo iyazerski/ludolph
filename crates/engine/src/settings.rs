@@ -21,6 +21,19 @@ pub struct Settings {
     /// Show the work under way open while the agent runs, on the Mac and
     /// the phone alike. It folds once the agent writes again either way.
     pub expand_tools: bool,
+    /// Hold messages until the run finishes, or steer the running agent.
+    pub send_behavior: SendBehavior,
+}
+
+/// What Send does while the agent works.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SendBehavior {
+    /// Keep the message editable until its own turn starts.
+    #[default]
+    Queue,
+    /// Hand it to pi after the current tool step.
+    Steer,
 }
 
 /// When the phone gets notifications.

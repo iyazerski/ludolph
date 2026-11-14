@@ -115,7 +115,7 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 
 - **New chat:** start `pi --mode rpc --session-id <uuid>` in the chat's cwd, so Ludolph picks the session id up front. Then send `get_state` to learn the session file. pi writes that file only on the first prompt (checked with pi 1.5.2), so a new chat is a draft in the app until its first message. Starting the process when the composer opens hides most of the 250 ms. A draft whose pi stops idle before writing the file is dropped, since there's nothing to show. One whose pi dies mid-run stays, interrupted, so its message can be sent again with the same session id.
 - **Open chat:** reading a transcript needs no process. The engine reads the session file. A process starts only when a chat needs pi: to send a message, change the model, or list skills.
-- **Send:** `prompt`. While the agent works, `prompt` with `streamingBehavior: "steer"`.
+- **Send:** `prompt`. While the agent works, `sendBehavior` defaults to `queue`: hold the message in the engine, then send one per cleanly finished run as a new turn. Waiting messages show above either composer, on Mac and phone, with individual Edit and Delete controls. They have stable ids, keep their images when edited, and stay out of the transcript until pi accepts them. Each chat is limited to 32 waiting messages or 12 MiB, including images. Like pi’s queue, these unsent drafts live only for the engine’s life. After a failed run the queue pauses, with **Send next** to retry. Stop clears it. With `sendBehavior: "steer"`, hand the prompt to pi immediately with `streamingBehavior: "steer"`; pi owns delivery from that point and cannot recall or edit just one steering message.
 - **Stop:** `clear_queue`, then `abort`.
 - **Model picker:** both Mac windows use the same searchable inline combobox as Settings, anchored above the composer. A separate adjacent dropdown picks a supported reasoning level. Neither opens a dialog or covers the transcript.
 - **Model and thinking level:** `set_model` and `set_thinking_level` on the chat's process. pi records both in the session file (`model_change`, `thinking_level_change`), and keeps the level within what the model supports. The model list comes from `get_available_models` on a short-lived `pi --mode rpc --no-session` in the engine's folder, cached for 10 minutes: no chat's process has to be running, and a picker that opens often doesn't start pi each time. It's one list for all projects. A provider that a project-local extension adds isn't listed, but `set_model` still takes it. Each model's thinking levels are worked out from its model object, the way pi's `getSupportedThinkingLevels` does: only `off` without `reasoning`, and `xhigh` and `max` only when its `thinkingLevelMap` names them.
@@ -259,7 +259,9 @@ The app and the phone call the same tools:
 | `chat_view` | The [transcript](#live-view-and-the-file)'s latest messages, a page at a time |
 | `tool_output` | A tool call's arguments and output |
 | `chat_image` | An image in a message |
-| `send_message` | `prompt`, or a steering `prompt`, with up to 8 PNG, JPEG, GIF or WebP images |
+| `send_message` | `prompt`, or queue/steer while working, with up to 8 PNG, JPEG, GIF or WebP images |
+| `edit_queued_message`, `delete_queued_message` | Change one unsent draft by id, or delete it |
+| `resume_queue` | Send the oldest waiting prompt while idle |
 | `create_chat` | Start pi in the project's folder or a scratch folder, set the picked model, then `prompt` |
 | `interrupt_chat` | `clear_queue` and `abort`. A send that hasn't reached pi yet is cancelled. |
 | `respond_to_input` | Answers the [open question](#questions-from-the-agent) with that id, as an `extension_ui_response` |
@@ -301,6 +303,7 @@ The engine keeps most of them, since it's the one using them and it runs while t
 - Sidecar model, for titles and dictation (`sidecarModel`), picked from pi's models with a search, or pi's default model, which the picker names (`list_models` asks a fresh pi's `get_state` for it)
 - Notifications on the phone only while you're away from the Mac, or always (`notify`: `away` or `always`)
 - Open at login (`openAtLogin`, off until you turn it on)
+- Send while working (`sendBehavior`: `queue`, the default, or `steer`), shared by Mac and phone
 - Phone: link a phone with a QR code, see whether the link is connected, or unlink (`link_phone`, `stop_linking_phone`, `get_phone_link`, `unlink_phone`; see "Phone and relay")
 - Tool calls collapsed or expanded (`expandTools`): the engine's, so both windows and the phone draw them alike. A reply's work between two texts, its tool calls and thinking, is one group on a rail. The setting only decides whether the group under way shows open while the agent works; a group folds once the agent writes again, and a click opens or closes one group either way. Once a turn ends, everything before its last text folds under **Worked for 6m 56s** over a rule, whatever the setting.
 - Global shortcut: the app's own, since it registers it, so it's in `ui.json`. The recorder registers the new chord before it lets the old one go, so a chord another app holds is refused and the old one stays. If the saved one is taken when the app starts, the page says so.

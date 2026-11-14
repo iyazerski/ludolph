@@ -222,7 +222,7 @@ const NOT_LINKED = "This phone can't open this Mac's chats yet. On the Mac, open
 /** Calls that must not run twice. Each gets an op id, and the Mac runs an op
  * once however often it's asked, so a call the relay or the network gave up
  * on is asked for again rather than reported as failed. */
-const ONCE = new Set(["send_message", "create_chat", "respond_to_input"]);
+const ONCE = new Set(["send_message", "create_chat", "respond_to_input", "edit_queued_message", "delete_queued_message", "resume_queue"]);
 /** How long to keep asking for a call that runs once. */
 const ONCE_PATIENCE = 3 * 60_000;
 /** What the relay says when a Mac isn't connected, so nothing reached it. */
@@ -1212,8 +1212,12 @@ function chatView(machine, id, fromList) {
   const attachBtn = h("button", { class: "attach", "aria-label": "Add images", onclick: () => { picker.value = ""; picker.click(); } }, icon("plus"));
   const composerBox = h("div", { class: "composer glass" }, attachments, textarea, recorder, picker,
     h("div", { class: "composer-tools" }, attachBtn, modelChip, h("span", { class: "spacer" }), micBtn, sendBtn));
+  const queueRows = h("div", { class: "queue-rows" });
+  const queueEditor = h("div", { class: "queue-editor hide" });
+  const queuePanel = h("div", { class: "waiting glass hide" }, queueRows, queueEditor);
+  let queueEdit = null;
   const dock = h("div", { class: "dock" }, jump, skillMenu, h("div", { class: "dock-base" },
-    composerBox,
+    queuePanel, composerBox,
     footer));
   const offline = offlineBanner();
   const macOffline = h("div", { class: "offline glass hide" });
@@ -1256,7 +1260,7 @@ function chatView(machine, id, fromList) {
   const toBottom = smooth => scroll.scrollTo({ top: scroll.scrollHeight, behavior: smooth ? "smooth" : "auto" });
   scroll.addEventListener("scroll", () => jump.classList.toggle("on", !nearBottom()), { passive: true });
 
-  const isWorking = () => statusOf(chat) === "working";
+  const isWorking = () => ["working", "awaitingInput"].includes(statusOf(chat));
   // The first message is creating the chat; typing must not re-enable Send meanwhile.
   let creating = false;
   function updateComposer() {
@@ -1505,7 +1509,11 @@ function chatView(machine, id, fromList) {
     msgs.insertBefore(bubble, working);
     toBottom(true);
     try {
-      await api("send_message", images.images.length ? { text, images: images.images } : { text });
+      const sent = await api("send_message", images.images.length ? { text, images: images.images } : { text });
+      if (sent.delivery === "queued" || sent.delivery === "handled") {
+        bubble.remove();
+        pending = pending.filter(p => p.el !== bubble);
+      }
       images.done();
       feed.now();
     } catch (e) {
@@ -1733,8 +1741,57 @@ function chatView(machine, id, fromList) {
     older.classList.toggle("hide", !read.olderRemaining);
     drawWorking();
     drawQuestion(read.pendingInput);
+    drawQueue();
     if (anchor != null) { scroll.scrollTop = scroll.scrollHeight - anchor; keepAnchor = false; }
     else if (stick) toBottom(!firstPaint);
+  }
+
+  /** Waiting prompts stay above the composer, with a separate editor so its draft is safe. */
+  function drawQueue() {
+    const queued = read?.queued || [];
+    queuePanel.classList.toggle("hide", !queued.length && !queueEdit);
+    const header = h("div", { class: "queue-head" }, h("strong", {}, `Queued · ${queued.length}`));
+    if (queued.length && !isWorking()) header.append(h("button", { class: "btn", onclick: async () => {
+      try { await api("resume_queue"); feed.now(); }
+      catch (e) { toast({ title: "Couldn't send the queued message", body: e.message, kind: "error" }); }
+    } }, "Send next"));
+    queueRows.replaceChildren(header, ...queued.map(message => h("div", { class: "queue-row" },
+      h("span", { class: "queue-text" }, message.text || "Image message",
+        message.images ? ` · ${message.images} image(s)` : "",
+        message.error && h("small", { class: "queue-error" }, message.error)),
+      h("button", { "aria-label": "Edit queued message", onclick: () => editQueue(message) }, icon("edit")),
+      h("button", { "aria-label": "Delete queued message", onclick: async () => {
+        try {
+          await api("delete_queued_message", { id: message.id });
+          if (queueEdit?.id === message.id) closeQueueEditor();
+          feed.now();
+        } catch (e) { toast({ title: "Couldn't remove the queued message", body: e.message, kind: "error" }); }
+      } }, icon("trash")))));
+  }
+
+  function closeQueueEditor() {
+    queueEdit = null;
+    queueEditor.classList.add("hide");
+    queueEditor.replaceChildren();
+  }
+
+  function editQueue(message) {
+    const field = h("textarea", { rows: 3, "aria-label": "Edit queued message", spellcheck: "true" });
+    field.value = message.text;
+    queueEdit = { id: message.id, field };
+    const cancel = h("button", { class: "btn", onclick: () => { closeQueueEditor(); drawQueue(); } }, "Cancel");
+    const save = h("button", { class: "btn primary", onclick: async () => {
+      save.disabled = cancel.disabled = true;
+      try {
+        await api("edit_queued_message", { id: message.id, text: withSkillRefs(field.value.trim()) });
+        if (queueEdit?.field === field) closeQueueEditor();
+        feed.now();
+      } catch (e) { toast({ title: "Couldn't edit the queued message", body: e.message, kind: "error" }); }
+      finally { save.disabled = cancel.disabled = false; }
+    } }, "Save");
+    queueEditor.classList.remove("hide");
+    queueEditor.replaceChildren(field, h("div", { class: "queue-actions" }, cancel, save));
+    field.focus();
   }
 
   const queuedBubbles = new Map();
@@ -2076,6 +2133,7 @@ function chatView(machine, id, fromList) {
       turnChanges: [...beforeChanges.filter(c => !runs.has(c.turn)), ...frame.turnChanges],
       pendingInput: frame.pendingInput,
       run: frame.run,
+      queued: frame.queued,
       olderRemaining: Math.max(0, frame.olderRemaining - before.length),
     };
   }

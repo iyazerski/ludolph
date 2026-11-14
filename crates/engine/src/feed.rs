@@ -124,6 +124,7 @@ impl Feed {
             "reset": reset,
             "chat": summary(&view.chat, self.engine.config()),
             "run": view.run,
+            "queued": view.queued,
             "pendingInput": view.question.as_ref().map(pending_input),
             "turnChanges": turn_changes,
             "total": view.page.total,

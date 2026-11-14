@@ -11,6 +11,7 @@ mod dialogs;
 mod icons;
 mod list;
 mod main_window;
+mod queue;
 mod settings;
 mod sidebar;
 mod widgets;

@@ -121,6 +121,7 @@ impl State {
         }
         chat.turn_changes = frame.turn_changes;
         chat.run = frame.run;
+        chat.queued = frame.queued;
         chat.page = Some(page);
         chat.file_links.borrow_mut().clear();
         // A run's every step grows the context, and its end may also have changed the
@@ -325,7 +326,9 @@ impl State {
                 let failed = result.as_ref().err().cloned();
                 // A command pi handled itself never shows as a message.
                 let gone = failed.is_some()
-                    || result.as_ref().is_ok_and(|sent| sent.delivery == "handled");
+                    || result
+                        .as_ref()
+                        .is_ok_and(|sent| matches!(sent.delivery.as_str(), "handled" | "queued"));
                 if gone && let Some(chat) = page.existing_mut() {
                     chat.pending.retain(|p| p.text != typed);
                 }
