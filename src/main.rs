@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use ludolph_engine::engine::{Config, Engine, TokenStore};
+use ludolph_engine::engine::{Config, Engine, SecretStore};
 use ludolph_engine::server;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -65,7 +65,7 @@ async fn engine() -> Result<()> {
         grace: GRACE,
         home,
         app,
-        tokens: TokenStore::Keychain,
+        secrets: SecretStore::Keychain,
     };
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;

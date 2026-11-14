@@ -22,9 +22,10 @@ use crate::live::{self, Live};
 use crate::login;
 use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
-pub use crate::relay::TokenStore;
-use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone};
+pub use crate::relay::SecretStore;
+use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone, Phones};
 use crate::runtime::Runtime;
+use crate::seal;
 use crate::session::{Outcome, Summary};
 use crate::settings::Settings;
 use crate::skills::{self, Skill};
@@ -68,8 +69,8 @@ pub struct Config {
     /// `None` outside one, as for a development engine, which leaves the
     /// login item alone.
     pub app: Option<PathBuf>,
-    /// Where the relay token is kept.
-    pub tokens: TokenStore,
+    /// Where the relay token and the phones' secrets are kept.
+    pub secrets: SecretStore,
 }
 
 impl Config {
@@ -109,6 +110,8 @@ struct Inner {
     catalog: Catalog,
     /// The task that keeps the relay link, if this Mac has one.
     relay: Mutex<Option<AbortHandle>>,
+    /// The linked phones' keys, which the relay link uses.
+    phones: Arc<Phones>,
     phone: watch::Sender<Option<Phone>>,
     /// The task that waits for a phone to link, while Settings shows a code.
     pairing_task: Mutex<Option<AbortHandle>>,
@@ -403,7 +406,7 @@ impl Engine {
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
         // The engine's folder has no `.pi` settings to change the list.
         let catalog = Catalog::new(config.pi.clone(), config.state_dir.clone(), config.grace);
-        let link = Link::load(&config.state_dir, config.tokens)?;
+        let link = Link::load(&config.state_dir, config.secrets)?;
         let engine = Self(Arc::new_cyclic(|inner| Inner {
             turns,
             catalog,
@@ -415,13 +418,14 @@ impl Engine {
             titler: Arc::new(Titler::new(config.pi.clone())),
             settings: Mutex::new(settings),
             relay: Mutex::default(),
+            phones: Arc::default(),
             phone: watch::channel(None).0,
             pairing_task: Mutex::default(),
             pairing: watch::channel(None).0,
             config,
         }));
         if let Some(link) = link {
-            engine.connect(link);
+            engine.connect(link)?;
         }
         Ok(engine)
     }
@@ -988,7 +992,7 @@ impl Engine {
     /// Fails if the address isn't a relay's, or names another relay than
     /// the one this Mac is linked to.
     pub fn link_phone(&self, relay: Option<&str>) -> Result<()> {
-        let saved = Link::load(&self.0.config.state_dir, self.0.config.tokens)?;
+        let saved = Link::load(&self.0.config.state_dir, self.0.config.secrets)?;
         let relay = match (&saved, relay.map(|r| r.trim().trim_end_matches('/'))) {
             (Some(link), Some(other)) if other != link.relay => {
                 bail!("this Mac is linked to {}; unlink it first", link.relay)
@@ -1021,8 +1025,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Wait on `relay` for a phone to link, and keep the link a new Mac gets.
+    /// Wait on `relay` for a phone to link, and keep its secret, and the link
+    /// a new Mac gets.
     async fn pair(&self, relay: &str, token: Option<String>) -> Result<()> {
+        let secret = seal::new_secret()?;
         let shown = |url, expires_in: u64| {
             let expires_in = i64::try_from(expires_in).unwrap_or(i64::MAX / 2_000);
             let expires_at = chrono::Utc::now().timestamp_millis() + expires_in * 1000;
@@ -1030,20 +1036,31 @@ impl Engine {
                 .pairing
                 .send_replace(Some(Pairing::Waiting { url, expires_at }));
         };
-        let token = match relay::pair(relay, token.as_deref(), shown).await {
+        let token = match relay::pair(relay, token.as_deref(), &secret, shown).await {
             // The relay forgot this Mac, so it links as a new one.
             Err(e) if token.is_some() && relay::is_rejected(&e) => {
-                relay::pair(relay, None, shown).await?
+                relay::pair(relay, None, &secret, shown).await?
             }
             other => other?,
         };
-        if let Some(token) = token {
-            let link = Link {
-                relay: relay.to_owned(),
-                token,
-            };
-            link.save(&self.0.config.state_dir, self.0.config.tokens)?;
-            self.connect(link);
+        let config = &self.0.config;
+        match token {
+            Some(token) => {
+                let link = Link {
+                    relay: relay.to_owned(),
+                    token,
+                    phones: vec![secret],
+                };
+                link.save(&config.state_dir, config.secrets)?;
+                self.connect(link)?;
+            }
+            None => {
+                let mut link = Link::load(&config.state_dir, config.secrets)?
+                    .context("this Mac was unlinked while a phone linked")?;
+                link.phones.push(secret.clone());
+                link.save(&config.state_dir, config.secrets)?;
+                self.0.phones.add(&secret)?;
+            }
         }
         Ok(())
     }
@@ -1071,9 +1088,10 @@ impl Engine {
     pub fn unlink_phone(&self) -> Result<()> {
         self.stop_pairing();
         let config = &self.0.config;
-        let link = Link::load(&config.state_dir, config.tokens)?;
+        let link = Link::load(&config.state_dir, config.secrets)?;
         self.disconnect();
-        Link::remove(&config.state_dir, config.tokens)?;
+        self.0.phones.set(&[])?;
+        Link::remove(&config.state_dir, config.secrets)?;
         if let Some(link) = link {
             // The phone shows a Mac the relay keeps as offline until it's removed there.
             tokio::spawn(async move {
@@ -1086,15 +1104,23 @@ impl Engine {
     }
 
     /// Keep `link` to the relay from now on, in place of any other.
-    fn connect(&self, link: Link) {
+    fn connect(&self, link: Link) -> Result<()> {
         self.disconnect();
+        self.0.phones.set(&link.phones)?;
         self.0.phone.send_replace(Some(Phone {
             relay: link.relay.clone(),
             status: LinkStatus::Connecting,
             error: None,
         }));
-        let task = tokio::spawn(relay::run(self.clone(), link, self.0.phone.clone()));
+        let run = relay::run(
+            self.clone(),
+            link,
+            self.0.phones.clone(),
+            self.0.phone.clone(),
+        );
+        let task = tokio::spawn(run);
         *self.0.relay.lock().expect("the relay lock isn't poisoned") = Some(task.abort_handle());
+        Ok(())
     }
 
     fn disconnect(&self) {

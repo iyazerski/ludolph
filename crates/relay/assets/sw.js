@@ -1,8 +1,10 @@
 // Service worker: push notifications, and the app shell for when the relay is away.
 "use strict";
 
+importScripts("/seal.js");
+
 const SHELL = "ludolph-shell-v1";
-const FILES = ["/", "/app.css", "/app.js", "/hljs.js", "/file-icons.js", "/icon.svg", "/icon-192.png", "/badge.png"];
+const FILES = ["/", "/app.css", "/app.js", "/seal.js", "/hljs.js", "/file-icons.js", "/icon.svg", "/icon-192.png", "/badge.png"];
 
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(SHELL).then(cache => cache.addAll(FILES)));
@@ -35,9 +37,25 @@ self.addEventListener("fetch", event => {
   })());
 });
 
+/** What a push says, as the app shows it: a Mac's notice opened with this
+ * phone's link to it, or a test. A notice that doesn't open still shows, since
+ * a push must, but without what the relay can't read either. */
+async function noticeOf(payload) {
+  if (payload?.type !== "notice") return { kind: "test", title: payload?.title || "Ludolph", body: payload?.body || "" };
+  const { machine, mac, sealed } = payload;
+  try {
+    const link = (await Seal.links()).find(l => l.machine === machine && l.phone === sealed.phone);
+    if (!link) throw new Error("no link");
+    const notice = JSON.parse(await Seal.open(link.key, Seal.aad.notice(), sealed.data));
+    return { ...notice, machine, body: mac ? `${mac} · ${notice.body}` : notice.body };
+  } catch {
+    return { kind: "finished", machine, title: mac || "Ludolph", body: "A chat changed. Open Ludolph to see it." };
+  }
+}
+
 self.addEventListener("push", event => {
-  const notice = event.data ? event.data.json() : { title: "Ludolph", body: "" };
   event.waitUntil((async () => {
+    const notice = await noticeOf(event.data?.json());
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const visible = windows.filter(w => w.visibilityState === "visible");
     // The app is on screen: it shows its own banner instead of a system one.
@@ -83,6 +101,7 @@ self.addEventListener("pushsubscriptionchange", event => {
     const { publicKey } = await (await post("/push/key", {})).json();
     const key = Uint8Array.from(atob(publicKey.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
     const sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
-    await post("/push/subscribe", sub.toJSON());
+    const phones = (await Seal.links()).map(l => l.phone);
+    await post("/push/subscribe", { ...sub.toJSON(), phones });
   })());
 });

@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, Status, TokenStore};
+use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, SecretStore, Status};
+use ludolph_engine::seal::{Keys, Purpose};
 use ludolph_engine::server;
 use ludolph_engine::settings::{Notify, Settings};
 use ludolph_engine::transcript::{Part, Role, ToolState, Window};
@@ -38,7 +39,7 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         grace: Duration::from_secs(2),
         home: dir.to_owned(),
         app: Some(dir.join("Ludolph.app")),
-        tokens: TokenStore::File,
+        secrets: SecretStore::File,
     };
     Engine::start(config)
         .await
@@ -1033,6 +1034,34 @@ async fn from_mac(socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::Tc
     }
 }
 
+/// A phone's sealed call to the relay link, and the nonce its reply is bound to.
+fn sealed_call(phone: &Keys, id: u64, tool: &str, args: Value) -> (Value, [u8; 12]) {
+    let call = json!({"tool": tool, "args": args}).to_string();
+    let (data, nonce) = phone.seal(Purpose::Call, &call).unwrap();
+    let message = json!({"type": "call", "id": id, "sealed": {"phone": phone.phone, "data": data}});
+    (message, nonce)
+}
+
+/// What a reply from the Mac says, opened as the phone opens it.
+fn opened_reply(phone: &Keys, nonce: [u8; 12], reply: &Value) -> Value {
+    let data = reply["result"]["Ok"].as_str().unwrap();
+    let opened = phone.open(Purpose::Reply(nonce), data).unwrap();
+    serde_json::from_str(&opened.text).unwrap()
+}
+
+/// What a notice from the Mac says, opened by `phone`.
+fn opened_notice(phone: &Keys, notify: &Value) -> Value {
+    let notices = notify["notices"].as_array().unwrap();
+    let mine = notices
+        .iter()
+        .find(|n| n["phone"] == phone.phone.as_str())
+        .unwrap();
+    let opened = phone
+        .open(Purpose::Notice, mine["data"].as_str().unwrap())
+        .unwrap();
+    serde_json::from_str(&opened.text).unwrap()
+}
+
 /// The first message from the Mac that `wanted` picks; it skips the rest.
 async fn until_from_mac(
     socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
@@ -1078,7 +1107,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     let (mut waiting, path, bearer) = accept_mac(&listener).await;
     assert_eq!((path.as_str(), bearer), ("/pair", None));
     let start = from_mac(&mut waiting).await;
-    assert_eq!(start["protocol"], 6);
+    assert_eq!(start["protocol"], 7);
     assert!(!start["name"].as_str().unwrap().is_empty(), "{start}");
     let expired = CloseFrame {
         code: CloseCode::Policy,
@@ -1100,14 +1129,16 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     )
     .await;
     let shown = phone_link_until(&engine, pairing("waiting")).await;
-    assert_eq!(shown["pairing"]["url"], format!("{relay}/#/pair/c0de"));
+    let url = shown["pairing"]["url"].as_str().unwrap();
+    let secret = url.strip_prefix(&format!("{relay}/#/pair/c0de/")).unwrap();
+    let phone = Keys::derive(secret).unwrap();
     to_mac(&mut waiting, json!({"type": "linked", "token": "t0ken"})).await;
     let (mut socket, path, bearer) = accept_mac(&listener).await;
     assert_eq!(
         (path.as_str(), bearer.as_deref()),
         ("/connect", Some("Bearer t0ken"))
     );
-    assert_eq!(from_mac(&mut socket).await["protocol"], 6);
+    assert_eq!(from_mac(&mut socket).await["protocol"], 7);
     let linked = phone_link_until(&engine, |link| link["link"]["status"] == "connected").await;
     assert_eq!(
         linked,
@@ -1124,12 +1155,16 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         "{power}"
     );
 
-    let calls = [
-        json!("nonsense"),
-        json!({"type": "call", "id": 7, "tool": "list_chats", "args": {}}),
-        json!({"type": "call", "id": 8, "tool": "open_terminal", "args": {}}),
-        json!({"type": "call", "id": 6, "tool": "set_settings", "args": {"sidecarModel": null}}),
-    ];
+    // Calls are sealed by the phone, and each reply opens only as its call's.
+    let (list, list_nonce) = sealed_call(&phone, 7, "list_chats", json!({}));
+    let (open, open_nonce) = sealed_call(&phone, 8, "open_terminal", json!({}));
+    let (settings, settings_nonce) =
+        sealed_call(&phone, 6, "set_settings", json!({"sidecarModel": null}));
+    // A call the relay made up, and one it replays.
+    let forged = json!({"type": "call", "id": 5, "sealed": {"phone": phone.phone, "data": "AQID"}});
+    let mut replayed = list.clone();
+    replayed["id"] = json!(4);
+    let calls = [json!("nonsense"), list, open, settings, forged, replayed];
     for call in calls {
         let text = call
             .as_str()
@@ -1137,47 +1172,71 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         socket.send(Message::Text(text.into())).await.unwrap();
     }
     let mut replies = std::collections::BTreeMap::new();
-    while replies.len() < 3 {
+    while replies.len() < 5 {
         let reply = from_mac(&mut socket).await;
-        replies.insert(reply["id"].as_u64().unwrap(), reply["result"].clone());
+        replies.insert(reply["id"].as_u64().unwrap(), reply);
     }
-    assert_eq!(replies[&7], json!({"Ok": {"total": 0, "chats": []}}));
-    assert_eq!(replies[&8], json!({"Err": "no tool open_terminal"}));
     assert_eq!(
-        replies[&6],
-        json!({"Err": "the phone can't call set_settings"})
+        opened_reply(&phone, list_nonce, &replies[&7]),
+        json!({"ok": {"total": 0, "chats": []}})
     );
+    assert!(
+        phone
+            .open(
+                Purpose::Reply(open_nonce),
+                replies[&7]["result"]["Ok"].as_str().unwrap()
+            )
+            .is_err()
+    );
+    assert_eq!(
+        opened_reply(&phone, open_nonce, &replies[&8]),
+        json!({"error": "no tool open_terminal"})
+    );
+    assert_eq!(
+        opened_reply(&phone, settings_nonce, &replies[&6]),
+        json!({"error": "the phone can't call set_settings"})
+    );
+    assert!(replies[&5]["result"]["Err"].is_string(), "{}", replies[&5]);
+    let replay = replies[&4]["result"]["Err"].as_str().unwrap();
+    assert!(replay.contains("replay"), "{replay}");
 
     // Each moment worth telling reaches the phone as a notice.
-    let create = json!({"type": "call", "id": 9, "tool": "create_chat", "args": {"project": dir.path(), "prompt": "ask"}});
+    let project = json!({"project": dir.path(), "prompt": "ask"});
+    let (create, create_nonce) = sealed_call(&phone, 9, "create_chat", project);
     socket
         .send(Message::Text(create.to_string().into()))
         .await
         .unwrap();
     let made = until_from_mac(&mut socket, |m| m["id"] == 9).await;
-    let chat = made["result"]["Ok"]["chatId"].as_str().unwrap().to_owned();
+    let made = opened_reply(&phone, create_nonce, &made);
+    let chat = made["ok"]["chatId"].as_str().unwrap().to_owned();
     let asked = until_from_mac(&mut socket, |m| m["type"] == "notify").await;
+    let asked = opened_notice(&phone, &asked);
     assert_eq!(
         (&asked["kind"], &asked["chat"]),
         (&json!("input"), &json!(chat))
     );
     assert_eq!(asked["body"], "Needs your answer: Pick one");
-    let answer = json!({"type": "call", "id": 10, "tool": "respond_to_input", "args": {"chat": chat,
-                        "id": "d1", "value": "red"}});
+    let args = json!({"chat": chat, "id": "d1", "value": "red"});
+    let (answer, _) = sealed_call(&phone, 10, "respond_to_input", args);
     socket
         .send(Message::Text(answer.to_string().into()))
         .await
         .unwrap();
     let finished = until_from_mac(&mut socket, |m| m["type"] == "notify").await;
+    let finished = opened_notice(&phone, &finished);
     assert_eq!(
         (&finished["kind"], &finished["body"]),
         (&json!("finished"), &json!("You picked red."))
     );
-    // The phone follows a chat as frames of its feed, until it stops.
-    for watch in [
-        json!({"type": "watch", "id": 20, "chat": chat}),
-        json!({"type": "watch", "id": 21, "chat": "nope"}),
-    ] {
+    // The phone follows a chat as numbered frames of its feed, until it stops.
+    let mut nonces = std::collections::BTreeMap::new();
+    for (id, chat) in [(20, chat.as_str()), (21, "nope")] {
+        let request = json!({"chat": chat}).to_string();
+        let (data, nonce) = phone.seal(Purpose::Watch, &request).unwrap();
+        nonces.insert(id, nonce);
+        let watch =
+            json!({"type": "watch", "id": id, "sealed": {"phone": phone.phone, "data": data}});
         socket
             .send(Message::Text(watch.to_string().into()))
             .await
@@ -1187,9 +1246,11 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     let mut frames = std::collections::BTreeMap::new();
     while frames.len() < 2 {
         let frame = until_from_mac(&mut socket, |m| m["type"] == "frame").await;
-        frames
-            .entry(frame["id"].as_u64().unwrap())
-            .or_insert(frame["frame"].clone());
+        let id = frame["id"].as_u64().unwrap();
+        let data = frame["frame"]["Ok"].as_str().unwrap();
+        let opened = phone.open(Purpose::Frame(nonces[&id], 0), data).unwrap();
+        let opened: Value = serde_json::from_str(&opened.text).unwrap();
+        frames.entry(id).or_insert(opened);
     }
     assert_eq!(frames[&20]["reset"], true, "{}", frames[&20]);
     assert_eq!(
@@ -1205,12 +1266,18 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         .await
         .unwrap();
 
-    let crash = json!({"type": "call", "id": 11, "tool": "send_message", "args": {"chat": chat, "text": "crash"}});
+    let (crash, _) = sealed_call(
+        &phone,
+        11,
+        "send_message",
+        json!({"chat": chat, "text": "crash"}),
+    );
     socket
         .send(Message::Text(crash.to_string().into()))
         .await
         .unwrap();
     let cut = until_from_mac(&mut socket, |m| m["type"] == "notify").await;
+    let cut = opened_notice(&phone, &cut);
     assert_eq!(
         (&cut["kind"], &cut["body"]),
         (&json!("interrupted"), &json!("The run stopped: pi exited."))
@@ -1235,9 +1302,22 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         json!({"type": "code", "code": "c0de2", "expiresIn": 600}),
     )
     .await;
-    phone_link_until(&engine, pairing("waiting")).await;
+    let shown = phone_link_until(&engine, pairing("waiting")).await;
+    let url = shown["pairing"]["url"].as_str().unwrap();
+    let second = Keys::derive(url.rsplit('/').next().unwrap()).unwrap();
+    assert_ne!(second.phone, phone.phone);
     to_mac(&mut waiting, json!({"type": "linked", "token": null})).await;
     phone_link_until(&engine, pairing("linked")).await;
+    // The second phone's calls work on the open connection, and the first's still do.
+    for (id, keys) in [(12, &second), (13, &phone)] {
+        let (call, nonce) = sealed_call(keys, id, "list_chats", json!({}));
+        socket
+            .send(Message::Text(call.to_string().into()))
+            .await
+            .unwrap();
+        let reply = until_from_mac(&mut socket, |m| m["id"] == id).await;
+        assert_eq!(opened_reply(keys, nonce, &reply)["ok"]["total"], 1);
+    }
 
     // Unlinking drops the connection, forgets the link, and has the relay
     // forget the Mac.

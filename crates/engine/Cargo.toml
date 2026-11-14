@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 chrono.workspace = true
 dispatch2.workspace = true
 futures-util.workspace = true
@@ -23,6 +24,7 @@ objc2-core-graphics.workspace = true
 objc2-core-services.workspace = true
 objc2-io-kit.workspace = true
 plist.workspace = true
+ring.workspace = true
 rustls.workspace = true
 security-framework.workspace = true
 serde.workspace = true

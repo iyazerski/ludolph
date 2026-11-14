@@ -1,6 +1,7 @@
 // Ludolph on the phone: your Macs' pi chats, from anywhere.
-// Plain JS, no build. The relay routes /api/call/<mac>/<tool> to a Mac's
-// engine tools (list_chats, chat_view, send_message, ...). The look started
+// Plain JS, no build. The relay routes /api/call/<mac> to a Mac's engine
+// tools (list_chats, chat_view, send_message, ...), sealed so only this phone
+// and the Mac read them (seal.js). The look started
 // from Zeron's mobile app (apps/ios/Zeron), which follows its desktop.
 "use strict";
 
@@ -194,8 +195,37 @@ async function post(path, body = {}) {
   if (data == null) throw new Error("Can't reach the relay");
   return data;
 }
-/** Run an engine tool on one Mac. */
-const call = (machine, tool, args = {}) => post(`/api/call/${encodeURIComponent(machine)}/${tool}`, args);
+/** This phone's links to its Macs, by machine id, as `Seal.links` keeps them. */
+let links = new Map();
+async function loadLinks() { links = new Map((await Seal.links()).map(l => [l.machine, l])); }
+const NOT_LINKED = "This phone can't open this Mac's chats yet. On the Mac, open Ludolph's Settings, choose Link a phone, and scan the code.";
+
+/** Run an engine tool on one Mac: sealed for it, and its answer opened. */
+async function call(machine, tool, args = {}) {
+  const link = links.get(machine);
+  if (!link) throw new ApiError(NOT_LINKED);
+  const { data, nonce } = await Seal.seal(link.key, Seal.aad.call(), JSON.stringify({ tool, args }));
+  const { sealed } = await post(`/api/call/${encodeURIComponent(machine)}`, { phone: link.phone, data });
+  const reply = JSON.parse(await Seal.open(link.key, Seal.aad.reply(nonce), sealed));
+  if ("error" in reply) throw new ApiError(reply.error);
+  return reply.ok;
+}
+
+/** How to follow `chat` on `machine` for `eventStream`: each connection seals
+ * a new request, and opens its frames in order. */
+function chatStream(machine, chat) {
+  return async () => {
+    const link = links.get(machine);
+    if (!link) throw new ApiError(NOT_LINKED);
+    const { data, nonce } = await Seal.seal(link.key, Seal.aad.watch(), JSON.stringify({ chat }));
+    let n = 0;
+    return {
+      path: `/api/watch/${encodeURIComponent(machine)}?phone=${encodeURIComponent(link.phone)}&data=${data}`,
+      // The relay's own errors, like an offline Mac, aren't sealed.
+      decode: async event => (event.error ? event : JSON.parse(await Seal.open(link.key, Seal.aad.frame(nonce, n++), event.sealed))),
+    };
+  };
+}
 
 /** Run `fn` now and then every `interval()` ms while the page is visible.
  * Runs never overlap: `now()` during a run asks for one more right after it,
@@ -228,11 +258,12 @@ function poller(fn, interval) {
 /** A stream with nothing, not even the relay's keep-alive, for this long is dead. */
 const STALL_TIMEOUT = 40000;
 
-/** Follow `path`'s server-sent events while the page is visible, passing each
- * one's JSON to `onEvent`. `onDown` gets the relay's reason when it refuses the
- * stream, and `null` once it's up. It reconnects after a drop, backing off
- * while it keeps failing; each connection starts over, as the relay sends. */
-function eventStream(path, onEvent, onDown) {
+/** Follow server-sent events while the page is visible. `connect` gives each
+ * connection its `path` and how to `decode` its events, whose results go to
+ * `onEvent`. `onDown` gets the reason when the stream is refused, and `null`
+ * once it's up. It reconnects after a drop, backing off while it keeps
+ * failing; each connection starts over, as the relay sends. */
+function eventStream(connect, onEvent, onDown) {
   let ctl = null, timer = null, stopped = false, failures = 0;
   const open = async () => {
     clearTimeout(timer);
@@ -241,6 +272,10 @@ function eventStream(path, onEvent, onDown) {
     let stall = null, refused = false;
     const alive = () => { clearTimeout(stall); stall = setTimeout(() => mine.abort(), STALL_TIMEOUT); };
     try {
+      let stream;
+      try { stream = await connect(); }
+      catch (e) { refused = true; onDown(e.message); return; }
+      const { path, decode } = stream;
       alive();
       const res = await fetch(path, { signal: mine.signal, headers: { Accept: "text/event-stream" } });
       setOnline(true);
@@ -264,7 +299,7 @@ function eventStream(path, onEvent, onDown) {
         while ((end = buffer.indexOf("\n\n")) >= 0) {
           const data = buffer.slice(0, end).split("\n").filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n");
           buffer = buffer.slice(end + 2);
-          if (data) onEvent(JSON.parse(data));
+          if (data) onEvent(await decode(JSON.parse(data)));
         }
       }
     } catch (e) {
@@ -293,8 +328,11 @@ const store = { machines: null, chats: null, loaded: new Set() };
 const machineName = id => store.machines?.find(m => m.id === id)?.name || "Mac";
 const severalMacs = () => (store.machines?.length || 0) > 1;
 
-/** A Mac's state: offline (its engine isn't linked right now) or ready. */
-const macState = m => m.status.online ? "ready" : "offline";
+/** A Mac's state: offline (its engine isn't connected right now), unlinked
+ * (this phone has no key for it), or ready. */
+const macState = m => !m.status.online ? "offline" : links.has(m.id) ? "ready" : "unlinked";
+/** A Mac's state in a few words, with its version when it's ready. */
+const stateText = m => ({ ready: versions(m), offline: "Offline", unlinked: "Not linked on this phone" })[macState(m)];
 const ready = () => (store.machines || []).filter(m => macState(m) === "ready");
 /** The Ludolph version a ready Mac runs. */
 const versions = m => `Ludolph ${m.status.version}`;
@@ -320,6 +358,7 @@ function macNote(m) {
     return h("div", { class: "offline-note" }, h("span", {}, h("b", {}, `${m.name} is offline.`),
       " It may be asleep, or its engine isn't running: open Ludolph on it."));
   }
+  if (macState(m) === "unlinked") return h("div", { class: "offline-note" }, h("span", {}, NOT_LINKED));
   return null;
 }
 
@@ -628,7 +667,7 @@ function route() {
   const previous = current;
   let view;
   const fromList = previous?.kind === "list" || (previous?.kind === "new" && previous.fromList);
-  if (parts[1] === "pair") view = pairView(parts[2]);
+  if (parts[1] === "pair") view = pairView(parts[2], parts[3]);
   else if (parts[1] === "new") view = chatView(null, null, fromList);
   else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "changes") view = changesView(parts[2], parts[4], parts[6], previous?.kind === "chat", previous?.fromList);
   // Back from the changes, the chat goes back the way it came.
@@ -713,7 +752,7 @@ function signInView(hasPasskey = true) {
  * phone links at once. Otherwise it signs in with its passkey, or creates one
  * when the relay allows: for a Mac the relay knows, or on a relay without any.
  */
-function pairView(code) {
+function pairView(code, secret) {
   const text = h("p", {}, "Checking the code…");
   const actions = h("div", { class: "pair-actions" });
   const el = h("div", { class: "view" }, h("div", { class: "signin" },
@@ -734,7 +773,14 @@ function pairView(code) {
     history.replaceState(null, "", "#/");
     route();
   };
-  const claim = async () => done((await post("/api/pair/claim", { code })).machine);
+  // The secret never leaves this phone: the Mac showed it, and the relay never sees it.
+  const claim = async () => {
+    const { machine } = await post("/api/pair/claim", { code });
+    await Seal.link(machine.id, secret);
+    await loadLinks();
+    refreshPush();
+    await done(machine);
+  };
   const failed = (title, e) => {
     if (e.name !== "NotAllowedError") toast({ title, body: e.message, kind: "error", timeout: 6000 });
   };
@@ -749,6 +795,10 @@ function pairView(code) {
     return btn;
   };
   (async () => {
+    if (!secret) {
+      text.textContent = "This code is from an older Ludolph. Update Ludolph on the Mac, then link again.";
+      return;
+    }
     let info;
     try { info = await post("/auth/pair", { code }); }
     catch (e) {
@@ -1934,7 +1984,7 @@ function chatView(machine, id, fromList) {
     }
   }
 
-  const feed = isDraft ? null : eventStream(`/api/watch/${encodeURIComponent(machine)}/${encodeURIComponent(id)}`, onFrame, down);
+  const feed = isDraft ? null : eventStream(chatStream(machine, id), onFrame, down);
   if (isDraft) loadDraft();
   return {
     kind: isDraft ? "new" : "chat",
@@ -2129,8 +2179,19 @@ async function enablePush() {
     sub = null;
   }
   sub ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
-  await post("/push/subscribe", sub.toJSON());
+  await post("/push/subscribe", subscription(sub));
   return sub;
+}
+
+/** What the relay keeps of this browser's subscription: with this phone's
+ * links, since a Mac's notice reaches it sealed for one of them. */
+const subscription = sub => ({ ...sub.toJSON(), phones: [...links.values()].map(l => l.phone) });
+
+/** Keep the relay's copy of this browser's subscription current. */
+function refreshPush() {
+  currentSubscription()
+    .then(sub => sub && Notification.permission === "granted" && post("/push/subscribe", subscription(sub)))
+    .catch(() => {});
 }
 
 async function disablePush() {
@@ -2175,8 +2236,8 @@ function settingsSheet() {
 
     const macRows = (store.machines || []).map(m => itemRow({
       iconName: "laptop", label: m.name,
-      sub: withBattery(m, macState(m) === "ready" ? versions(m) : "Offline"),
-      value: glyph("dot", macState(m) === "ready" ? "var(--tone-done)" : "var(--tertiary)"),
+      sub: withBattery(m, stateText(m)),
+      value: glyph("dot", { ready: "var(--tone-done)", offline: "var(--tertiary)", unlinked: "var(--tone-input)" }[macState(m)]),
       extra: icon("chevRight", "chev"),
       onclick: () => fill(macPage(m, close)),
     }));
@@ -2196,13 +2257,20 @@ function settingsSheet() {
 
 /** One Mac's page: its state, and removing it. */
 function macPage(m, close) {
-  const sub = macState(m) === "ready" ? versions(m) : "Offline. Open Ludolph on it.";
+  const sub = { ready: versions(m), offline: "Offline. Open Ludolph on it.", unlinked: NOT_LINKED }[macState(m)];
   return [
     h("h2", {}, m.name),
     h("div", { class: "note", style: { marginTop: "-8px" } }, withBattery(m, sub)),
     h("div", { class: "group" }, itemRow({ iconName: "trash", label: "Remove this Mac", cls: "danger", onclick: async () => {
       if (!confirm(`Remove ${m.name}? It disconnects now. To add it again, link this phone from its Settings.`)) return;
-      try { await post("/api/machines/remove", { id: m.id }); close(); toast({ title: `${m.name} removed`, kind: "done" }); }
+      try {
+        await post("/api/machines/remove", { id: m.id });
+        await Seal.forget(m.id);
+        await loadLinks();
+        refreshPush();
+        close();
+        toast({ title: `${m.name} removed`, kind: "done" });
+      }
       catch (e) { toast({ title: "Couldn't remove it", body: e.message, kind: "error" }); }
     } })),
   ];
@@ -2225,6 +2293,8 @@ if ("serviceWorker" in navigator) {
 }
 
 (async () => {
+  try { await loadLinks(); }
+  catch (e) { toast({ title: "Couldn't read this phone's links", body: e.message, kind: "error", timeout: 8000 }); }
   // The pairing page signs in on its own.
   if (location.hash.startsWith("#/pair/")) return route();
   try {
@@ -2234,6 +2304,5 @@ if ("serviceWorker" in navigator) {
     // The relay is unreachable: show the cached shell; polling retries.
   }
   route();
-  // Keep the relay's copy of this browser's subscription current.
-  currentSubscription().then(sub => sub && Notification.permission === "granted" && post("/push/subscribe", sub.toJSON())).catch(() => {});
+  refreshPush();
 })();
