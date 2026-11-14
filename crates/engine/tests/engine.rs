@@ -834,6 +834,78 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn terminal_model_changes_refresh_the_catalog_and_an_existing_pi() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let made = tool(&engine, "create_chat", json!({"prompt": "hi"}))
+        .await
+        .unwrap();
+    let id = made["chatId"].as_str().unwrap().to_owned();
+    until(&engine, |chats| chats[0].status == Status::Idle).await;
+    let original = tool(&engine, "list_models", json!({})).await.unwrap();
+    assert_eq!(original["default"], "fake/deep");
+    assert_eq!(original["defaultReasoning"], "medium");
+    let mut changes = engine.subscribe_models();
+    let signed_in = json!([{"provider": "openai", "id": "gpt", "name": "GPT",
+                            "reasoning": true, "contextWindow": 300000}]);
+    let path = dir.path().join("models.json");
+    std::fs::write(&path, serde_json::to_vec(&signed_in).unwrap()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    let refreshed = tool(&engine, "list_models", json!({})).await.unwrap();
+    assert_eq!(refreshed["default"], "openai/gpt");
+    assert_eq!(refreshed["models"].as_array().unwrap().len(), 1);
+    assert_eq!(refreshed["models"][0]["id"], "openai/gpt");
+
+    // A new picker alone isn't enough: the old pi must also accept the new provider.
+    let picked = tool(
+        &engine,
+        "set_chat_model",
+        json!({"chat": id, "model": "openai/gpt"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(picked["model"], "openai/gpt");
+    assert_eq!(picked["spent"], json!({"tokens": 2500, "cost": 0.625}));
+
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{"defaultThinkingLevel":"high"}"#,
+    )
+    .unwrap();
+    let defaults = tool(&engine, "list_models", json!({})).await.unwrap();
+    assert_eq!(defaults["defaultReasoning"], "high");
+
+    // An atomic replacement, sign-out and settings change each invalidate immediately.
+    for file in ["auth.json", "settings.json"] {
+        let mut changes = engine.subscribe_models();
+        let temporary = dir.path().join("replacement.json");
+        std::fs::write(&temporary, r#"{"defaultThinkingLevel":null}"#).unwrap();
+        std::fs::rename(temporary, dir.path().join(file)).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), changes.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        tool(&engine, "list_models", json!({})).await.unwrap();
+    }
+    let mut changes = engine.subscribe_models();
+    std::fs::remove_file(&path).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    let signed_out = tool(&engine, "list_models", json!({})).await.unwrap();
+    assert_eq!(signed_out["default"], "fake/deep");
+    assert_eq!(
+        signed_out["defaultReasoning"], "medium",
+        "pi may omit its thinking level"
+    );
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_message_can_carry_images() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;

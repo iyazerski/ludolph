@@ -33,55 +33,26 @@ pub fn worked(secs: i64) -> String {
     }
 }
 
-/// The context ring's tooltip: how full the context is, and what the chat
-/// has spent so far.
-pub fn context_help(tokens: Option<u64>, window: u64, spent: Option<Spent>) -> String {
-    let mut help = match tokens {
-        Some(tokens) => format!(
-            "Context: {} of {} tokens ({}%)\n{} tokens left",
-            count(tokens),
-            count(window),
-            (tokens as f64 / window as f64 * 100.0).round(),
-            count(window.saturating_sub(tokens)),
-        ),
-        // pi can't tell until the first answer after a compaction.
-        None => format!(
-            "Context: {} tokens\nSize known after the next answer",
-            count(window)
-        ),
-    };
-    match spent.filter(|spent| spent.tokens > 0) {
-        Some(spent) if spent.cost > 0.0 => help.push_str(&format!(
-            "\nThis chat: {} tokens, {}",
-            count(spent.tokens),
-            dollars(spent.cost)
-        )),
-        Some(spent) => help.push_str(&format!("\nThis chat: {} tokens", count(spent.tokens))),
-        None => {}
-    }
-    help
+/// Format the context's used/capacity counts and cumulative chat cost.
+pub fn context_readout(tokens: Option<u64>, window: u64, spent: Option<Spent>) -> (String, String) {
+    let used = tokens.map_or_else(|| "—".to_owned(), thousands);
+    let cost = spent.map_or_else(
+        || "—".to_owned(),
+        |spent| {
+            if spent.cost > 0.0 && spent.cost < 0.01 {
+                "<$0.01".to_owned()
+            } else {
+                let rounded = (spent.cost * 100.0).round() / 100.0;
+                format!("${rounded:.2}")
+            }
+        },
+    );
+    (format!("{used}/{}", thousands(window)), cost)
 }
 
-/// A count with thousands separators: 1,234,567.
-fn count(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// US dollars to the cent, with a floor so a tiny cost doesn't read as free.
-fn dollars(cost: f64) -> String {
-    if cost < 0.01 {
-        "under $0.01".to_owned()
-    } else {
-        format!("${cost:.2}")
-    }
+/// Round a token count to tenths of a thousand without trailing zeroes.
+fn thousands(tokens: u64) -> String {
+    format!("{}k", (tokens as f64 / 100.0).round() / 10.0)
 }
 
 /// A model id without its provider: `anthropic/claude-x` reads `claude-x`.
@@ -223,32 +194,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_help_reads_the_context_and_the_spend() {
-        let spent = |tokens, cost| Some(Spent { tokens, cost });
-        let cases = [
-            (
-                Some(96_000),
-                spent(1_234_567, 0.454),
-                "Context: 96,000 of 200,000 tokens (48%)\n104,000 tokens left\nThis chat: 1,234,567 tokens, $0.45",
-            ),
-            (
-                None,
-                spent(512, 0.001),
-                "Context: 200,000 tokens\nSize known after the next answer\nThis chat: 512 tokens, under $0.01",
-            ),
-            (
-                Some(0),
-                spent(900, 0.0),
-                "Context: 0 of 200,000 tokens (0%)\n200,000 tokens left\nThis chat: 900 tokens",
-            ),
-            (
-                Some(1_000),
-                spent(0, 0.0),
-                "Context: 1,000 of 200,000 tokens (1%)\n199,000 tokens left",
-            ),
-        ];
-        for (tokens, spent, want) in cases {
-            assert_eq!(context_help(tokens, 200_000, spent), want);
+    fn context_readout_is_compact_and_keeps_unknown_usage_explicit() {
+        for (tokens, cost, want) in [
+            (Some(75_000), Some(0.75), ("75k/272k", "$0.75")),
+            (Some(1500), Some(0.625), ("1.5k/272k", "$0.63")),
+            (Some(0), Some(0.0), ("0k/272k", "$0.00")),
+            (None, Some(0.001), ("—/272k", "<$0.01")),
+            (None, None, ("—/272k", "—")),
+        ] {
+            let spent = cost.map(|cost| Spent { cost });
+            let got = context_readout(tokens, 272_000, spent);
+            assert_eq!((got.0.as_str(), got.1.as_str()), want);
         }
     }
 

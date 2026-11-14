@@ -460,9 +460,11 @@ async fn turn_changes(engine: &Engine, args: TurnArgs) -> Result<Value> {
 
 /// The models pi can use, with the thinking levels each supports.
 async fn list_models(engine: &Engine) -> Result<Value> {
-    let models = engine.models().await?;
-    let models: Vec<Value> = models.iter().map(model).collect();
-    Ok(json!({"models": models, "default": engine.default_model().await?}))
+    let available = engine.models().await?;
+    let models: Vec<Value> = available.models.iter().map(model).collect();
+    Ok(
+        json!({"models": models, "default": available.default, "defaultReasoning": available.reasoning}),
+    )
 }
 
 fn model(model: &Model) -> Value {

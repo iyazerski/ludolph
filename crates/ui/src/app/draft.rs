@@ -5,7 +5,7 @@ use serde_json::json;
 
 use super::attach::Payload;
 use super::{Page, Pending, State, Target};
-use crate::data::{Created, Model, Models, Picked, Project, Projects, levels_of};
+use crate::data::{Created, Model, Models, Picked, Project, Projects};
 use crate::labels::short_model;
 use crate::prefs::{NewChat, ProjectPick};
 
@@ -47,7 +47,9 @@ pub enum Catalog {
     /// Not asked for yet.
     #[default]
     Unloaded,
-    Loading,
+    Loading {
+        stale: bool,
+    },
     Ready(Models),
     /// Loading failed; the next [`State::load_catalog`] call tries again.
     Failed(String),
@@ -80,7 +82,7 @@ impl Catalog {
     pub fn ready(&self) -> Option<&[Model]> {
         match self {
             Self::Ready(got) => Some(&got.models),
-            Self::Unloaded | Self::Loading | Self::Failed(_) => None,
+            Self::Unloaded | Self::Loading { .. } | Self::Failed(_) => None,
         }
     }
 
@@ -96,7 +98,7 @@ impl Catalog {
     pub fn default_model(&self) -> Option<&str> {
         match self {
             Self::Ready(got) => got.default.as_deref(),
-            Self::Unloaded | Self::Loading | Self::Failed(_) => None,
+            Self::Unloaded | Self::Loading { .. } | Self::Failed(_) => None,
         }
     }
 }
@@ -110,6 +112,7 @@ impl State {
             draft.load = Load::Loading;
         }
         self.load_catalog();
+        self.fit_draft();
         self.api.call(
             "list_projects",
             json!({}),
@@ -220,16 +223,27 @@ impl State {
         );
     }
 
-    /// Load pi's models unless they're loaded or loading.
-    pub fn load_catalog(&mut self) {
-        if matches!(self.catalog, Catalog::Loading | Catalog::Ready(_)) {
+    /// Refresh the catalog after a sign-in, settings change, or window reopen.
+    pub(super) fn refresh_catalog(&mut self) {
+        if let Catalog::Loading { stale } = &mut self.catalog {
+            *stale = true;
             return;
         }
-        self.catalog = Catalog::Loading;
+        self.catalog = Catalog::Unloaded;
+        self.load_catalog();
+    }
+
+    /// Load pi's models unless they're loaded or loading.
+    pub fn load_catalog(&mut self) {
+        if matches!(self.catalog, Catalog::Loading { .. } | Catalog::Ready(_)) {
+            return;
+        }
+        self.catalog = Catalog::Loading { stale: false };
         self.api.call(
             "list_models",
             json!({}),
             |s, result: Result<Models, String>, _| {
+                let stale = matches!(s.catalog, Catalog::Loading { stale: true });
                 s.catalog = match result {
                     Ok(got) => Catalog::Ready(got),
                     Err(e) => {
@@ -238,6 +252,10 @@ impl State {
                     }
                 };
                 s.fit_draft();
+                s.load_info();
+                if stale {
+                    s.refresh_catalog();
+                }
             },
         );
     }
@@ -286,6 +304,12 @@ impl State {
             args,
             move |s, result: Result<Picked, String>, _| match result {
                 Ok(saved) => {
+                    {
+                        let mut prefs = s.prefs.borrow_mut();
+                        prefs.new_chat.model = saved.model.clone();
+                        prefs.new_chat.reasoning = saved.reasoning.clone();
+                    }
+                    s.save_prefs();
                     if let Some(info) = s.page_at(nav).and_then(|p| p.info.as_mut()) {
                         info.model = saved.model;
                         info.reasoning = saved.reasoning;
@@ -315,24 +339,11 @@ impl State {
         let Some(draft) = page.draft_mut() else {
             return;
         };
-        let Some(models) = self.catalog.ready() else {
+        let Catalog::Ready(models) = &self.catalog else {
             return;
         };
-        if draft
-            .model
-            .as_ref()
-            .is_some_and(|m| !models.iter().any(|x| &x.id == m))
-        {
-            draft.model = None;
-        }
-        let levels = levels_of(models, draft.model.as_deref().unwrap_or_default());
-        if draft
-            .reasoning
-            .as_ref()
-            .is_some_and(|r| !levels.contains(r))
-        {
-            draft.reasoning = None;
-        }
+        (draft.model, draft.reasoning) =
+            models.fitted(draft.model.as_deref(), draft.reasoning.as_deref());
     }
 
     pub fn pick_project(&mut self, project: Option<String>) {

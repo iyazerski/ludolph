@@ -14,7 +14,7 @@ use crate::app::{
     Catalog, ChatPage, Config, LEVELS_KEPT, Overlay, Pick, Prep, Sheet, SkillList, State, Voice,
 };
 use crate::data::{Skill, levels_of};
-use crate::labels::{context_help, reasoning_name};
+use crate::labels::{context_readout, reasoning_name};
 use crate::markup;
 use crate::message::skill_query;
 
@@ -394,7 +394,7 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
         Catalog::Failed(error) => {
             format!("Couldn't load models: {error}. Reopen the chat to retry.")
         }
-        Catalog::Unloaded | Catalog::Loading => "Loading models…".to_owned(),
+        Catalog::Unloaded | Catalog::Loading { .. } => "Loading models…".to_owned(),
     })
     .placement(Placement::TopStart)
     .width(320.0)
@@ -429,7 +429,7 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
                 .radius(7.0)
                 .center_y()
                 .child(
-                    text(chosen.map_or("Default".to_owned(), reasoning_name))
+                    text(chosen.map_or("Loading…".to_owned(), reasoning_name))
                         .font(k.ty.small)
                         .color(k.c.text_faint),
                 )
@@ -504,7 +504,7 @@ fn meta(page: &ChatPage, k: &Kit) -> El {
     )
 }
 
-/// How full the context window is, as a ring toned as the desktop tones it.
+/// Toggle between the context ring and compact usage/cost figures.
 fn context(page: &ChatPage, k: &Kit) -> El {
     let Some(usage) = page.info.as_ref().and_then(|i| i.context_usage) else {
         return rune::el();
@@ -513,11 +513,8 @@ fn context(page: &ChatPage, k: &Kit) -> El {
         return rune::el();
     };
     let spent = page.info.as_ref().and_then(|i| i.spent);
-    let help = context_help(usage.tokens, window, spent);
-    let Some(tokens) = usage.tokens else {
-        return text("—").font(k.ty.small).color(k.c.text_faint).help(help);
-    };
-    let fraction = tokens as f64 / window as f64;
+    let (counts, cost) = context_readout(usage.tokens, window, spent);
+    let fraction = usage.tokens.unwrap_or_default() as f64 / window as f64;
     let (arc, label) = if fraction >= 0.9 {
         (k.c.danger.fg, k.c.danger.fg)
     } else if fraction >= 0.75 {
@@ -525,29 +522,48 @@ fn context(page: &ChatPage, k: &Kit) -> El {
     } else {
         (k.c.text_accent, k.c.text_muted)
     };
-    let ring = rune::el()
-        .size(14.0, 14.0)
-        .child(
-            icon(&icons::RING, 14.0)
-                .absolute(0.0, 0.0)
-                .color(k.c.icon_faint)
-                .opacity(0.35),
-        )
-        .child(
-            icon(icons::ring(fraction), 14.0)
-                .absolute(0.0, 0.0)
-                .color(arc),
+    let content = if page.context_details {
+        row()
+            .gap(8.0)
+            .center_y()
+            .child(text(counts.clone()).font(k.ty.small).color(label))
+            .child(text(cost.clone()).font(k.ty.small).color(k.c.text_muted))
+    } else {
+        let ring = rune::el()
+            .size(14.0, 14.0)
+            .child(
+                icon(&icons::RING, 14.0)
+                    .absolute(0.0, 0.0)
+                    .color(k.c.icon_faint)
+                    .opacity(0.35),
+            )
+            .child(
+                icon(icons::ring(fraction), 14.0)
+                    .absolute(0.0, 0.0)
+                    .color(arc),
+            );
+        let percent = usage.tokens.map_or_else(
+            || "—".to_owned(),
+            |_| format!("{}%", (fraction * 100.0).round()),
         );
-    row()
-        .gap(6.0)
-        .center_y()
-        .child(ring)
-        .child(
-            text(format!("{}%", (fraction * 100.0).round()))
-                .font(k.ty.small)
-                .color(label),
-        )
-        .help(help)
+        row()
+            .gap(6.0)
+            .center_y()
+            .child(ring)
+            .child(text(percent).font(k.ty.small).color(label))
+    };
+    k.interactive(content)
+        .key("context-usage")
+        .label(if page.context_details {
+            format!("{counts}, {cost}. Show context ring")
+        } else {
+            "Show context usage and cost".to_owned()
+        })
+        .on_press(|s: &mut State| {
+            if let Some(page) = s.chat_mut() {
+                page.context_details = !page.context_details;
+            }
+        })
 }
 
 fn sheets(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {

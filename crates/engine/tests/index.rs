@@ -91,6 +91,8 @@ fn spend_includes_all_usage_and_survives_a_restart() {
                        "totalTokens": 168, "cost": {"total": 0.125}});
     let mut answer = assistant("a1", "aborted", 2);
     answer["message"]["usage"] = usage.clone();
+    answer["message"]["provider"] = json!("anthropic");
+    answer["message"]["model"] = json!("opus");
     let mut result = tool_result("t1");
     result["message"]["usage"] = usage.clone();
     let (dir, path) = sessions(&[header(3), user("u1", json!("hi"), 1), answer, result]);
@@ -98,15 +100,26 @@ fn spend_includes_all_usage_and_survives_a_restart() {
     index.refresh(dir.path()).unwrap();
     assert_eq!(index.get(&path).unwrap().spent.tokens, 336);
     assert_eq!(index.get(&path).unwrap().spent.cost, 0.25);
-    let entries: Vec<_> = ["compaction", "branch_summary", "usage"]
-        .into_iter()
-        .map(|kind| json!({"type": kind, "usage": usage}))
-        .collect();
+    let mut next = assistant("a2", "stop", 3);
+    next["message"]["provider"] = json!("openai");
+    next["message"]["model"] = json!("gpt");
+    next["message"]["usage"] = json!({"input": 200, "output": 50,
+        "cacheRead": 100, "cacheWrite": 10, "cost": {"total": 0.01}});
+    let mut entries = vec![
+        json!({"type": "model_change", "provider": "openai", "modelId": "gpt"}),
+        next,
+    ];
+    entries.extend(
+        ["compaction", "branch_summary", "usage"]
+            .into_iter()
+            .map(|kind| json!({"type": kind, "usage": usage})),
+    );
     append(&path, &lines(&entries));
     index.refresh(dir.path()).unwrap();
     let summary = index.get(&path).unwrap();
-    assert_eq!(summary.spent.tokens, 840);
-    assert_eq!(summary.spent.cost, 0.625);
+    assert_eq!(summary.model.as_deref(), Some("openai/gpt"));
+    assert_eq!(summary.spent.tokens, 1200);
+    assert!((summary.spent.cost - 0.635).abs() < 1e-10);
     assert_eq!(summary.context_tokens, None);
     let state = dir.path().join("index.json");
     index.save(&state).unwrap();

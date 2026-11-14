@@ -126,6 +126,9 @@ impl State {
         chat.file_links.borrow_mut().clear();
         // A run's every step grows the context, and its end may also have changed the
         // model or the branch.
+        let configured = chat.chat.as_ref().is_some_and(|before| {
+            before.model != frame.chat.model || before.reasoning != frame.chat.reasoning
+        });
         let working = frame.chat.is_working();
         let settled = chat.chat.as_ref().is_some_and(|c| c.is_working()) && !working;
         let seen = self.prefs.borrow_mut().mark_seen(&frame.chat);
@@ -133,7 +136,7 @@ impl State {
             self.save_prefs();
         }
         if let Some(chat) = self.existing_at(nav) {
-            let due = settled || (working && chat.info_due());
+            let due = configured || settled || (working && chat.info_due());
             chat.chat = Some(frame.chat);
             self.load_thumbs();
             if due {

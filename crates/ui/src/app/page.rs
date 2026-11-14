@@ -28,6 +28,8 @@ pub struct ChatPage {
     pub target: Target,
     pub composer: TextEdit,
     pub info: Option<ComposerInfo>,
+    /// Show compact context counts and chat cost in place of the ring.
+    pub context_details: bool,
     pub overlay: Overlay,
     /// Inline model and reasoning menus, shared by both windows.
     pub model_picker: ComboboxState,
@@ -212,6 +214,7 @@ impl ChatPage {
             target,
             composer,
             info: None,
+            context_details: false,
             overlay: Overlay::Closed,
             model_picker: ComboboxState::default(),
             reasoning_picker: ComboboxState::default(),
