@@ -96,7 +96,6 @@ impl State {
             args,
             move |s, result: Result<Value, String>, _| match result {
                 Ok(_) => {
-                    s.notify("Chat deleted");
                     s.chat_gone(&chat);
                     s.api.peer().update(move |s, _| s.chat_gone(&chat));
                 }

@@ -1564,10 +1564,11 @@ function chatView(machine, id, fromList) {
           if (history.state?.sheet) addEventListener("popstate", toList, { once: true });
           else toList();
           close();
-          toast({ title: "Chat deleted", kind: "done", timeout: 2000 });
         } catch (e) { toast({ title: "Couldn't delete", body: e.message, kind: "error" }); remove.disabled = false; }
       } }, "Delete");
-      const what = chat ? `“${chatTitle(chat)}”` : "This chat";
+      // An untitled chat's title is its whole first message.
+      const title = chat ? chatTitle(chat).replace(/\s+/g, " ").trim() : "";
+      const what = title ? `“${title.length > 80 ? `${title.slice(0, 80).trimEnd()}…` : title}”` : "This chat";
       return [
         h("h2", {}, "Delete this chat?"),
         h("div", { class: "note" }, `${what} and its pi session are deleted for good. If its agent is working, it stops.`),
