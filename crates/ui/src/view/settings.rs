@@ -14,7 +14,7 @@ use rune_kit::{
 };
 
 use super::widgets::{busy, dot};
-use crate::app::{QR_SIZE, SettingsPage, State};
+use crate::app::{QR_SIZE, SettingsPage, State, Update};
 use crate::data::{LinkStatus, Notify, Pairing, RelayLink};
 use crate::labels::short_model;
 
@@ -60,7 +60,7 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
             );
         }
     }
-    body = body.child(col().w_full().pt(8.0).child(group(k, vec![about(k)])));
+    body = body.child(col().w_full().pt(8.0).child(group(k, vec![about(page, k)])));
     col()
         .w_full()
         .h_full()
@@ -442,8 +442,34 @@ fn pairing_block(page: &SettingsPage, pairing: &Pairing, k: &Kit) -> El {
     row().w_full().px(PAD).py(16.0).justify_center().child(body)
 }
 
-/// The version, and Quit, which stops the windows but not the engine.
-fn about(k: &Kit) -> El {
+/// The version and where updating stands, with the update and Quit buttons.
+/// Quit stops the windows but not the engine.
+fn about(page: &SettingsPage, k: &Kit) -> El {
+    let (status, failed) = match &page.update {
+        Update::Checking => ("Checking for updates…".to_owned(), false),
+        Update::Latest => ("This is the latest version.".to_owned(), false),
+        Update::Available(version) => (
+            format!("Version {version} is out. Updating restarts Ludolph and stops running chats."),
+            false,
+        ),
+        Update::Installing(version) => (format!("Installing version {version}…"), false),
+        Update::Failed(why) => (why.clone(), true),
+    };
+    let update = match &page.update {
+        Update::Available(version) => Some(
+            Button::new(format!("Update to {version}"))
+                .variant(ButtonVariant::Neutral)
+                .on_press(State::install_update)
+                .build(k),
+        ),
+        Update::Latest | Update::Failed(_) => Some(
+            Button::new("Check again")
+                .variant(ButtonVariant::Outline)
+                .on_press(State::check_update)
+                .build(k),
+        ),
+        Update::Checking | Update::Installing(_) => Some(busy(16.0, k)),
+    };
     row()
         .w_full()
         .px(PAD)
@@ -456,21 +482,29 @@ fn about(k: &Kit) -> El {
                 .grow(1.0)
                 .gap(2.0)
                 .child(
-                    text(format!("Ludolph {}", env!("CARGO_PKG_VERSION")))
+                    text(format!("Ludolph {}", crate::VERSION))
                         .font(k.ty.ui_medium)
                         .color(k.c.text_base),
                 )
                 .child(
-                    text("Quitting leaves the engine running for the phone until you log out.")
+                    text(status)
                         .font(k.ty.text_small)
-                        .color(k.c.text_muted)
+                        .color(if failed {
+                            k.c.danger.fg
+                        } else {
+                            k.c.text_muted
+                        })
                         .wrap(),
                 ),
         )
+        .children(update)
         .child(
             Button::new("Quit")
                 .variant(ButtonVariant::Outline)
                 .shortcut("⌘Q")
+                .help(
+                    "Close the windows. The engine keeps running for the phone until you log out.",
+                )
                 .on_press_tx(|_: &mut State, tx| tx.quit())
                 .build(k),
         )

@@ -35,6 +35,9 @@ pub fn start(home: &Path, state_dir: &Path) -> Result<()> {
         throttle_interval: 30,
         standard_out_path: log.clone(),
         standard_error_path: log,
+        environment_variables: Env {
+            ludolph_build: ludolph_engine::VERSION,
+        },
     };
     let mut xml = Vec::new();
     plist::to_writer_xml(&mut xml, &job).context("writing the engine's job")?;
@@ -100,6 +103,15 @@ struct Job {
     throttle_interval: u32,
     standard_out_path: PathBuf,
     standard_error_path: PathBuf,
+    environment_variables: Env,
+}
+
+/// The engine's environment, which names the version: an update replaces the
+/// binary at the same path, and the changed plist then restarts the engine.
+#[derive(Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+struct Env {
+    ludolph_build: &'static str,
 }
 
 /// Restart after a crash, but not after the clean exit SIGTERM brings.

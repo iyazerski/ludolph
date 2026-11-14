@@ -30,7 +30,7 @@ pub use self::page::{
     Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending, QuestionForm, Sheet,
     SkillList, Target, Voice,
 };
-pub use self::settings::{QR_SIZE, SettingsPage};
+pub use self::settings::{QR_SIZE, SettingsPage, Update};
 
 /// The most chats the list loads, for its search.
 const LIST_LIMIT: usize = 200;

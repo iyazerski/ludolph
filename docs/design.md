@@ -374,10 +374,19 @@ crates/
   relay/        the relay server and the phone app
   relay-proto/  the Mac ↔ relay messages
   json-file/    atomic JSON files
-src/main.rs     the `ludolph` binary: the app, `engine`, and `install`/`uninstall` for the launch agents
-assets/         the app's Info.plist template and icon (drawn by crates/relay/assets/make_icons.py)
-scripts/        bundle.sh and the local signing identity
+src/main.rs     the `ludolph` binary: the app, `engine`, and `uninstall` for the launch agents
+assets/         the app's Info.plist template, icon (drawn by crates/relay/assets/make_icons.py) and DMG background
+scripts/        bundle.sh, dmg.py, and the local signing identity
+install.sh      installs or updates the latest release
 ```
+
+## Releases
+
+As in fettle, each push to `main` that changes the app publishes `vX.Y.n` (`.github/workflows/release.yml`): X.Y from `Cargo.toml`, and n counting the earlier X.Y releases. It ships only what passes CI. The release has `Ludolph.dmg` for people, `Ludolph.zip` for `install.sh` and the Homebrew cask in `iyazerski/homebrew-tap`, and a checksum for each. CI sets `LUDOLPH_VERSION`, which the engine, the windows and `Info.plist` show.
+
+The app is signed with a self-signed certificate, the same for every release (`MACOS_CERT_P12`), so macOS keeps the microphone, speech and Keychain grants across updates. `install.sh` and the release workflow check that certificate's hash. It isn't notarized, so macOS asks once before the first start.
+
+Settings checks for a newer release each time it opens, and offers to update. The app downloads `Ludolph.zip` with the system's curl, checks its checksum and certificate, swaps the app in one rename, and starts again. The engine's launchd job names the version, so the new app's changed job restarts the engine too, which stops running chats; Settings says so beside the button.
 
 ## Existing sessions
 

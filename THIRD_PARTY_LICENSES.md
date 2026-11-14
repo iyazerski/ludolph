@@ -9599,6 +9599,7 @@ Used by:
 - resvg 0.45.1
 - rustc-hash 2.1.3
 - ryu 1.0.23
+- semver 1.0.28
 - serde 1.0.229
 - serde_core 1.0.229
 - serde_derive 1.0.229
