@@ -741,9 +741,10 @@ function route() {
   const fromList = previous?.kind === "list" || (previous?.kind === "new" && previous.fromList);
   if (parts[1] === "pair") view = pairView(parts[2], parts[3]);
   else if (parts[1] === "new") view = chatView(null, null, fromList);
-  else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "changes") view = changesView(parts[2], parts[4], parts[6], previous?.kind === "chat", previous?.fromList);
-  // Back from the changes, the chat goes back the way it came.
-  else if (parts[1] === "m" && parts[3] === "chat") view = chatView(parts[2], parts[4], previous?.kind === "changes" ? previous.chatFromList : fromList);
+  else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "details") view = detailsView(parts[2], parts[4], !!previous, previous?.fromList ?? previous?.chatFromList);
+  else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "changes") view = changesView(parts[2], parts[4], parts[6], !!previous, previous?.fromList ?? previous?.chatFromList);
+  // Returning from a chat page keeps the chat's original back destination.
+  else if (parts[1] === "m" && parts[3] === "chat") view = chatView(parts[2], parts[4], ["changes", "details"].includes(previous?.kind) ? previous.chatFromList : fromList);
   else view = listView();
   current = view;
   if (previous) {
@@ -751,7 +752,7 @@ function route() {
     previous.el.classList.add("leave");
     setTimeout(() => previous.el.remove(), 220);
     view.el.classList.add("enter");
-    if (view.kind === "list" || (view.kind === "chat" && previous.kind === "changes")) view.el.classList.add("back");
+    if (view.kind === "list" || (view.kind === "chat" && ["changes", "details"].includes(previous.kind))) view.el.classList.add("back");
   }
   $("#app").append(view.el);
   view.mounted?.();
@@ -1071,7 +1072,7 @@ const TOOL_VIEW = {
 /** The tools whose subject is a file, shown by name on a badge. */
 const FILE_TOOLS = new Set(["read", "write", "edit"]);
 /** A tool part's state as its row's class. */
-const STATE_CLASS = { running: "run", failed: "err", done: "" };
+const STATE_CLASS = { running: "run", failed: "err", cancelled: "cancelled", done: "" };
 const baseName = path => path.split(/[\\/]/).filter(Boolean).pop() || path;
 
 /** The colour file-type icon for `path`, chosen as rune-theme-opencode's `file_icons::file`. */
@@ -1091,9 +1092,13 @@ const fileBadge = path => h("span", { class: "badge" }, h("span", { class: "well
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 /** A tool group's one-line summary, as the desktop words it. */
 function toolSummary(tools) {
-  let commands = 0, reads = 0, searches = 0, fetches = 0, todos = 0, other = 0, failed = 0;
+  const scripts = tools.filter(t => t.name === "codemode").length;
+  tools = tools.flatMap(t => t.calls?.length ? t.calls : t.name === "codemode" ? [] : [t]);
+  if (!tools.length && scripts) return `Ran ${plural(scripts, "script", "scripts")}`;
+  let commands = 0, reads = 0, searches = 0, fetches = 0, todos = 0, other = 0, failed = 0, cancelled = 0;
   const edited = new Set();
   for (const t of tools) {
+    if (t.state === "cancelled") { cancelled++; continue; }
     if (t.state === "failed") failed++;
     if (t.name === "bash") commands++;
     else if (t.name === "write" || t.name === "edit") edited.add(t.subject || t.id);
@@ -1112,25 +1117,46 @@ function toolSummary(tools) {
   if (todos) parts.push("updated todos");
   if (other) parts.push(`called ${plural(other, "tool", "tools")}`);
   if (failed) parts.push(`${failed} failed`);
+  if (cancelled) parts.push(`${cancelled} cancelled`);
   const s = parts.join(" · ");
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** A run of consecutive tool calls, folded under the desktop's summary; `onOpen(tool)` shows one's output. */
-function toolGroup(tools, open, onToggle, onOpen) {
+function toolGroup(tools, open, onToggle, onOpen, isOpen, toggleCall) {
   const live = tools.some(t => t.state === "running");
   const block = h("div", { class: `tools${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { block.classList.toggle("open"); onToggle(block.classList.contains("open")); haptic(4); } },
     icon("chevDown", "chev"), h("span", { class: `sum${live ? " shimmer" : ""}` }, toolSummary(tools)));
   // One line per call, as the desktop's activity rows: icon, verb, then the
   // subject, or a file call's badge.
-  const items = tools.map(t => {
+  const toolRow = (t, onClick) => {
     const [verb, iconName] = TOOL_VIEW[t.name] || ["Tool", "tool"];
     const arg = TOOL_VIEW[t.name] ? t.subject || "" : [t.name, t.subject].filter(Boolean).join(" · ");
     const subject = FILE_TOOLS.has(t.name) && t.subject ? fileBadge(t.subject) : h("span", { class: "arg" }, arg.replace(/\s+/g, " "));
-    return h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, role: "button", onclick: () => onOpen(t) },
+    const row = h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, role: onClick ? "button" : null, onclick: onClick, "aria-label": `${verb} ${arg} · ${t.state}` },
       h("span", { class: "lead" }, t.state === "running" ? glyph("trail") : icon(iconName)),
       h("span", { class: "verb" }, verb), subject);
+    return row;
+  };
+  const items = tools.map(t => {
+    if (t.name !== "codemode" && !t.calls?.length) return toolRow(t, () => onOpen(t));
+    const key = `${t.id}#calls`;
+    const nested = h("div", { class: `nested${isOpen(key, true) ? " open" : ""}` });
+    const label = t.name === "codemode" ? "Codemode" : t.name;
+    const head = h("button", { class: `item ${STATE_CLASS[t.state] || ""}`, onclick: () => {
+      nested.classList.toggle("open");
+      toggleCall(key, nested.classList.contains("open"));
+      haptic(4);
+    } }, h("span", { class: "lead" }, t.state === "running" ? glyph("trail") : icon("tool")),
+    h("span", { class: "verb" }, label), icon("chevDown", "chev"));
+    const children = (t.calls || []).flatMap(call => [
+      toolRow(call),
+      call.error || call.state === "cancelled" ? h("div", { class: `call-note ${STATE_CLASS[call.state] || ""}` }, call.error || "Cancelled or unfinished") : null,
+    ]);
+    if (t.name !== "codemode") children.push(h("button", { class: "call-output", onclick: () => onOpen(t) }, "Arguments & output"));
+    nested.append(head, h("div", { class: "children" }, children));
+    return nested;
   });
   block.append(head, h("div", { class: "rail" }, items));
   return block;
@@ -1145,11 +1171,11 @@ function workedFor(ms) {
 }
 
 /** A finished turn's work before its answer, folded under how long it took. */
-function workedFold(ms, blocks, open, onToggle) {
+function workedFold(ms, blocks, open, onToggle, changes) {
   const fold = h("div", { class: `worked${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { fold.classList.toggle("open"); onToggle(fold.classList.contains("open")); haptic(4); } },
     h("span", {}, ms > 0 ? `Worked for ${workedFor(ms)}` : "Worked"), icon("chevDown", "chev"));
-  fold.append(head, h("div", { class: "body" }, ...blocks));
+  fold.append(h("div", { class: "work-head" }, head, changes), h("div", { class: "body" }, ...blocks));
   return fold;
 }
 
@@ -1172,6 +1198,7 @@ function chatView(machine, id, fromList) {
   const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card glass" },
     h("button", { class: "circle", "aria-label": "Back", onclick: () => { haptic(5); fromList ? history.back() : go("#/"); } }, icon("back")),
     h("div", { class: "grow" }, titleEl, subEl),
+    !isDraft && h("a", { class: "circle", "aria-label": "Chat details", href: `${chatHash(machine, id)}/details` }, icon("info")),
     isDraft ? h("div", { class: "circle" }) : h("button", { class: "circle", "aria-label": "More", onclick: () => menu() }, icon("more"))));
   const older = h("button", { class: "older hide", onclick: () => loadEarlier() }, "Load earlier messages");
   const started = !isDraft && handoff?.chat === id ? handoff.text : null;
@@ -1659,7 +1686,7 @@ function chatView(machine, id, fromList) {
 
   function toolsBlock(m, g, byDefault = false) {
     const key = `${m.id}#${g.at}`;
-    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool);
+    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool, isOpen, (key, on) => openGroups.set(key, on));
   }
 
   // A link to a file on the Mac, such as a pasted image, which the phone
@@ -1680,7 +1707,7 @@ function chatView(machine, id, fromList) {
   // Prose, tool groups, and errors in transcript order, as on the desktop:
   // only the work under way shows open, and once the turn ends, what came
   // before its answer folds under how long it took.
-  function assistantMessage(m, isLast, startedAt) {
+  function assistantMessage(m, isLast, startedAt, changes) {
     const streaming = m.status === "streaming" || (isLast && isWorking());
     const parts = grouped(m.parts);
     const blocks = parts.map((p, i) => {
@@ -1699,8 +1726,10 @@ function chatView(machine, id, fromList) {
     if (!streaming && answer > 0) {
       const key = `${m.id}#worked`;
       const fold = workedFold(startedAt ? m.endedAt - startedAt : 0, blocks.slice(0, answer),
-        isOpen(key, false), on => openGroups.set(key, on));
+        isOpen(key, false), on => openGroups.set(key, on), changes && changesButton(changes));
       blocks.splice(0, answer, fold, h("div", { class: "worked-rule" }));
+    } else if (!streaming && changes) {
+      blocks.unshift(h("div", { class: "work-head" }, changesButton(changes)));
     }
     return h("div", { class: "msg assistant" }, ...blocks,
       m.status === "aborted" ? h("div", { class: "aborted" }, "Stopped") : null);
@@ -1718,18 +1747,17 @@ function chatView(machine, id, fromList) {
       if (m.role === "system") continue;
       if (m.role === "user") startedAt = m.createdAt;
       const isLast = m === last;
-      const sig = JSON.stringify([m.parts, m.status, isLast && isWorking(), expandTools, startedAt, m.endedAt]);
+      const changes = m.role === "assistant" && (!isLast || (!isWorking() && !read.pendingInput))
+        ? read.turnChanges.find(t => t.after === m.id) : null;
+      const sig = JSON.stringify([m.parts, m.status, isLast && isWorking(), expandTools, startedAt, m.endedAt, changes]);
       let entry = rendered.get(m.id);
       if (!entry || entry.sig !== sig) {
-        const node = m.role === "user" ? userBubble(m) : assistantMessage(m, isLast, startedAt);
+        const node = m.role === "user" ? userBubble(m) : assistantMessage(m, isLast, startedAt, changes);
         if (!entry && !firstPaint) node.classList.add("new");
         entry = { sig, node };
         rendered.set(m.id, entry);
       }
       nodes.push(entry.node);
-      // The latest turn's button waits until it's over and nothing is asked.
-      const changes = read.turnChanges.find(t => t.after === m.id);
-      if (changes && (!isLast || (!isWorking() && !read.pendingInput))) nodes.push(changesButton(changes));
     }
     // Drop optimistic bubbles once the transcript has the real message.
     pending = pending.filter(p => {
@@ -1863,7 +1891,7 @@ function chatView(machine, id, fromList) {
     let kept = changeButtons.get(c.turn);
     if (!kept || kept.sig !== sig) {
       kept = { sig, node: h("a", { class: "turn-changes", href: `${chatHash(machine, id)}/changes/${encodeURIComponent(c.turn)}` },
-        icon("diff"), h("span", {}, `${c.files} ${c.files === 1 ? "file" : "files"} changed`),
+        icon("diff"), h("span", {}, plural(c.files, "file", "files")),
         h("span", { class: "plus" }, `+${c.additions}`), h("span", { class: "minus" }, `−${c.deletions}`), icon("chevRight", "chev")) };
       changeButtons.set(c.turn, kept);
     }
@@ -2282,22 +2310,61 @@ function diffFile(file) {
   return el;
 }
 
-/** A turn of the chat as a unified diff, in place of the chat; back returns to it. */
-function changesView(machine, id, turn, fromChat, chatFromList) {
+/** Details occupy their own page; only this page refreshes working-tree counts. */
+function detailsView(machine, id, fromChat, chatFromList) {
   const cached = store.chats?.find(c => c.id === id && c.machine === machine);
   const back = () => { haptic(5); fromChat ? history.back() : go(chatHash(machine, id)); };
   const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card glass" },
     h("button", { class: "circle", "aria-label": "Back", onclick: back }, icon("back")),
-    h("div", { class: "grow" }, h("div", { class: "t" }, "Turn changes"), h("div", { class: "s" }, cached?.title || " ")),
+    h("div", { class: "grow" }, h("div", { class: "t" }, "Chat details"), h("div", { class: "s" }, cached?.title || " ")),
+    h("div", { class: "circle" })));
+  const body = h("div", { class: "chat-details" }, h("div", { class: "skeleton", style: { height: "120px" } }));
+  const offline = offlineBanner();
+  const el = h("div", { class: "view" }, h("div", { class: "scroll" }, body), bar, offline.el);
+  let gone = false;
+  const poll = poller(async () => {
+    try {
+      const d = await call(machine, "chat_details", { chat: id });
+      if (gone) return;
+      const cost = d.spent.cost > 0 && d.spent.cost < 0.01 ? "<$0.01" : `$${d.spent.cost.toFixed(2)}`;
+      body.replaceChildren(
+        h("section", {},
+          h("h2", {}, "Uncommitted changes"),
+          d.changes ? h("a", { class: "turn-changes", href: `${chatHash(machine, id)}/changes/working` }, icon("diff"),
+            plural(d.changes.files, "file", "files"),
+            h("span", { class: "plus" }, `+${d.changes.additions}`),
+            h("span", { class: "minus" }, `−${d.changes.deletions}`), icon("chevRight", "chev"))
+            : h("p", {}, d.changesError || "Not a Git repository")),
+        h("section", {}, h("h2", {}, "Pull requests"), d.pullRequests.length
+          ? d.pullRequests.map(pr => h("a", { class: "pr-link", href: pr.url, target: "_blank", rel: "noopener noreferrer" }, icon("fetch"), pr.label))
+          : h("p", {}, "No PR links yet")),
+        h("section", {}, h("h2", {}, "Session totals"),
+          h("p", {}, `${plural(d.compactions, "compaction", "compactions")} · ${(d.spent.tokens / 1_000_000).toFixed(2)}M tokens · ${cost}`)));
+    } catch (e) {
+      if (!gone) body.replaceChildren(h("div", { class: "dempty" }, `Couldn't load details: ${e.message}`));
+      throw e;
+    }
+  }, () => 8000);
+  return { kind: "details", chatFromList, el, destroy() { gone = true; poll.stop(); offline.stop(); } };
+}
+
+/** Saved turn changes or the current working tree, using the same diff viewer. */
+function changesView(machine, id, turn, fromChat, chatFromList) {
+  const working = turn === "working";
+  const cached = store.chats?.find(c => c.id === id && c.machine === machine);
+  const back = () => { haptic(5); fromChat ? history.back() : go(chatHash(machine, id)); };
+  const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card glass" },
+    h("button", { class: "circle", "aria-label": "Back", onclick: back }, icon("back")),
+    h("div", { class: "grow" }, h("div", { class: "t" }, working ? "Uncommitted changes" : "Turn changes"), h("div", { class: "s" }, cached?.title || " ")),
     h("div", { class: "circle" })));
   const body = h("div", { class: "diff" }, h("div", { class: "skeleton", style: { height: "120px" } }));
   const offline = offlineBanner();
   const el = h("div", { class: "view" }, h("div", { class: "scroll" }, body), bar, offline.el);
   let gone = false;
-  call(machine, "turn_changes", { chat: id, turn }).then(d => {
+  call(machine, working ? "working_changes" : "turn_changes", working ? { chat: id } : { chat: id, turn }).then(d => {
     if (gone) return;
     const files = parsePatch(d.patch || "");
-    const notes = [!files.length && "No changes this turn", d.truncated && "The diff is too large to show whole."];
+    const notes = [!files.length && (working ? "No uncommitted changes" : "No changes this turn"), d.truncated && "The diff is too large to show whole."];
     body.replaceChildren(...notes.filter(Boolean).map(n => h("div", { class: "dempty" }, n)), ...files.map(diffFile));
   }, e => !gone && body.replaceChildren(h("div", { class: "dempty" }, `Couldn't load the changes: ${e.message}`)));
   return { kind: "changes", chatFromList: fromChat && chatFromList, el, destroy() { gone = true; offline.stop(); } };

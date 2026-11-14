@@ -13,7 +13,7 @@ use crate::app::{Catalog, ChatPage, Config, LEVELS_KEPT, Pick, Prep, SkillList, 
 use crate::data::{Skill, levels_of};
 use crate::labels::{context_readout, reasoning_name};
 use crate::markup;
-use crate::message::skill_query;
+use ludolph_prompt::skill_query;
 
 /// The `$` menu's width, in points.
 const SKILL_MENU_WIDTH: f32 = 320.0;

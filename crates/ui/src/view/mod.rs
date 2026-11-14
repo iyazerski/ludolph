@@ -167,10 +167,14 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
         return false;
     }
     let quick = s.window == Window::Quick;
+    let details = s
+        .chat()
+        .and_then(ChatPage::existing)
+        .is_some_and(|chat| chat.details_open);
     match s.chat_mut() {
         Some(page) if page.overlay != Overlay::Closed => page.overlay = Overlay::Closed,
         Some(page) if page.queue_edit.is_some() => page.cancel_queue_edit(),
-        _ if changes => s.back(),
+        _ if changes || details => s.back(),
         // Escape puts the floating window away; a regular window stays.
         _ if quick => s.hide(),
         _ => return false,

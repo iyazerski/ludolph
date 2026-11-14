@@ -1,17 +1,17 @@
-//! The optional chat card: working-tree changes, linked PRs and total usage.
+//! Chat details as a main-window card or a separate quick-window page.
 
 use rune::{El, Link, ScrollSpec, Span, TextStyle, Tx, col, icon, rich, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 use super::icons;
-use super::widgets::busy;
-use crate::app::{Existing, State};
+use super::widgets::{busy, head, head_titles, hide_button};
+use crate::app::{Existing, State, Window};
 use crate::data::ChatDetails;
 
-/// Toggle the card beside the quick-window and More actions.
+/// Open quick-window details or toggle the main window's card.
 pub fn toggle(s: &State, k: &Kit) -> El {
-    let shown = s.prefs.borrow().show_details;
-    IconButton::new(&icons::DETAILS)
+    let shown = s.window == Window::Main && s.prefs.borrow().show_details;
+    IconButton::new(&icons::INFO)
         .variant(if shown {
             IconButtonVariant::Neutral
         } else {
@@ -30,6 +30,42 @@ pub fn toggle(s: &State, k: &Kit) -> El {
         .expanded(shown)
         .on_press(State::toggle_details)
         .build(k)
+}
+
+/// Show quick-window details without squeezing the transcript or composer.
+pub fn page(chat: &Existing, k: &Kit) -> El {
+    let back = IconButton::new(&icons::BACK)
+        .variant(IconButtonVariant::Ghost)
+        .label("Back")
+        .help("Back to the chat (⌘[)")
+        .on_press(State::back)
+        .build(k);
+    col()
+        .w_full()
+        .h_full()
+        .child(
+            head("details-head")
+                .child(back)
+                .child(
+                    head_titles().child(
+                        text("Chat details")
+                            .font(k.ty.ui_medium)
+                            .color(k.c.text_base),
+                    ),
+                )
+                .child(hide_button(k)),
+        )
+        .child(
+            col()
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .padding(14.0)
+                .child(card(chat, k))
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                }),
+        )
 }
 
 /// Keep the card compact; long PR lists scroll independently.

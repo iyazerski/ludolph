@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 
 use super::page::QueueEdit;
 use super::{State, Voice};
-use crate::message::with_skill_refs;
 
 impl State {
     /// Edit a waiting prompt in the composer, saving its unsent draft until done.
@@ -47,11 +46,12 @@ impl State {
             return;
         };
         let id = edit.id.clone();
-        let text = with_skill_refs(page.composer.text.trim(), page.skills.list.ready());
+        let text = page.composer.text.trim();
         edit.saving = true;
+        let args = json!({"chat": chat, "id": id, "text": text});
         self.api.call(
             "edit_queued_message",
-            json!({"chat": chat, "id": id, "text": text}),
+            args,
             move |s, result: Result<Value, String>, _| {
                 if let Some(page) = s.page_at(nav)
                     && let Some(edit) = page.queue_edit.as_mut().filter(|edit| edit.id == id)

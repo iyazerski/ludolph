@@ -270,7 +270,6 @@ mod tests {
                 name: "bash".into(),
                 subject: Some("cargo test".into()),
                 state: ToolState::Done,
-                duration_ms: None,
                 error: None,
             },
             NestedCall {
@@ -278,7 +277,6 @@ mod tests {
                 name: "mcp__check".into(),
                 subject: None,
                 state: ToolState::Failed,
-                duration_ms: None,
                 error: Some("denied".into()),
             },
         ];

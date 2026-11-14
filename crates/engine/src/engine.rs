@@ -755,7 +755,7 @@ impl Engine {
         // Stop can come while pi starts or the tree is taken, before there's
         // a run to abort.
         let delivery = if self.stops(id) == stops {
-            self.prompt(&pi, &skills::to_front(text), images).await
+            self.prompt(&pi, text, images).await
         } else {
             Err(anyhow!("stopped before it was sent"))
         };
@@ -791,6 +791,18 @@ impl Engine {
     async fn prompt(&self, pi: &Pi, text: &str, images: Vec<Image>) -> Result<Delivery> {
         // pi ignores `steer` when no run is going, so the answer says which
         // happened, even if a run started or ended meanwhile.
+        let expanded = if ludolph_prompt::skill_words(text)
+            .iter()
+            .any(|(_, skill)| *skill)
+        {
+            let commands = pi.call(json!({"type": "get_commands"})).await?;
+            let skills = skills::from_commands(&commands);
+            let text = text.to_owned();
+            Some(tokio::task::spawn_blocking(move || skills::expand(&text, &skills)).await??)
+        } else {
+            None
+        };
+        let text = expanded.as_deref().unwrap_or(text);
         let mut command = json!({"type": "prompt", "message": text, "streamingBehavior": "steer"});
         if !images.is_empty() {
             let images = images.into_iter().map(

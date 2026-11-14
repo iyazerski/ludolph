@@ -2820,6 +2820,7 @@ dependencies = [
  "futures-util",
  "libc",
  "ludolph-json-file",
+ "ludolph-prompt",
  "ludolph-relay-proto",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -2848,6 +2849,10 @@ dependencies = [
  "serde_json",
  "tempfile",
 ]
+
+[[package]]
+name = "ludolph-prompt"
+version = "0.1.0"
 
 [[package]]
 name = "ludolph-relay"
@@ -2896,6 +2901,7 @@ dependencies = [
  "image",
  "libc",
  "ludolph-json-file",
+ "ludolph-prompt",
  "objc2 0.6.5",
  "objc2-av-foundation",
  "objc2-avf-audio",

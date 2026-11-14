@@ -46,6 +46,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 dispatch2 = { version = "0.3", default-features = false, features = ["alloc"] }
 libc = "0.2"
 ludolph-json-file = { path = "crates/json-file" }
+ludolph-prompt = { path = "crates/prompt" }
 ludolph-relay-proto = { path = "crates/relay-proto" }
 ludolph-ui = { path = "crates/ui" }
 objc2 = "0.6"

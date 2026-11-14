@@ -2,7 +2,7 @@
 //! tool groups, thinking and errors, pi's dialogs, and the composer under
 //! them.
 
-use rune::{Color, El, Link, ScrollSpec, Span, TextStyle, Tx, col, el, icon, rich, row, text};
+use rune::{Color, El, Link, ScrollSpec, TextStyle, Tx, col, el, icon, rich, row, text};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Markdown, Menu,
@@ -15,7 +15,6 @@ use super::widgets::{busy, dot, engine_note, head, head_titles, hide_button, ton
 use crate::app::{Answer, ChatPage, Existing, Overlay, QuestionForm, State, Target, Window};
 use crate::data::{DialogKind, Message, MessageStatus, Part, Role, Run, ToolState};
 use crate::labels::{self, ToolCall, tool_summary};
-use crate::message::skill_words;
 use rune::Image;
 use rune_theme_opencode::file_icons;
 
@@ -29,6 +28,9 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         && let Some(changes) = &chat.changes
     {
         return super::changes::page(s, chat, changes, k);
+    }
+    if let Some(chat) = page.existing().filter(|chat| chat.details_open) {
+        return super::details::page(chat, k);
     }
     col()
         .w_full()
@@ -51,25 +53,19 @@ pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
 /// The transcript, or a new chat's greeting, over the composer.
 fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let chat = chat_body(s, page, k, layer);
-    let Some(existing) = page.existing().filter(|_| s.prefs.borrow().show_details) else {
+    let Some(existing) = page
+        .existing()
+        .filter(|_| s.window == Window::Main && s.prefs.borrow().show_details)
+    else {
         return chat;
     };
     let card = super::details::card(existing, k);
-    if s.window == Window::Main {
-        row()
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .child(chat.min_w(0.0))
-            .child(col().w(280.0).shrink().pt(12.0).pr(12.0).child(card))
-    } else {
-        col()
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .child(col().w_full().px(14.0).pt(10.0).child(card))
-            .child(chat)
-    }
+    row()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(chat.min_w(0.0))
+        .child(col().w(280.0).shrink().pt(12.0).pr(12.0).child(card))
 }
 
 /// Keep the transcript and composer together when the details card is shown.
@@ -447,21 +443,8 @@ type Tile<'a> = (Option<&'a Image>, Option<(String, usize)>);
 /// A message the user sent, with its images.
 fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
     let opacity = if shade == Shade::Sent { 1.0 } else { 0.6 };
-    // A skill the message ran stands out; the rest stays literal text.
-    let mut shown = String::new();
-    let mut spans = Vec::new();
-    for (piece, is_skill) in skill_words(text_in.trim()) {
-        let start = shown.len();
-        shown.push_str(piece);
-        if is_skill {
-            spans.push(
-                Span::new(start, shown.len())
-                    .color(k.c.text_accent)
-                    .weight(560.0),
-            );
-        }
-    }
-    spans.extend(super::widgets::markdown_spans(k, &shown));
+    let shown = text_in.trim().to_owned();
+    let spans = super::widgets::markdown_spans(k, &shown);
     let links = crate::markup::links(&shown);
     let mut out = col().w_full().pl(40.0).items_end().gap(4.0);
     if !images.is_empty() {
@@ -592,8 +575,26 @@ fn assistant(
     let fold = answer.filter(|&n| n > 0 && !streaming);
     let worked_key = format!("{}#worked", m.id);
     let worked_open = is_open(page, &worked_key, false);
-    if fold.is_some() {
-        out = out.child(worked(k, &worked_key, m.ended_at - started, worked_open));
+    let changes = if streaming {
+        None
+    } else {
+        page.before_changes
+            .iter()
+            .chain(&page.turn_changes)
+            .find(|counts| counts.after == m.id)
+    };
+    if fold.is_some() || changes.is_some() {
+        let mut head = if fold.is_some() {
+            worked(k, &worked_key, m.ended_at - started, worked_open)
+        } else {
+            row().w_full()
+        };
+        if let Some(counts) = changes {
+            head = head
+                .child(rune::spacer())
+                .child(super::changes::button(k, counts));
+        }
+        out = out.child(head.center_y().gap(8.0));
     }
     for (n, piece) in pieces.into_iter().enumerate() {
         if fold.is_some_and(|f| n < f) && !worked_open {
@@ -770,7 +771,7 @@ fn toggle_group(s: &mut State, key: &str, open: bool) {
     }
 }
 
-/// Show a finished reply's timestamp, copy action and saved turn diff.
+/// Show a finished reply's timestamp and copy action.
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     let mut out = row().w_full().gap(8.0).center_y();
     if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {
@@ -796,16 +797,6 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_answer(&id, tx))
                 .build(k),
         );
-    }
-    if let Some(counts) = page
-        .before_changes
-        .iter()
-        .chain(&page.turn_changes)
-        .find(|counts| counts.after == m.id)
-    {
-        out = out
-            .child(rune::spacer())
-            .child(super::changes::button(k, counts));
     }
     out
 }
@@ -895,11 +886,14 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
     } else {
         icon(icons::tool(tool.name), 14.0).color(tint)
     };
-    let subject = row().center_y().gap(6.0).child(chevron(k, open)).child(
-        text(format!("{} calls", tool.calls.len()))
-            .font(rail_text(k))
-            .color(tint),
-    );
+    let mut subject = row().center_y().gap(6.0).child(chevron(k, open));
+    if tool.name != "codemode" {
+        subject = subject.child(
+            text(format!("{} calls", tool.calls.len()))
+                .font(rail_text(k))
+                .color(tint),
+        );
+    }
     let title = if tool.name == "codemode" {
         "Codemode"
     } else {
@@ -915,20 +909,7 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
             k.c.border_muted,
         );
         for call in tool.calls {
-            let mut line = row().w_full().center_y().child(
-                tool_row(k, &ToolCall::from(call), false)
-                    .min_w(0.0)
-                    .grow(1.0),
-            );
-            if let Some(ms) = call.duration_ms {
-                line = line.child(
-                    text(format!("{:.2}s", ms / 1000.0))
-                        .font(rail_text(k))
-                        .color(k.c.text_faint)
-                        .pr(8.0),
-                );
-            }
-            children = children.child(line);
+            children = children.child(tool_row(k, &ToolCall::from(call), false));
             let detail = call.error.clone().or_else(|| {
                 (call.state == ToolState::Cancelled).then(|| "Cancelled or unfinished".to_owned())
             });
@@ -948,67 +929,60 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
                 );
             }
         }
-        let call = tool.id.to_owned();
-        let opened = page.tool_outputs.contains_key(tool.id);
-        let label = if tool.name == "codemode" {
-            "Script & combined output"
-        } else {
-            "Arguments & output"
-        };
-        let details = rail_row(k, true, chevron(k, opened), label, k.c.text_faint, el());
-        children = children.child(
-            k.interactive(details)
-                .on_press(move |s: &mut State| s.toggle_tool_output(&call)),
-        );
-        if let Some(output) = page.tool_outputs.get(tool.id) {
-            let body = match output {
-                None => busy(12.0, k),
-                Some(Err(error)) => text(error.clone())
-                    .font(rail_text(k))
-                    .color(tones(k).failed)
-                    .wrap(),
-                Some(Ok(output)) => {
-                    let args = output.args["code"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| {
-                            serde_json::to_string_pretty(&output.args).unwrap_or_default()
-                        });
-                    let mut body = col()
-                        .w_full()
-                        .gap(8.0)
-                        .child(
-                            text(args)
-                                .font(rail_text(k))
-                                .color(k.c.text_faint)
-                                .wrap()
-                                .selectable(true),
-                        )
-                        .child(
-                            text(output.text.clone())
-                                .font(rail_text(k))
-                                .color(k.c.text_muted)
-                                .wrap()
-                                .selectable(true),
-                        );
-                    if output.truncated {
-                        body = body.child(
-                            text("Output truncated")
-                                .font(rail_text(k))
-                                .color(k.c.text_faint),
-                        );
+        if tool.name != "codemode" {
+            let call = tool.id.to_owned();
+            let opened = page.tool_outputs.contains_key(tool.id);
+            let label = "Arguments & output";
+            let details = rail_row(k, true, chevron(k, opened), label, k.c.text_faint, el());
+            children = children.child(
+                k.interactive(details)
+                    .on_press(move |s: &mut State| s.toggle_tool_output(&call)),
+            );
+            if let Some(output) = page.tool_outputs.get(tool.id) {
+                let body = match output {
+                    None => busy(12.0, k),
+                    Some(Err(error)) => text(error.clone())
+                        .font(rail_text(k))
+                        .color(tones(k).failed)
+                        .wrap(),
+                    Some(Ok(output)) => {
+                        let args = serde_json::to_string_pretty(&output.args).unwrap_or_default();
+                        let mut body = col()
+                            .w_full()
+                            .gap(8.0)
+                            .child(
+                                text(args)
+                                    .font(rail_text(k))
+                                    .color(k.c.text_faint)
+                                    .wrap()
+                                    .selectable(true),
+                            )
+                            .child(
+                                text(output.text.clone())
+                                    .font(rail_text(k))
+                                    .color(k.c.text_muted)
+                                    .wrap()
+                                    .selectable(true),
+                            );
+                        if output.truncated {
+                            body = body.child(
+                                text("Output truncated")
+                                    .font(rail_text(k))
+                                    .color(k.c.text_faint),
+                            );
+                        }
+                        if tool.state == ToolState::Running {
+                            body = body.child(
+                                text("Live snapshot. Close and reopen to refresh.")
+                                    .font(rail_text(k))
+                                    .color(k.c.text_faint),
+                            );
+                        }
+                        body
                     }
-                    if tool.state == ToolState::Running {
-                        body = body.child(
-                            text("Live snapshot. Close and reopen to refresh.")
-                                .font(rail_text(k))
-                                .color(k.c.text_faint),
-                        );
-                    }
-                    body
-                }
-            };
-            children = children.child(col().w_full().pl(RAIL_TEXT_X).pb(8.0).child(body));
+                };
+                children = children.child(col().w_full().pl(RAIL_TEXT_X).pb(8.0).child(body));
+            }
         }
         out = out.child(children);
     }

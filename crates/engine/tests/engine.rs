@@ -1408,8 +1408,14 @@ async fn a_message_can_carry_images() {
 async fn a_skill_runs_from_wherever_it_was_typed() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
-    let review =
-        json!([{"name": "review", "description": "Review the diff", "ref": "/skill:review"}]);
+    let path = dir.path().join(".pi/skills/review/SKILL.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "---\nname: review\ndisable-model-invocation: true\n---\nRead the diff.",
+    )
+    .unwrap();
+    let review = json!([{"name": "review", "description": "Review the diff", "ref": "$review"}]);
     let skills = tool(&engine, "list_skills", json!({"project": dir.path()}))
         .await
         .unwrap();
@@ -1420,14 +1426,12 @@ async fn a_skill_runs_from_wherever_it_was_typed() {
         .await
         .unwrap();
     assert_eq!(skills["skills"], review, "for a chat");
-    // The composer puts the ref where `$review` was typed.
-    let text = "please /skill:review\nthe last commit";
+    let text = "please $review\nthe last commit, then $review with $unknown";
     tool(&engine, "send_message", json!({"chat": id, "text": text}))
         .await
         .unwrap();
-    let typed = "/skill:review please\nthe last commit";
     until(&engine, |c| {
-        last_prompt(&c[0]) == Some("/skill:review please the last commit")
+        last_prompt(&c[0]) == Some("please $review the last commit, then $review with $unknown")
     })
     .await;
     let view = tool(&engine, "chat_view", json!({"chat": id}))
@@ -1436,8 +1440,75 @@ async fn a_skill_runs_from_wherever_it_was_typed() {
     let user = &view["read"]["messages"][0];
     assert_eq!(
         user["parts"],
-        json!([{"kind": "text", "text": typed}]),
-        "pi ran it, and it shows as typed"
+        json!([{"kind": "text", "text": text}]),
+        "the transcript keeps the wording and mention positions"
+    );
+    let session = dir.path().join(format!("sessions/--fake--/{id}.jsonl"));
+    let saved = std::fs::read_to_string(session).unwrap();
+    let user = saved
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|entry| entry["message"]["role"] == "user")
+        .unwrap();
+    let prompt = user["message"]["content"].as_str().unwrap();
+    assert!(
+        prompt.starts_with("please <skill name=\"review\""),
+        "{prompt}"
+    );
+    assert_eq!(prompt.matches("Read the diff.").count(), 2, "{prompt}");
+    assert!(prompt.ends_with(" with $unknown"), "{prompt}");
+
+    view_until(&engine, &id, |view| view.chat.status == Status::Idle).await;
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    view_until(&engine, &id, |view| {
+        view.chat.status == Status::AwaitingInput
+    })
+    .await;
+    assert_eq!(
+        engine.send(&id, "later $review", Vec::new()).await.unwrap(),
+        Delivery::Queued
+    );
+    let queued = engine.view(&id, Window::Latest(40)).await.unwrap().queued;
+    engine
+        .edit_queued(&id, &queued[0].id, "please $review next")
+        .await
+        .unwrap();
+    engine.steer_queued(&id, &queued[0].id).await.unwrap();
+    let steering = view_until(&engine, &id, |view| {
+        view.run
+            .as_ref()
+            .is_some_and(|run| run.steering == ["please $review next"])
+    })
+    .await;
+    assert!(steering.queued.is_empty());
+    tool(
+        &engine,
+        "respond_to_input",
+        json!({"chat": id, "id": "d1", "value": "red"}),
+    )
+    .await
+    .unwrap();
+    let done = view_until(&engine, &id, |view| view.chat.status == Status::Idle).await;
+    assert_eq!(
+        done.page
+            .messages
+            .iter()
+            .rfind(|message| message.role == Role::User)
+            .unwrap()
+            .parts,
+        vec![Part::Text {
+            text: "please $review next".into()
+        }],
+    );
+
+    std::fs::remove_file(path).unwrap();
+    let error = engine
+        .send(&id, "again $review", Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("reading skill review"),
+        "{error:#}"
     );
     engine.shutdown().await.unwrap();
 }

@@ -39,6 +39,7 @@ pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
                 Shade::Link => span.color(k.c.text_accent),
                 Shade::Code => span.mono().color(k.c.text_muted),
                 Shade::Emphasis => span.italic(),
+                Shade::Skill => span.color(k.c.text_accent).weight(600.0),
             }
         })
         .collect()
