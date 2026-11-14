@@ -175,7 +175,8 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
     let t = tones(k);
     let unseen = list::is_done(s, c);
     let (status, said) = match c.status {
-        Status::Working => (Some(RowStatus::Busy), None),
+        // Not `RowStatus::Busy`: its spinner redraws the window at 60 frames a second.
+        Status::Working => (Some(RowStatus::Other(busy(12.0, k))), Some("Working")),
         Status::AwaitingInput => (Some(RowStatus::Attention), Some("Needs your input")),
         Status::Errored => (Some(RowStatus::Other(dot(t.failed))), Some("Failed")),
         Status::Interrupted => (Some(RowStatus::Other(dot(t.failed))), Some("Stopped")),
@@ -183,8 +184,12 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
         Status::Idle => (None, None),
     };
     let id = c.id.clone();
-    let mut r = SidebarRow::new(c.title())
-        .detail(ago(c.active_at(), Utc::now()))
+    let mut r = SidebarRow::new(c.title());
+    // A working chat's time is always "now", so the dots say it alone.
+    if c.status != Status::Working {
+        r = r.detail(ago(c.active_at(), Utc::now()));
+    }
+    r = r
         .selected(s.shows_chat(&c.id))
         .on_select(move |s: &mut State, _| {
             if !s.shows_chat(&id) {
