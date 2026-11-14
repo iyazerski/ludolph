@@ -880,6 +880,10 @@ const FILTERS = [
     empty: "No chats active in the last 15 minutes" },
 ];
 const collapsed = new Set(JSON.parse(localStorage.getItem("ludolph.collapsed") || "[]"));
+/** Chats a project shows at first, and how many more "Show more" adds, as on the desktop. */
+const GROUP_CHATS = 5;
+/** How many chats each project the user expanded shows, by its key. */
+const shownMore = new Map();
 
 function listView() {
   const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card" },
@@ -902,6 +906,7 @@ function listView() {
   input.addEventListener("input", () => { listState.query = input.value; draw(); });
 
   const known = new Map();
+  const moreButtons = new Map();
   let painted = store.loaded.has(selectedMac()?.id);
 
   // In a project section the row is one line, like the sidebar; search
@@ -937,6 +942,18 @@ function listView() {
     } }, tile(project), h("span", { class: "name" }, project?.name || "No project"),
       h("span", { class: "n" }, items.length),
       live && glyph("spin"), icon("chevDown", "chev"));
+  }
+
+  /** The row that shows `GROUP_CHATS` more of a project's chats. */
+  function moreButton(key) {
+    if (!moreButtons.has(key)) {
+      moreButtons.set(key, h("button", { class: "more-row", onclick: () => {
+        haptic(4);
+        shownMore.set(key, (shownMore.get(key) || GROUP_CHATS) + GROUP_CHATS);
+        draw();
+      } }, "Show more"));
+    }
+    return moreButtons.get(key);
   }
 
   /** Show `id`'s chats: at once if they're loaded, then fresh ones. */
@@ -995,7 +1012,11 @@ function listView() {
       }
       for (const [key, g] of groups) {
         nodes.push(section(key, g.project, g.items));
-        if (!collapsed.has(key)) nodes.push(...g.items.map(c => row(c, false)));
+        if (collapsed.has(key)) continue;
+        // A filter's matches all show; the whole list shows each project's newest.
+        const limit = filter.id === "all" ? shownMore.get(key) || GROUP_CHATS : Infinity;
+        nodes.push(...g.items.slice(0, limit).map(c => row(c, false)));
+        if (g.items.length > limit) nodes.push(moreButton(key));
       }
       if (!chats.length && !note && machines.length) nodes.push(h("div", { class: "empty" }, all.length ? filter.empty : "No chats yet"));
     }
