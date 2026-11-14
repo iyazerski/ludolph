@@ -6,17 +6,19 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, RgbaImage};
-use rune::{ClipboardContent, Image, Tx};
+use rune::{ClipboardContent, Image, TextEdit, Tx};
 use serde::Serialize;
 use serde_json::json;
 
 use super::{ChatPage, State};
 use crate::data::{ChatImage, Role};
+use crate::markup;
 
 /// Thumbnails shrink to this many pixels square: the largest they draw
 /// (72 points) on a Retina screen. Smaller draws use the mips.
@@ -41,8 +43,12 @@ pub struct Payload {
 
 pub struct Attached {
     pub id: u64,
+    /// Its label, `Image 2`, unique among the composer's images.
+    pub number: usize,
     pub thumb: Option<Image>,
     pub image: Prep,
+    /// The link to it put in the text where it was pasted.
+    pub link: Option<String>,
 }
 
 /// Where an attached image is on its way to being sendable.
@@ -52,14 +58,16 @@ pub enum Prep {
     Failed(String),
 }
 
-/// What was pasted or dropped: an image's bytes, or a file.
+/// What was pasted or dropped: an image's bytes, with where to save them so
+/// the text can link to them, or a file.
 enum Source {
-    Pasted(Arc<[u8]>),
+    Pasted(Arc<[u8]>, PathBuf),
     File(PathBuf),
 }
 
 impl State {
-    /// Attach the images a paste carries; any other paste stays text.
+    /// Attach the images a paste carries, each with a link to it at the
+    /// caret; any other paste stays text.
     pub fn paste(&mut self, content: &ClipboardContent, _: &mut Tx) -> bool {
         let files = content.files();
         if !files.is_empty() {
@@ -74,7 +82,15 @@ impl State {
         // Office apps put a picture of the copied text beside it.
         match content.image() {
             Some(image) if content.text().trim().is_empty() => {
-                self.attach(Source::Pasted(image.png().into()));
+                let millis = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis());
+                let number = self.chat().map_or(1, ChatPage::next_image_number);
+                let path = self
+                    .api
+                    .uploads()
+                    .join(format!("{millis}-image-{number}.png"));
+                self.attach(Source::Pasted(image.png().into(), path));
                 true
             }
             _ => false,
@@ -84,10 +100,18 @@ impl State {
     fn attach(&mut self, source: Source) {
         let Some(page) = self.chat_mut() else { return };
         let (id, nav) = (page.attached_id(), page.nav);
+        let number = page.next_image_number();
+        let target = match &source {
+            Source::Pasted(_, path) | Source::File(path) => path.to_string_lossy(),
+        };
+        let link = markup::link(&format!("Image {number}"), &target);
+        insert_spaced(&mut page.composer, &link);
         page.attached.push(Attached {
             id,
+            number,
             thumb: None,
             image: Prep::Reading,
+            link: Some(link),
         });
         self.api.run(
             move |_| async move { tokio::task::spawn_blocking(move || prepare(&source)).await },
@@ -125,17 +149,34 @@ impl State {
         };
         for (payload, thumb) in images {
             let id = page.attached_id();
+            let number = page.next_image_number();
             page.attached.push(Attached {
                 id,
+                number,
                 thumb,
                 image: Prep::Ready(payload),
+                link: None,
             });
         }
     }
 
+    /// Remove an attached image, and its link from the text.
     pub fn detach(&mut self, id: u64) {
-        if let Some(page) = self.chat_mut() {
-            page.attached.retain(|a| a.id != id);
+        let Some(page) = self.chat_mut() else { return };
+        let Some(at) = page.attached.iter().position(|a| a.id == id) else {
+            return;
+        };
+        let Some(link) = page.attached.remove(at).link else {
+            return;
+        };
+        let edit = &mut page.composer;
+        if let Some(start) = edit.text.find(&link) {
+            let end = start + link.len();
+            let end = end + usize::from(edit.text[end..].starts_with(' '));
+            edit.undo_group(|e| {
+                e.set_selection(start, end);
+                e.insert("");
+            });
         }
     }
 
@@ -222,7 +263,14 @@ impl State {
 /// Also return its thumbnail.
 fn prepare(source: &Source) -> Result<(Payload, RgbaImage), String> {
     let bytes: Arc<[u8]> = match source {
-        Source::Pasted(bytes) => bytes.clone(),
+        Source::Pasted(bytes, save) => {
+            let shown = save.display();
+            if let Some(dir) = save.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("creating {shown}: {e}"))?;
+            }
+            std::fs::write(save, bytes).map_err(|e| format!("writing {shown}: {e}"))?;
+            bytes.clone()
+        }
         Source::File(path) => {
             let shown = path.display();
             let size = std::fs::metadata(path)
@@ -299,7 +347,30 @@ fn is_image(path: &Path) -> bool {
         .is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// Insert `s` at the caret, apart from the words on either side.
+fn insert_spaced(edit: &mut TextEdit, s: &str) {
+    let (start, end) = edit.range();
+    let before = edit.text[..start].chars().next_back();
+    let after = edit.text[end..].chars().next();
+    let lead = if before.is_some_and(|c| !c.is_whitespace()) {
+        " "
+    } else {
+        ""
+    };
+    let trail = if after.is_none_or(|c| !c.is_whitespace()) {
+        " "
+    } else {
+        ""
+    };
+    edit.insert(&format!("{lead}{s}{trail}"));
+}
+
 impl ChatPage {
+    /// The next attached image's number: one past the highest shown.
+    pub fn next_image_number(&self) -> usize {
+        self.attached.iter().map(|a| a.number).max().unwrap_or(0) + 1
+    }
+
     pub fn images_ready(&self) -> bool {
         self.attached
             .iter()

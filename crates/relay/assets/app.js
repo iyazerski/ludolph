@@ -578,18 +578,23 @@ function markdown(src) {
 
 function list(lines, start) {
   const base = indentOf(lines[start]);
-  const ordered = /\d/.test(lines[start].match(LIST_ITEM)[2]);
+  const first = lines[start].match(LIST_ITEM)[2];
+  const ordered = /\d/.test(first);
+  // A bullet item after numbered ones, or the reverse, starts a new list.
+  const sameKind = m => /\d/.test(m[2]) === ordered;
   const items = [];
   let i = start;
   while (i < lines.length) {
     const line = lines[i];
     if (!line.trim()) {
       const next = lines[i + 1];
-      if (next != null && next.trim() && (indentOf(next) > base || (LIST_ITEM.test(next) && indentOf(next) === base))) { i++; continue; }
+      const nm = next?.match(LIST_ITEM);
+      if (next != null && next.trim() && (indentOf(next) > base || (nm && sameKind(nm) && indentOf(next) === base))) { i++; continue; }
       break;
     }
     const m = line.match(LIST_ITEM);
     const ind = indentOf(line);
+    if (m && ind <= base + 1 && !sameKind(m)) break;
     if (m && ind <= base + 1) items.push({ text: [m[3]], sub: [] });
     else if (ind > base && items.length) {
       const item = items[items.length - 1];
@@ -607,7 +612,8 @@ function list(lines, start) {
     }
     return `<li>${inline(item.text.join(" "))}${sub}</li>`;
   }).join("");
-  return [`<${tag}>${body}</${tag}>`, i];
+  const from = ordered ? parseInt(first, 10) : 1;
+  return [`<${tag}${from !== 1 ? ` start="${from}"` : ""}>${body}</${tag}>`, i];
 }
 
 document.addEventListener("click", async e => {
@@ -1627,12 +1633,18 @@ function chatView(machine, id, fromList) {
     return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool);
   }
 
+  // A link to a file on the Mac, such as a pasted image, which the phone
+  // can't open: its label stays, and the image chips open the images.
+  const MAC_LINK = /\[([^\]]+)\]\((?:<\/[^>]*>|\/[^)\s]*)\)/g;
+
   function userBubble(m, isPending = false) {
     const images = m.parts.filter(p => p.kind === "image");
     const tools = grouped(m.parts).filter(p => p.kind === "tools");
+    const text = textOf(m);
     return h("div", { class: `msg user${isPending ? " pending new" : ""}` },
       ...tools.map(g => toolsBlock(m, g)),
-      textOf(m) || images.length ? h("div", { class: "bubble" }, textOf(m),
+      text || images.length ? h("div", { class: "bubble" },
+        text ? h("div", { class: "md", html: markdown(text.replace(MAC_LINK, "$1")) }) : null,
         images.length ? h("div", { class: "shots" }, images.map(p => h("button", { class: "chip", onclick: () => !isPending && openImage(m, p.index) }, icon("image"), `Image ${p.index + 1}`))) : null) : null);
   }
 

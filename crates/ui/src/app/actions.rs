@@ -542,6 +542,16 @@ impl State {
     }
 
     /// Open a file or folder the transcript names in its default app.
+    /// Open a link from a message: a path with its app, else a web page.
+    pub fn open_link(&mut self, url: &str, tx: &mut Tx) {
+        // Code links and pasted images are paths; Rune opens web links only.
+        if url.starts_with('/') {
+            self.open_path(url.to_owned());
+        } else {
+            drop(tx.open_url(url));
+        }
+    }
+
     pub fn open_path(&mut self, path: String) {
         self.api.run(
             move |_| async move {
