@@ -1,6 +1,9 @@
 //! A new chat until its first message creates it: its project, model and
 //! thinking level, and pi's catalog of models to pick from.
 
+use std::path::PathBuf;
+
+use rune::{FileDialogOptions, TextEdit, Tx};
 use serde_json::json;
 
 use super::attach::Payload;
@@ -17,7 +20,16 @@ pub struct Draft {
     pub reasoning: Option<String>,
     pub load: Load,
     pub creating: bool,
+    pub project_menu: ProjectMenu,
     saved_project: ProjectPick,
+}
+
+/// The project popover's search and keyboard selection.
+#[derive(Default)]
+pub struct ProjectMenu {
+    pub open: bool,
+    pub search: TextEdit,
+    pub active: usize,
 }
 
 /// Where loading a draft's projects is.
@@ -65,6 +77,7 @@ impl Draft {
         } = saved;
         Self {
             projects: Vec::new(),
+            project_menu: ProjectMenu::default(),
             project: match &project {
                 ProjectPick::Project(id) => Some(id.clone()),
                 ProjectPick::Recent | ProjectPick::NoProject => None,
@@ -128,6 +141,14 @@ impl State {
                 };
                 match result {
                     Ok(mut got) => {
+                        if let Some(selected) = draft
+                            .projects
+                            .iter()
+                            .find(|p| Some(&p.id) == draft.project.as_ref())
+                            && !got.projects.iter().any(|p| p.id == selected.id)
+                        {
+                            got.projects.push(selected.clone());
+                        }
                         got.projects.sort_by(|a, b| a.name.cmp(&b.name));
                         draft.projects = got.projects;
                         if draft.saved_project == ProjectPick::Recent {
@@ -346,11 +367,61 @@ impl State {
             models.fitted(draft.model.as_deref(), draft.reasoning.as_deref());
     }
 
+    /// Choose a folder without creating a chat until the first message.
+    pub fn new_project(&mut self, tx: &mut Tx) {
+        let Some(page) = self.chat_mut() else { return };
+        let nav = page.nav;
+        let Some(draft) = page.draft_mut() else {
+            return;
+        };
+        draft.project_menu.open = false;
+        draft.project_menu.search.focused = false;
+        let options = FileDialogOptions {
+            title: "Choose project folder".into(),
+            directory: draft.project.as_ref().map(PathBuf::from),
+            ..Default::default()
+        };
+        tx.open_folder(options, move |s: &mut State, result, _| {
+            if s.page_at(nav).and_then(|p| p.draft_mut()).is_none() {
+                return;
+            }
+            match result {
+                Ok(Some(path)) => s.add_project(path),
+                Ok(None) => {}
+                Err(error) => s.fail("Couldn't choose the project", error.to_string()),
+            }
+        });
+    }
+
+    /// Add and select a folder in the current draft's project list.
+    pub fn add_project(&mut self, path: PathBuf) {
+        let Some(draft) = self.chat_mut().and_then(|page| page.draft_mut()) else {
+            return;
+        };
+        let id = path.to_string_lossy().into_owned();
+        if !draft.projects.iter().any(|p| p.id == id) {
+            let name = path
+                .file_name()
+                .map_or_else(|| id.clone(), |name| name.to_string_lossy().into_owned());
+            draft.projects.push(Project {
+                id: id.clone(),
+                path: id.clone(),
+                name,
+            });
+            draft.projects.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        self.pick_project(Some(id));
+    }
+
+    /// Select a draft's folder and refresh its branch and skills.
     pub fn pick_project(&mut self, project: Option<String>) {
         let Some(page) = self.chat_mut() else { return };
         let Some(draft) = page.draft_mut() else {
             return;
         };
+        draft.project_menu.open = false;
+        draft.project_menu.search.focused = false;
+        draft.saved_project = ProjectPick::from(project.clone());
         if draft.project == project {
             return;
         }

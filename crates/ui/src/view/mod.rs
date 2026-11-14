@@ -11,6 +11,7 @@ mod dialogs;
 mod icons;
 mod list;
 mod main_window;
+mod project;
 mod queue;
 mod settings;
 mod sidebar;
@@ -96,6 +97,14 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
         return false;
+    }
+    if key.key == Key::Escape
+        && let Some(draft) = s.chat_mut().and_then(|page| page.draft_mut())
+        && draft.project_menu.open
+    {
+        draft.project_menu.open = false;
+        draft.project_menu.search.focused = false;
+        return true;
     }
     if let Some(page) = s.settings_page_mut() {
         // The recorder takes every key while it records, Escape included.

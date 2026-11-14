@@ -92,6 +92,7 @@ pub struct Frame {
     pub reset: bool,
     pub chat: Chat,
     pub run: Option<Run>,
+    pub failure: Option<String>,
     pub queued: Vec<Queued>,
     pub pending_input: Option<Dialog>,
     pub turn_changes: Vec<TurnChanges>,

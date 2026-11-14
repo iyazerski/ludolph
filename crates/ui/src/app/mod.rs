@@ -30,8 +30,8 @@ pub use self::attach::Prep;
 pub use self::chats::ChatDialog;
 pub use self::draft::{Catalog, Config, Draft, Load, Pick};
 pub use self::page::{
-    Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending, QuestionForm, Sheet,
-    SkillList, Target, Voice,
+    Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending, QuestionForm, SkillList,
+    Target, Voice,
 };
 pub use self::settings::{QR_SIZE, SettingsPage, Update};
 

@@ -425,6 +425,39 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
 
     engine.send(&id, "ask", Vec::new()).await.unwrap();
     until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    engine
+        .send(&id, "compaction-budget", Vec::new())
+        .await
+        .unwrap();
+    engine
+        .send(&id, "after budget failure", Vec::new())
+        .await
+        .unwrap();
+    tool(
+        &engine,
+        "respond_to_input",
+        json!({"chat": id, "id": "d1", "value": "blue"}),
+    )
+    .await
+    .unwrap();
+    until(&engine, |c| c[0].status == Status::Failed).await;
+    let failed = engine.view(&id, Window::Latest(40)).await.unwrap();
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some("Auto-compaction failed: monthly spend limit")
+    );
+    assert_eq!(failed.queued.len(), 1);
+    assert_eq!(failed.queued[0].text, "after budget failure");
+    tool(&engine, "resume_queue", json!({"chat": id}))
+        .await
+        .unwrap();
+    until(&engine, |c| {
+        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("after budget failure")
+    })
+    .await;
+
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    until(&engine, |c| c[0].status == Status::AwaitingInput).await;
     engine.send(&id, "never send", Vec::new()).await.unwrap();
     engine.interrupt(&id).await.unwrap();
     until(&engine, |c| c[0].status == Status::Idle).await;
@@ -837,11 +870,22 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
 async fn terminal_model_changes_refresh_the_catalog_and_an_existing_pi() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
-    let made = tool(&engine, "create_chat", json!({"prompt": "hi"}))
+    let made = tool(
+        &engine,
+        "create_chat",
+        json!({"prompt": "compaction-budget"}),
+    )
+    .await
+    .unwrap();
+    let id = made["chatId"].as_str().unwrap().to_owned();
+    until(&engine, |chats| chats[0].status == Status::Failed).await;
+    let failed = tool(&engine, "chat_view", json!({"chat": id}))
         .await
         .unwrap();
-    let id = made["chatId"].as_str().unwrap().to_owned();
-    until(&engine, |chats| chats[0].status == Status::Idle).await;
+    assert_eq!(
+        failed["read"]["failure"],
+        "Auto-compaction failed: monthly spend limit"
+    );
     let original = tool(&engine, "list_models", json!({})).await.unwrap();
     assert_eq!(original["default"], "fake/deep");
     assert_eq!(original["defaultReasoning"], "medium");
@@ -869,6 +913,18 @@ async fn terminal_model_changes_refresh_the_catalog_and_an_existing_pi() {
     .unwrap();
     assert_eq!(picked["model"], "openai/gpt");
     assert_eq!(picked["spent"], json!({"tokens": 2500, "cost": 0.625}));
+    engine
+        .send(&id, "please continue", Vec::new())
+        .await
+        .unwrap();
+    until(&engine, |chats| {
+        chats[0].status == Status::Idle && last_prompt(&chats[0]) == Some("please continue")
+    })
+    .await;
+    assert_eq!(
+        engine.composer(&id).await.unwrap().model.as_deref(),
+        Some("openai/gpt")
+    );
 
     std::fs::write(
         dir.path().join("settings.json"),
@@ -901,6 +957,83 @@ async fn terminal_model_changes_refresh_the_catalog_and_an_existing_pi() {
     assert_eq!(
         signed_out["defaultReasoning"], "medium",
         "pi may omit its thinking level"
+    );
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn switching_provider_unblocks_compaction_before_prompt_acceptance() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let made = tool(&engine, "create_chat", json!({"prompt": "hi"}))
+        .await
+        .unwrap();
+    let id = made["chatId"].as_str().unwrap().to_owned();
+    until(&engine, |chats| chats[0].status == Status::Idle).await;
+    let sending = {
+        let (engine, id) = (engine.clone(), id.clone());
+        tokio::spawn(async move { engine.send(&id, "compact-before-prompt", Vec::new()).await })
+    };
+    let wait = async {
+        let mut changes = engine.subscribe_chat(&id).unwrap();
+        loop {
+            let log = std::fs::read_to_string(dir.path().join("pi.log")).unwrap();
+            if log.lines().any(|line| line == "compacting") {
+                break;
+            }
+            changes.changed().await.unwrap();
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .unwrap();
+    let compacting = engine.view(&id, Window::Latest(40)).await.unwrap();
+    assert_eq!(compacting.chat.status, Status::Working);
+    assert_eq!(
+        compacting.run.unwrap().compacting.as_deref(),
+        Some("threshold")
+    );
+    let signed_in = json!([{"provider":"openai", "id":"gpt", "name":"GPT",
+                           "reasoning":true, "contextWindow":300000}]);
+    std::fs::write(
+        dir.path().join("models.json"),
+        serde_json::to_vec(&signed_in).unwrap(),
+    )
+    .unwrap();
+    let picked = tokio::time::timeout(
+        Duration::from_secs(3),
+        tool(
+            &engine,
+            "set_chat_model",
+            json!({"chat":id, "model":"openai/gpt"}),
+        ),
+    )
+    .await;
+    if picked.is_err() {
+        engine.shutdown().await.unwrap();
+        let _ = sending.await;
+        panic!("model change waited for the blocked prompt");
+    }
+    assert_eq!(picked.unwrap().unwrap()["model"], "openai/gpt");
+    assert!(
+        sending.await.unwrap().is_err(),
+        "the unaccepted message must be available for retry"
+    );
+    assert_ne!(
+        last_prompt(&engine.chats()[0]),
+        Some("compact-before-prompt")
+    );
+    engine
+        .send(&id, "please continue", Vec::new())
+        .await
+        .unwrap();
+    until(&engine, |chats| {
+        chats[0].status == Status::Idle && last_prompt(&chats[0]) == Some("please continue")
+    })
+    .await;
+    assert_eq!(
+        engine.composer(&id).await.unwrap().model.as_deref(),
+        Some("openai/gpt")
     );
     engine.shutdown().await.unwrap();
 }

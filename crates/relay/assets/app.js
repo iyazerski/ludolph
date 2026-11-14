@@ -1742,7 +1742,9 @@ function chatView(machine, id, fromList) {
     for (const p of pending) p.el.classList.toggle("queued", queue.includes(p.text));
     const others = queue.filter(text => !pending.some(p => p.text === text)).map(queuedBubble);
     for (const text of queuedBubbles.keys()) if (!queue.includes(text)) queuedBubbles.delete(text);
-    reconcile(msgs, [older, ...nodes, ...pending.map(p => p.el), ...others, working, questionSlot]);
+    const failure = read.failure && !read.messages.some(m => m.parts.some(p => p.kind === "error" && p.error === read.failure))
+      ? h("div", { class: "errbox" }, read.failure) : null;
+    reconcile(msgs, [older, ...nodes, ...(failure ? [failure] : []), ...pending.map(p => p.el), ...others, working, questionSlot]);
     older.classList.toggle("hide", !read.olderRemaining);
     drawWorking();
     drawQuestion(read.pendingInput);
@@ -2172,6 +2174,7 @@ function chatView(machine, id, fromList) {
       turnChanges: [...beforeChanges.filter(c => !runs.has(c.turn)), ...frame.turnChanges],
       pendingInput: frame.pendingInput,
       run: frame.run,
+      failure: frame.failure,
       queued: frame.queued,
       olderRemaining: Math.max(0, frame.olderRemaining - before.length),
     };

@@ -55,11 +55,26 @@ fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     if wide {
         body = body.max_w(READING_WIDTH);
     }
-    let error = page.existing().and_then(|c| c.error.as_deref());
+    let error = page.existing().and_then(|chat| {
+        chat.error.as_deref().filter(|why| {
+            !chat.messages().any(|message| {
+                message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::Error { error } if error == why))
+            })
+        })
+    });
     if let Some(note) = engine_note(s, k) {
         body = body.child(note);
     } else if let Some(e) = error {
         body = body.child(errbox(k, e));
+    }
+    if !page.can_send() {
+        body = body.child(row().w_full().gap(10.0).padding(10.0).center_y().radius(10.0).fill(k.c.warning.bg)
+            .child(text("Open in terminal pi. Stop it there before continuing here to send or change models.")
+                .font(k.ty.ui).color(k.c.text_base).wrap().grow(1.0).min_w(0.0))
+            .child(Button::new("Continue here").variant(ButtonVariant::Outline).on_press(State::take_over).build(k)));
     }
     body = match &page.target {
         Target::New(_) => body.child(hero(k)),
@@ -188,7 +203,7 @@ pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
             if let Some(p) = s.chat_mut() {
                 p.overlay = match p.overlay {
                     Overlay::Menu => Overlay::Closed,
-                    Overlay::Closed | Overlay::Sheet(_) => Overlay::Menu,
+                    Overlay::Closed => Overlay::Menu,
                 };
             }
         })
