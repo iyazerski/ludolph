@@ -242,7 +242,12 @@ impl Message {
         let tail = self
             .parts
             .iter()
-            .rposition(|p| matches!(p, Part::Tool { .. } | Part::Error { .. } | Part::Note { .. }))
+            .rposition(|p| {
+                matches!(
+                    p,
+                    Part::Tool { .. } | Part::Error { .. } | Part::Note { .. }
+                )
+            })
             .map_or(0, |i| i + 1);
         let texts: Vec<&str> = self.parts[tail..]
             .iter()

@@ -308,9 +308,7 @@ impl Existing {
                             Part::Thinking { .. }
                             | Part::Image { .. }
                             | Part::Error { .. }
-                            | Part::Note { .. } => {
-                                false
-                            }
+                            | Part::Note { .. } => false,
                         })
                 })
             })
