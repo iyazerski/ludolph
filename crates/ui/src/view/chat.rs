@@ -771,20 +771,9 @@ fn toggle_group(s: &mut State, key: &str, open: bool) {
     }
 }
 
-/// Show a finished reply's timestamp and copy action.
+/// Show a finished reply's Copy action followed by its timestamp.
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     let mut out = row().w_full().gap(8.0).center_y();
-    if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {
-        out = out.child(
-            text(
-                at.with_timezone(&chrono::Local)
-                    .format("%b %-d, %-I:%M %p")
-                    .to_string(),
-            )
-            .font(k.ty.small)
-            .color(k.c.text_faint),
-        );
-    }
     if m.has_answer() {
         let copied = page.just_copied(&m.id);
         let id = m.id.clone();
@@ -796,6 +785,17 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .help("Copy the answer")
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_answer(&id, tx))
                 .build(k),
+        );
+    }
+    if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {
+        out = out.child(
+            text(
+                at.with_timezone(&chrono::Local)
+                    .format("%b %-d, %-I:%M %p")
+                    .to_string(),
+            )
+            .font(k.ty.small)
+            .color(k.c.text_faint),
         );
     }
     out
