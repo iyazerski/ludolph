@@ -76,6 +76,8 @@ rune-theme-opencode = { git = "https://github.com/anomalyco/rune", rev = "b53fe7
 # With only `ring` enabled, rustls picks its crypto provider on its own;
 # tokio-tungstenite leaves that to the app.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# The relay token in the login keychain.
+security-framework = "3"
 tempfile = "3"
 # The relay's session cookie Max-Age, as the cookie crate takes it.
 time = { version = "0.3", default-features = false }

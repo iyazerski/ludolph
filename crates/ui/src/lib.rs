@@ -12,7 +12,7 @@ mod message;
 mod prefs;
 mod view;
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::fs::File;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -22,7 +22,7 @@ use rune::{App, AppSpec, Chrome, MacWindowOptions, RunOptions, WindowOptions, Wi
 
 use self::api::{Api, Shared};
 use self::app::{State, Window};
-use self::prefs::Prefs;
+use self::prefs::{Frame, Prefs};
 use self::view::{CORNER, on_key, view};
 
 /// NSWindow collection behavior: on every Space, and over full-screen apps.
@@ -42,6 +42,18 @@ fn top_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     let px = |points: f32| (f64::from(points) * display.scale).round() as i32;
     let right = display.position.0 + i32::try_from(display.size.0).ok()?;
     Some((right - px(SIZE.0 + 24.0), display.position.1 + px(56.0)))
+}
+
+/// Where the main window was last, if that's still on a display.
+fn saved_frame(prefs: &Prefs, displays: &[rune::Display]) -> Option<Frame> {
+    let frame = prefs.main_frame?;
+    let (x, y) = frame.position;
+    let shown = displays.iter().any(|d| {
+        let (w, h) = (i64::from(d.size.0), i64::from(d.size.1));
+        let (left, top) = (i64::from(d.position.0), i64::from(d.position.1));
+        (left..left + w).contains(&i64::from(x)) && (top..top + h).contains(&i64::from(y))
+    });
+    shown.then_some(frame)
 }
 
 /// The main window's first spot: the middle of the primary display.
@@ -91,6 +103,9 @@ pub fn run(opts: Opts) -> Result<()> {
     let prefs = Rc::new(RefCell::new(Prefs::load(&prefs_path)));
     let shared = Shared::start(rt.handle().clone(), socket, prefs_path);
     let hotkey = Rc::new(Cell::new(None));
+    let main_window = Rc::new(OnceCell::new());
+    // The writer runs on the runtime, which may not get to the last save as the app quits.
+    let last_prefs = prefs.clone();
 
     let spec = |size, min_size| AppSpec {
         min_size: Some(min_size),
@@ -118,14 +133,17 @@ pub fn run(opts: Opts) -> Result<()> {
         let (shared, prefs, hotkey) = (shared.clone(), prefs.clone(), hotkey.clone());
         let (me, peer) = (quick_handle, main_handle.clone());
         quick
-            .init(move || State::new(Api::start(&shared, me, peer), Window::Quick, prefs, hotkey))
+            .init(move || {
+                let api = Api::start(&shared, me, peer);
+                State::new(api, Window::Quick, prefs, hotkey, Rc::default())
+            })
             .on_visibility(|s, shown, _| s.visibility_changed(shown))
     };
     let main = {
-        let peer = quick.handle();
+        let (peer, handle, prefs) = (quick.handle(), main_window.clone(), prefs.clone());
         main.init(move || {
             let api = Api::start(&shared, main_handle, peer);
-            State::new(api, Window::Main, prefs, hotkey)
+            State::new(api, Window::Main, prefs, hotkey, handle)
         })
         .chrome(Chrome {
             full_size_content: true,
@@ -142,6 +160,7 @@ pub fn run(opts: Opts) -> Result<()> {
             s.visibility_changed(shown)
         })
         .on_close(State::closed)
+        .on_quit(|s, _| s.keep_frame())
         // The Dock icon, or opening the app again from Finder or Spotlight.
         .on_reopen(|s, _, _| {
             s.open();
@@ -167,18 +186,37 @@ pub fn run(opts: Opts) -> Result<()> {
                 .collection_behavior(ALL_SPACES | FULL_SCREEN_AUXILIARY)
                 .corner_radius(CORNER),
         );
+        let mut saved = saved_frame(&prefs.borrow(), displays);
         let main_options = WindowOptions {
             resizable: true,
             visible: false,
-            position: centered(displays),
+            position: saved.map(|f| f.position).or_else(|| centered(displays)),
+            physical_size: saved.map(|f| f.size),
             min_size: Some(MAIN_MIN_SIZE),
             ..Default::default()
         };
         vec![
             WindowSpec::from_app("quick", quick).configured_options(options),
-            WindowSpec::from_app("main", main).options(main_options),
+            WindowSpec::from_app("main", main)
+                .options(main_options)
+                .on_ready(move |handle| {
+                    // AppKit centres a window first shown during launch, wherever it was made.
+                    if let Some(frame) = saved.take()
+                        && handle
+                            .placement()
+                            .is_some_and(|at| at.position != frame.position)
+                    {
+                        handle.set_position(frame.position);
+                    }
+                    // The same handle each time the window opens again.
+                    drop(main_window.set(handle.clone()));
+                }),
         ]
     });
+    let prefs_path = opts.state_dir.join("ui.json");
+    if let Err(e) = ludolph_json_file::save(&prefs_path, &*last_prefs.borrow()) {
+        eprintln!("{e:#}");
+    }
     drop(rt);
     drop(lock);
     Ok(())

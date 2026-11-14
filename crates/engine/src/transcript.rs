@@ -48,6 +48,9 @@ pub struct Message {
     pub role: Role,
     /// Epoch milliseconds.
     pub created_at: i64,
+    /// When its last entry was written, in epoch milliseconds: for a reply,
+    /// when its turn's work ended.
+    pub ended_at: i64,
     pub status: MessageStatus,
     pub parts: Vec<Part>,
 }
@@ -930,6 +933,7 @@ fn render(pieces: &[Piece]) -> Option<Message> {
         id: first.id.clone(),
         role: Role::System,
         created_at: first.time(),
+        ended_at: pieces.last().map_or(0, Piece::time),
         status: MessageStatus::Complete,
         parts: Vec::new(),
     };

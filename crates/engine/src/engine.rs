@@ -22,6 +22,7 @@ use crate::live::{self, Live};
 use crate::login;
 use crate::models::{Catalog, Model};
 use crate::pi::{Event, Options, Pi, Session};
+pub use crate::relay::TokenStore;
 use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone};
 use crate::runtime::Runtime;
 use crate::session::{Outcome, Summary};
@@ -67,6 +68,8 @@ pub struct Config {
     /// `None` outside one, as for a development engine, which leaves the
     /// login item alone.
     pub app: Option<PathBuf>,
+    /// Where the relay token is kept.
+    pub tokens: TokenStore,
 }
 
 impl Config {
@@ -400,7 +403,7 @@ impl Engine {
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
         // The engine's folder has no `.pi` settings to change the list.
         let catalog = Catalog::new(config.pi.clone(), config.state_dir.clone(), config.grace);
-        let link = Link::load(&config.state_dir)?;
+        let link = Link::load(&config.state_dir, config.tokens)?;
         let engine = Self(Arc::new_cyclic(|inner| Inner {
             turns,
             catalog,
@@ -985,7 +988,7 @@ impl Engine {
     /// Fails if the address isn't a relay's, or names another relay than
     /// the one this Mac is linked to.
     pub fn link_phone(&self, relay: Option<&str>) -> Result<()> {
-        let saved = Link::load(&self.0.config.state_dir)?;
+        let saved = Link::load(&self.0.config.state_dir, self.0.config.tokens)?;
         let relay = match (&saved, relay.map(|r| r.trim().trim_end_matches('/'))) {
             (Some(link), Some(other)) if other != link.relay => {
                 bail!("this Mac is linked to {}; unlink it first", link.relay)
@@ -1039,7 +1042,7 @@ impl Engine {
                 relay: relay.to_owned(),
                 token,
             };
-            link.save(&self.0.config.state_dir)?;
+            link.save(&self.0.config.state_dir, self.0.config.tokens)?;
             self.connect(link);
         }
         Ok(())
@@ -1067,15 +1070,10 @@ impl Engine {
     /// Fails if the saved link can't be read or removed.
     pub fn unlink_phone(&self) -> Result<()> {
         self.stop_pairing();
-        let link = Link::load(&self.0.config.state_dir)?;
+        let config = &self.0.config;
+        let link = Link::load(&config.state_dir, config.tokens)?;
         self.disconnect();
-        let path = Link::path(&self.0.config.state_dir);
-        match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                return Err(e).with_context(|| format!("removing {}", path.display()));
-            }
-            _ => {}
-        }
+        Link::remove(&config.state_dir, config.tokens)?;
         if let Some(link) = link {
             // The phone shows a Mac the relay keeps as offline until it's removed there.
             tokio::spawn(async move {

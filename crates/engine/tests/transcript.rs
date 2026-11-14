@@ -180,6 +180,8 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
     );
     assert_eq!(page.messages[1].id, "a1");
     assert_eq!(page.messages[1].created_at, 3);
+    // The turn ran until its last entry, the error.
+    assert_eq!(page.messages[1].ended_at, 7);
     assert_eq!(page.leaf.as_deref(), Some("a3"));
 
     // A call's details load on request: its arguments and output, and a

@@ -18,12 +18,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use ludolph_relay_proto::{
     CONNECT_PATH, Down, Notice, NoticeKind, PAIR_PATH, PROTOCOL, PairStart, Paired, Up, pair_url,
 };
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
+use security_framework::passwords::{
+    delete_generic_password, get_generic_password, set_generic_password,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Semaphore, mpsc, watch};
@@ -78,8 +81,24 @@ const FORGET_TIMEOUT: Duration = Duration::from_secs(10);
 /// The relay a phone links through unless Settings names another.
 pub const DEFAULT_RELAY: &str = "https://ludolph.iyazerski.dev";
 
+/// The Keychain item's service; its account is the engine's folder, so a
+/// throwaway engine can't change the installed one's token.
+const KEYCHAIN_SERVICE: &str = "dev.iyazerski.ludolph.relay";
+/// `errSecItemNotFound`.
+const NOT_FOUND: i32 = -25300;
+
+/// Where this Mac's relay token is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenStore {
+    /// The login keychain, beside `relay.json` with the relay's address.
+    Keychain,
+    /// In `relay.json` itself, readable only by you, for tests that mustn't
+    /// touch the Mac's keychain.
+    File,
+}
+
 /// The relay's address and this Mac's token, from linking a phone.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Link {
     /// `https://…`, or `http://…` for a relay on this Mac.
     pub relay: String,
@@ -135,29 +154,98 @@ pub enum LinkStatus {
     Rejected,
 }
 
+/// `relay.json`: the relay's address, and the token when it isn't in the
+/// keychain.
+#[derive(Serialize, Deserialize)]
+struct Saved {
+    relay: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+}
+
 impl Link {
     /// Where the link is kept in the engine's folder.
     pub fn path(state_dir: &Path) -> PathBuf {
         state_dir.join("relay.json")
     }
 
-    /// The saved link, if this Mac has one.
+    /// The saved link, if this Mac has one with its token.
     ///
     /// # Errors
     ///
-    /// Fails if the file can't be read.
-    pub fn load(state_dir: &Path) -> Result<Option<Self>> {
-        ludolph_json_file::load(&Self::path(state_dir))
+    /// Fails if the file or the keychain can't be read.
+    pub fn load(state_dir: &Path, store: TokenStore) -> Result<Option<Self>> {
+        let Some(saved) = ludolph_json_file::load::<Saved>(&Self::path(state_dir))? else {
+            return Ok(None);
+        };
+        let token = match store {
+            TokenStore::File => saved.token,
+            TokenStore::Keychain => {
+                match get_generic_password(KEYCHAIN_SERVICE, &keychain_account(state_dir)) {
+                    Ok(bytes) => {
+                        Some(String::from_utf8(bytes).context("the relay token isn't text")?)
+                    }
+                    Err(e) if e.code() == NOT_FOUND => None,
+                    Err(e) => bail!("reading the relay token from the keychain: {e}"),
+                }
+            }
+        };
+        Ok(token.map(|token| Self {
+            relay: saved.relay,
+            token,
+        }))
     }
 
-    /// Save the link, readable only by you, since the token is a secret.
+    /// Save the link, with the token where `store` keeps it.
     ///
     /// # Errors
     ///
-    /// Fails if the file can't be written.
-    pub fn save(&self, state_dir: &Path) -> Result<()> {
-        ludolph_json_file::save(&Self::path(state_dir), self)
+    /// Fails if the file or the keychain can't be written.
+    pub fn save(&self, state_dir: &Path, store: TokenStore) -> Result<()> {
+        let token = match store {
+            TokenStore::File => Some(self.token.clone()),
+            TokenStore::Keychain => {
+                let account = keychain_account(state_dir);
+                set_generic_password(KEYCHAIN_SERVICE, &account, self.token.as_bytes())
+                    .map_err(|e| anyhow!("saving the relay token in the keychain: {e}"))?;
+                None
+            }
+        };
+        let saved = Saved {
+            relay: self.relay.clone(),
+            token,
+        };
+        ludolph_json_file::save(&Self::path(state_dir), &saved)
     }
+
+    /// Forget the saved link and its token.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file or the keychain item can't be removed.
+    pub fn remove(state_dir: &Path, store: TokenStore) -> Result<()> {
+        let path = Self::path(state_dir);
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(e).with_context(|| format!("removing {}", path.display()));
+            }
+            _ => {}
+        }
+        if store == TokenStore::Keychain {
+            match delete_generic_password(KEYCHAIN_SERVICE, &keychain_account(state_dir)) {
+                Err(e) if e.code() != NOT_FOUND => {
+                    bail!("removing the relay token from the keychain: {e}")
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The keychain account of the engine whose folder is `state_dir`.
+fn keychain_account(state_dir: &Path) -> String {
+    state_dir.display().to_string()
 }
 
 /// Stay connected to the relay, answer its calls, and pass alerts on as

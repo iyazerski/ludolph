@@ -81,7 +81,7 @@ fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
     let tools = with_hint(
         tools,
         k,
-        "How the commands, edits and thinking between a reply's texts show. A click still opens or closes one.",
+        "Whether the agent's commands, edits and thinking show open while it works. They fold once it writes again.",
     );
     vec![
         wide(
@@ -219,7 +219,11 @@ fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
                 .as_ref()
                 .filter(|l| l.status != LinkStatus::Rejected)
             {
-                Some(link) => out.push(linked(link, pairing.is_none(), k)),
+                Some(link) => out.push(if page.phone.confirm_unlink {
+                    confirm_unlink(k)
+                } else {
+                    linked(link, pairing.is_none(), k)
+                }),
                 None => {
                     out.push(relay_field(page, pairing.is_none(), k));
                     if pairing.is_none() {
@@ -289,9 +293,44 @@ fn linked(link: &RelayLink, can_link: bool, k: &Kit) -> El {
         Button::new("Unlink")
             .variant(ButtonVariant::Outline)
             .help("Disconnect this Mac from the relay, so no phone reaches it")
-            .on_press(State::unlink_phone)
+            .on_press(|s: &mut State| s.confirm_unlink(true))
             .build(k),
     );
+    status_row(info, buttons)
+}
+
+/// Unlink's second step, in the link's place: what it does, and whether to.
+fn confirm_unlink(k: &Kit) -> El {
+    let info = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(2.0)
+        .child(text("Unlink this Mac?").font(k.ty.ui).color(k.c.text_base))
+        .child(
+            text("No phone reaches it until you link one again, and the relay forgets it.")
+                .font(k.ty.text_small)
+                .color(k.c.text_muted)
+                .wrap(),
+        );
+    let buttons = row()
+        .gap(8.0)
+        .child(
+            Button::new("Cancel")
+                .variant(ButtonVariant::Outline)
+                .on_press(|s: &mut State| s.confirm_unlink(false))
+                .build(k),
+        )
+        .child(
+            Button::new("Unlink")
+                .variant(ButtonVariant::Danger)
+                .on_press(State::unlink_phone)
+                .build(k),
+        );
+    status_row(info, buttons)
+}
+
+/// The phone link's row: what it says, then its buttons.
+fn status_row(info: El, buttons: El) -> El {
     row()
         .w_full()
         .px(PAD)

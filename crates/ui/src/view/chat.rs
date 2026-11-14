@@ -2,7 +2,7 @@
 //! tool groups, thinking and errors, pi's dialogs, and the composer under
 //! them.
 
-use rune::{Color, El, ScrollSpec, Span, TextStyle, Tx, col, icon, rich, row, text};
+use rune::{Color, El, ScrollSpec, Span, TextStyle, Tx, col, el, icon, rich, row, text};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Markdown, Menu,
@@ -14,7 +14,7 @@ use super::{breaks, code, icons};
 use super::widgets::{busy, dot, engine_note, head, head_titles, hide_button, tones};
 use crate::app::{Answer, ChatPage, Existing, Overlay, QuestionForm, State, Target, Window};
 use crate::data::{DialogKind, Message, MessageStatus, Part, Role, Run, ToolState};
-use crate::labels::{ToolCall, tool_summary};
+use crate::labels::{self, ToolCall, tool_summary};
 use crate::message::skill_words;
 use rune::Image;
 use rune_theme_opencode::file_icons;
@@ -283,6 +283,8 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
     // The latest run's button waits until it's over and nothing is asked.
     let settled = !working && page.question.is_none();
     let changes = page.before_changes.iter().chain(&page.turn_changes);
+    // When the turn of the reply next shown began: its prompt's time.
+    let mut started = None;
     for m in page.messages() {
         let key = format!("m-{}", m.id);
         match m.role {
@@ -294,12 +296,14 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
                         (thumb, m.written().then(|| (m.id.clone(), i)))
                     })
                     .collect();
+                started = Some(m.created_at);
                 out.push(user_bubble(k, &m.text(), images, Shade::Sent).key(key));
             }
             Role::Assistant => {
                 let streaming = m.status == MessageStatus::Streaming
                     || (Some(m.id.as_str()) == last && working);
-                out.push(assistant(page, k, &style, m, streaming, expanded).key(key));
+                let started = started.take().unwrap_or(m.created_at);
+                out.push(assistant(page, k, &style, m, started, streaming, expanded).key(key));
             }
             Role::System => out.push(system_note(k, m).key(key)),
         }
@@ -500,18 +504,40 @@ fn pieces(parts: &[Part]) -> Vec<Piece<'_>> {
     out
 }
 
-/// Prose, thinking, tool groups and errors in transcript order, as on the desktop.
+/// Prose, thinking, tool groups and errors in transcript order, as on the
+/// desktop. A finished reply folds everything before its last text under how
+/// long the turn, begun at `started`, worked. While it streams, the work at
+/// its end opens if `expanded`; work with a text after it starts closed.
 fn assistant(
     page: &Existing,
     k: &Kit,
     style: &MarkdownStyle,
     m: &Message,
+    started: i64,
     streaming: bool,
     expanded: bool,
 ) -> El {
     let mut out = col().w_full().gap(10.0);
     let last = m.parts.len().saturating_sub(1);
-    for piece in pieces(&m.parts) {
+    let pieces = pieces(&m.parts);
+    let tail = pieces.len().saturating_sub(1);
+    let answer = pieces
+        .iter()
+        .rposition(|p| matches!(p, Piece::Part(_, Part::Text { .. })));
+    let fold = answer.filter(|&n| n > 0 && !streaming);
+    let worked_key = format!("{}#worked", m.id);
+    let worked_open = is_open(page, &worked_key, false);
+    if fold.is_some() {
+        out = out.child(worked(k, &worked_key, m.ended_at - started, worked_open));
+    }
+    for (n, piece) in pieces.into_iter().enumerate() {
+        if fold.is_some_and(|f| n < f) && !worked_open {
+            continue;
+        }
+        // The rule sets the answer apart from the work, shown or not.
+        if Some(n) == fold {
+            out = out.child(el().w_full().h(1.0).fill(k.c.border_muted));
+        }
         out = out.children(match piece {
             Piece::Part(i, Part::Text { text }) => vec![
                 prose(page, k, style, text, streaming && i == last).key(format!("{}#{i}", m.id)),
@@ -535,7 +561,8 @@ fn assistant(
             Piece::Work(i, steps) => {
                 let key = format!("{}#{i}", m.id);
                 let live = streaming.then_some(last);
-                vec![tool_group(page, k, &key, &steps, live, expanded)]
+                let open = streaming && expanded && n == tail;
+                vec![tool_group(page, k, &key, &steps, live, open)]
             }
         });
     }
@@ -586,9 +613,41 @@ fn prose(page: &Existing, k: &Kit, style: &MarkdownStyle, text: &str, streaming:
     }
 }
 
+/// The header that folds a finished turn's work before its answer, with how
+/// long the turn took.
+fn worked(k: &Kit, key: &str, millis: i64, open: bool) -> El {
+    let toggle = key.to_owned();
+    let label = match millis {
+        1.. => format!("Worked for {}", labels::worked(millis / 1000)),
+        _ => "Worked".to_owned(),
+    };
+    let head = row()
+        .h(TOOL_HEADER_HEIGHT)
+        .gap(4.0)
+        .pr(6.0)
+        .center_y()
+        .child(text(label).font(k.ty.ui).color(k.c.text_faint))
+        .child(chevron(k, open));
+    let head = k
+        .interactive(head.radius(6.0).shrink())
+        .label(if open {
+            "Hide the work"
+        } else {
+            "Show the work"
+        })
+        .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
+    row().key(format!("worked-{key}")).w_full().child(head)
+}
+
+/// Whether the fold at `key` shows open: as the user last set it, or
+/// `default`.
+fn is_open(page: &Existing, key: &str, default: bool) -> bool {
+    page.open_groups.get(key).copied().unwrap_or(default)
+}
+
 /// The model's reasoning, folded under "Thinking" until opened.
 fn thinking(page: &Existing, k: &Kit, key: &str, text_in: &str, live: bool) -> El {
-    let open = page.open_groups.contains(key);
+    let open = is_open(page, key, false);
     let toggle = key.to_owned();
     let mut head = row()
         .h(TOOL_HEADER_HEIGHT)
@@ -609,7 +668,7 @@ fn thinking(page: &Existing, k: &Kit, key: &str, text_in: &str, live: bool) -> E
     }
     let head = k
         .interactive(head.radius(6.0).shrink())
-        .on_press(move |s: &mut State| toggle_group(s, &toggle));
+        .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
     let mut out = col()
         .key(format!("thinking-{key}"))
         .w_full()
@@ -642,12 +701,10 @@ fn chevron(k: &Kit, open: bool) -> El {
         })
 }
 
-/// Open the group at `key`, or close it.
-fn toggle_group(s: &mut State, key: &str) {
-    if let Some(chat) = s.chat_mut().and_then(ChatPage::existing_mut)
-        && !chat.open_groups.remove(key)
-    {
-        chat.open_groups.insert(key.to_owned());
+/// Close the fold at `key` if it shows `open`, else open it, and keep it so.
+fn toggle_group(s: &mut State, key: &str, open: bool) {
+    if let Some(chat) = s.chat_mut().and_then(ChatPage::existing_mut) {
+        chat.open_groups.insert(key.to_owned(), !open);
     }
 }
 
@@ -683,7 +740,7 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
 }
 
 /// The work between two texts on one rail, under a summary of its tool
-/// calls. It opens if `expanded` unless clicked; `live` is the streaming
+/// calls. It shows open if `default` until clicked; `live` is the streaming
 /// message's last part, so thinking there shows as under way.
 fn tool_group(
     page: &Existing,
@@ -691,9 +748,9 @@ fn tool_group(
     key: &str,
     steps: &[Step],
     live: Option<usize>,
-    expanded: bool,
+    default: bool,
 ) -> El {
-    let open = expanded != page.open_groups.contains(key);
+    let open = is_open(page, key, default);
     let tools: Vec<ToolCall> = steps
         .iter()
         .filter_map(|step| match step {
@@ -730,7 +787,7 @@ fn tool_group(
     }
     let head = k
         .interactive(head.radius(6.0).shrink())
-        .on_press(move |s: &mut State| toggle_group(s, &toggle));
+        .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
     let mut group = col()
         .key(format!("tools-{key}"))
         .w_full()
@@ -741,7 +798,7 @@ fn tool_group(
             Step::Tool(tool) => tool_row(k, tool, n == last),
             Step::Thought(i, text) => {
                 let key = format!("{key}:{i}");
-                let open = page.open_groups.contains(&key);
+                let open = is_open(page, &key, false);
                 thought_row(k, &key, text, thinking(*i), open, n == last)
             }
         });
@@ -802,7 +859,7 @@ fn thought_row(k: &Kit, key: &str, text_in: &str, live: bool, open: bool, last: 
     let toggle = key.to_owned();
     let line = k
         .interactive(rail_row(k, last && !open, lead, verb, tint, subject))
-        .on_press(move |s: &mut State| toggle_group(s, &toggle));
+        .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
     if !open {
         return line;
     }

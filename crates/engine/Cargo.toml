@@ -24,6 +24,7 @@ objc2-core-services.workspace = true
 objc2-io-kit.workspace = true
 plist.workspace = true
 rustls.workspace = true
+security-framework.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

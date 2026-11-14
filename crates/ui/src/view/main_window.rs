@@ -1,6 +1,8 @@
 //! The main window: the sidebar beside the chat or the settings, under a
 //! toolbar with the page's title and actions.
 
+use std::sync::OnceLock;
+
 use rune::{Cx, El, col, el, row, text};
 use rune_kit::shell::{SidebarToggle, SplitView, Toolbar};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
@@ -10,6 +12,7 @@ use crate::app::{ChatPage, Page, State};
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let k = rune_theme_opencode::kit(cx.system_dark());
+    let panels = panel_kit(k);
     let mut layer = Vec::new();
     let (pane, bar) = match &s.page {
         Page::Chat(page) => (
@@ -27,14 +30,29 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .sidebar(
             &s.sidebar,
             |s: &mut State| &mut s.sidebar,
-            sidebar::view(s, k),
+            sidebar::view(s, panels),
         )
         .toolbar(bar)
         .titlebar_inset(cx.titlebar_inset())
         .sidebar_toggle(SidebarToggle::new().in_header().shortcut("⌃⌘S"))
         .reduced_motion(cx.is_reduced_motion())
-        .build(k);
+        .build(panels);
     rune_kit::root(split, layer)
+}
+
+/// `k` for the panels around the chat. In dark mode they're a grey a little
+/// lighter than the chat's, in place of the theme's near-black, so the chat
+/// reads as the page and the sidebar as the frame around it.
+fn panel_kit(k: &'static Kit) -> &'static Kit {
+    static DARK: OnceLock<Kit> = OnceLock::new();
+    if !k.dark {
+        return k;
+    }
+    DARK.get_or_init(|| {
+        let mut panels = k.clone();
+        panels.c.bg_deep = k.c.bg_base.mix(k.c.layer_01, 0.5);
+        panels
+    })
 }
 
 /// Back to the chat, and the page's title.

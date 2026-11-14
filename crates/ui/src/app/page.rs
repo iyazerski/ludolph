@@ -2,7 +2,7 @@
 //! creates it, under the composer they share.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -103,7 +103,9 @@ pub struct Existing {
     pub error: Option<String>,
     /// Sent messages not in the transcript yet.
     pub pending: Vec<Pending>,
-    pub open_groups: HashSet<String>,
+    /// The folds the user opened (`true`) or closed, by key; the rest show
+    /// as their kind does by default.
+    pub open_groups: HashMap<String, bool>,
     pub question: Option<QuestionForm>,
     /// The shown messages' images, by message and index, decoded once.
     pub thumbs: HashMap<(String, usize), Option<Image>>,
@@ -325,7 +327,7 @@ impl Existing {
             run: None,
             error: None,
             pending: Vec::new(),
-            open_groups: HashSet::new(),
+            open_groups: HashMap::new(),
             question: None,
             thumbs: HashMap::new(),
             file_links: FileLinks::default(),

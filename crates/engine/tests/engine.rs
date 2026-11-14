@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, Status};
+use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, Status, TokenStore};
 use ludolph_engine::server;
 use ludolph_engine::settings::{Notify, Settings};
 use ludolph_engine::transcript::{Part, Role, ToolState, Window};
@@ -38,6 +38,7 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         grace: Duration::from_secs(2),
         home: dir.to_owned(),
         app: Some(dir.join("Ludolph.app")),
+        tokens: TokenStore::File,
     };
     Engine::start(config)
         .await

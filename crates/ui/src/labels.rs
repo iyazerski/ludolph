@@ -21,6 +21,18 @@ pub fn ago(when: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
+/// How long a turn worked: 42s, 6m 56s, 1h 5m.
+pub fn worked(secs: i64) -> String {
+    let s = secs.max(0);
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m {}s", s / 60, s % 60)
+    } else {
+        format!("{}h {}m", s / 3600, s % 3600 / 60)
+    }
+}
+
 /// A model id without its provider: `anthropic/claude-x` reads `claude-x`.
 pub fn short_model(model: &str) -> &str {
     model.rsplit('/').next().unwrap_or(model)
@@ -194,6 +206,13 @@ mod tests {
             (1_300_000, "2w"),
         ] {
             assert_eq!(ago(now - chrono::Duration::seconds(secs), now), want);
+        }
+    }
+
+    #[test]
+    fn work_times_read_in_minutes_and_seconds() {
+        for (secs, want) in [(42, "42s"), (416, "6m 56s"), (3900, "1h 5m")] {
+            assert_eq!(worked(secs), want);
         }
     }
 }

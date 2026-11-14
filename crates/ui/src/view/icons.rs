@@ -8,6 +8,9 @@ use rune::Icon;
 pub use rune_theme_opencode::icons::OUTLINE_BRAIN as THOUGHT;
 /// The settings. The phone keeps its settings under its menu, without one.
 pub use rune_theme_opencode::icons::SETTINGS_GEAR as SETTINGS;
+/// A new chat, and a project's folder in the main window's sidebar. The
+/// phone has neither.
+pub use rune_theme_opencode::icons::{EDIT as NEW_CHAT, FOLDER};
 /// Expanding the quick window's chat into the main window, and popping the
 /// main window's chat out into the quick one. The phone has neither.
 pub use rune_theme_opencode::icons::{OUTLINE_EXPAND as EXPAND, SQUARE_ARROW_TOP_RIGHT as POP_OUT};
@@ -15,6 +18,14 @@ pub use rune_theme_opencode::icons::{OUTLINE_EXPAND as EXPAND, SQUARE_ARROW_TOP_
 const fn icon(name: &'static str, view: f32, body: &'static str) -> Icon {
     Icon { name, view, body }
 }
+
+/// A project's folder while its chats show, drawn to match the theme's
+/// closed `FOLDER`.
+pub static FOLDER_OPEN: Icon = icon(
+    "folder-open",
+    16.0,
+    r#"<path d="M1.33337 13.3333V2H6.66671L8.66671 4H13.3334V6.66667M1.33337 13.3333L3.33337 6.66667H15.3334L13.3334 13.3333H1.33337Z" stroke="currentColor" stroke-miterlimit="10" stroke-linecap="square" stroke-linejoin="round" fill="none"/>"#,
+);
 
 pub static BACK: Icon = icon(
     "back",

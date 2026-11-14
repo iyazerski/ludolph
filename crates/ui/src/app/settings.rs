@@ -35,6 +35,8 @@ pub struct Phone {
     pub relay: TextEdit,
     /// The QR code of the page a waiting pairing opens, and that page.
     pub qr: Option<(String, Image)>,
+    /// Unlink was pressed once, so the row asks whether to.
+    pub confirm_unlink: bool,
     pub error: Option<String>,
 }
 
@@ -102,6 +104,7 @@ impl State {
                     state: None,
                     relay: TextEdit::default(),
                     qr: None,
+                    confirm_unlink: false,
                     error: None,
                 },
                 previous,
@@ -215,7 +218,15 @@ impl State {
         self.phone_call("stop_linking_phone", json!({}), "Couldn't stop linking");
     }
 
+    /// Ask whether to unlink, or stop asking.
+    pub fn confirm_unlink(&mut self, ask: bool) {
+        if let Some(page) = self.settings_page_mut() {
+            page.phone.confirm_unlink = ask;
+        }
+    }
+
     pub fn unlink_phone(&mut self) {
+        self.confirm_unlink(false);
         self.phone_call("unlink_phone", json!({}), "Couldn't unlink the phone");
     }
 

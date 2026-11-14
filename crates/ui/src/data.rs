@@ -142,6 +142,8 @@ pub struct Message {
     pub role: Role,
     /// Epoch milliseconds.
     pub created_at: i64,
+    /// When its last entry was written, in epoch milliseconds.
+    pub ended_at: i64,
     pub status: MessageStatus,
     pub parts: Vec<Part>,
 }
@@ -413,6 +415,7 @@ mod tests {
                 id: "m".into(),
                 role: Role::Assistant,
                 created_at: 0,
+                ended_at: 0,
                 status: MessageStatus::Complete,
                 parts,
             };
