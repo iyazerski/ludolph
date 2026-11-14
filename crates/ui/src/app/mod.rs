@@ -621,6 +621,7 @@ impl State {
         let Page::Chat(mut page) = std::mem::replace(&mut self.page, Page::List) else {
             return;
         };
+        page.cancel_queue_edit();
         let key = page.target.key();
         if page.composer.text.trim().is_empty() {
             self.drafts.remove(key);

@@ -1,15 +1,15 @@
-//! Edit waiting prompts by id, without disturbing the composer's unsent draft.
+//! Edit waiting prompts in the composer and send individual prompts as steering.
 
 use rune::{TextEdit, Tx};
 use serde_json::{Value, json};
 
-use super::State;
 use super::page::QueueEdit;
+use super::{State, Voice};
 use crate::message::with_skill_refs;
 
 impl State {
-    /// Open a separate editor for a prompt that has not started yet.
-    pub fn edit_queued(&mut self, id: &str) {
+    /// Edit a waiting prompt in the composer, saving its unsent draft until done.
+    pub fn edit_queued(&mut self, id: &str, tx: &mut Tx) {
         let Some(page) = self.chat_mut() else { return };
         let Some(message) = page
             .existing()
@@ -17,14 +17,24 @@ impl State {
         else {
             return;
         };
-        let mut field = TextEdit::new(message.text.clone());
+        let (text, images) = (message.text.clone(), message.images);
+        if page.queue_edit.as_ref().is_some_and(|edit| edit.saving) {
+            return;
+        }
+        page.cancel_queue_edit();
+        page.voice = Voice::Idle;
+        let mut field = TextEdit::new(text);
         field.set_caret(field.text.len());
         field.focused = true;
+        let draft = std::mem::replace(&mut page.composer, field);
         page.queue_edit = Some(QueueEdit {
             id: id.to_owned(),
-            field,
+            draft,
+            attached: std::mem::take(&mut page.attached),
+            images,
             saving: false,
         });
+        tx.focus("composer", false);
     }
 
     /// Save the waiting prompt's text, keeping its images and place.
@@ -37,7 +47,7 @@ impl State {
             return;
         };
         let id = edit.id.clone();
-        let text = with_skill_refs(edit.field.text.trim(), page.skills.list.ready());
+        let text = with_skill_refs(page.composer.text.trim(), page.skills.list.ready());
         edit.saving = true;
         self.api.call(
             "edit_queued_message",
@@ -48,7 +58,7 @@ impl State {
                 {
                     edit.saving = false;
                     if result.is_ok() {
-                        page.queue_edit = None;
+                        page.cancel_queue_edit();
                     }
                 }
                 if let Err(error) = result {
@@ -72,7 +82,7 @@ impl State {
                     && let Some(page) = s.page_at(nav)
                     && page.queue_edit.as_ref().is_some_and(|edit| edit.id == id)
                 {
-                    page.queue_edit = None;
+                    page.cancel_queue_edit();
                 }
                 if let Err(error) = result {
                     s.fail("Couldn't remove the queued message", error);
@@ -97,12 +107,33 @@ impl State {
         );
     }
 
-    /// Find the waiting prompt's editor, or sink an edit whose page is already gone.
-    pub fn queued_field(s: &mut Self) -> &mut TextEdit {
-        let page = s.chat_mut().expect("the queue editor is on a chat");
-        match &mut page.queue_edit {
-            Some(edit) => &mut edit.field,
-            None => &mut page.scratch,
+    /// Leave the queue edit and restore the composer's unsent draft.
+    pub fn cancel_queue_edit(&mut self) {
+        if let Some(page) = self.chat_mut() {
+            page.cancel_queue_edit();
         }
+    }
+
+    /// Send one waiting prompt to pi now, bypassing the default queue behavior.
+    pub fn steer_queued(&mut self, id: &str) {
+        let Some(page) = self.chat() else { return };
+        let nav = page.nav;
+        let Some(chat) = page.existing() else { return };
+        let id = id.to_owned();
+        self.api.call(
+            "steer_queued_message",
+            json!({"chat": chat.id, "id": id}),
+            move |s, result: Result<Value, String>, _| {
+                if result.is_ok()
+                    && let Some(page) = s.page_at(nav)
+                    && page.queue_edit.as_ref().is_some_and(|edit| edit.id == id)
+                {
+                    page.cancel_queue_edit();
+                }
+                if let Err(error) = result {
+                    s.fail("Couldn't steer the queued message", error);
+                }
+            },
+        );
     }
 }

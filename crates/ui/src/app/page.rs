@@ -178,10 +178,12 @@ impl SkillList {
     }
 }
 
-/// The waiting prompt being edited, separate from a new composer's draft.
+/// The waiting prompt's identity and the composer draft to restore after editing.
 pub struct QueueEdit {
     pub id: String,
-    pub field: TextEdit,
+    pub draft: TextEdit,
+    pub attached: Vec<Attached>,
+    pub images: usize,
     pub saving: bool,
 }
 
@@ -263,6 +265,14 @@ impl ChatPage {
             .existing()
             .and_then(|c| c.chat.as_ref())
             .is_some_and(|c| c.open_elsewhere)
+    }
+
+    /// Restore the unsent composer draft after saving or cancelling a queue edit.
+    pub fn cancel_queue_edit(&mut self) {
+        if let Some(edit) = self.queue_edit.take() {
+            self.composer = edit.draft;
+            self.attached = edit.attached;
+        }
     }
 
     pub(super) fn attached_id(&mut self) -> u64 {

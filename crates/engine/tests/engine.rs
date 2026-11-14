@@ -362,6 +362,45 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
         .unwrap()["delivery"],
         "queued"
     );
+    engine
+        .send(&id, "steer this now", Vec::new())
+        .await
+        .unwrap();
+    let view = engine.view(&id, Window::Latest(40)).await.unwrap();
+    let steering = view
+        .queued
+        .iter()
+        .find(|message| message.text == "steer this now")
+        .unwrap();
+    let steer_id = steering.id.clone();
+    tool(
+        &engine,
+        "steer_queued_message",
+        json!({"chat": id, "id": steer_id}),
+    )
+    .await
+    .unwrap();
+    let steered = view_until(&engine, &id, |view| {
+        view.run
+            .as_ref()
+            .is_some_and(|run| run.steering == ["steer this now"])
+    })
+    .await;
+    assert_eq!(steered.queued.len(), 1);
+    assert_eq!(steered.queued[0].text, "first");
+    assert!(
+        tool(
+            &engine,
+            "steer_queued_message",
+            json!({"chat": id, "id": steer_id})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        tool(&engine, "get_settings", json!({})).await.unwrap()["sendBehavior"],
+        "queue"
+    );
     engine.send(&id, "remove this", Vec::new()).await.unwrap();
     engine.send(&id, "last", Vec::new()).await.unwrap();
     let mut feed = ludolph_engine::feed::Feed::new(engine.clone(), id.clone(), true);
@@ -440,7 +479,7 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(prompts, ["ask", "revised", "last"]);
+    assert_eq!(prompts, ["ask", "steer this now", "revised", "last"]);
     let revised = view
         .page
         .messages

@@ -43,6 +43,7 @@ pub enum Tool {
     SendMessage,
     EditQueuedMessage,
     DeleteQueuedMessage,
+    SteerQueuedMessage,
     ResumeQueue,
     CreateChat,
     InterruptChat,
@@ -96,6 +97,7 @@ impl FromStr for Tool {
             "send_message" => Self::SendMessage,
             "edit_queued_message" => Self::EditQueuedMessage,
             "delete_queued_message" => Self::DeleteQueuedMessage,
+            "steer_queued_message" => Self::SteerQueuedMessage,
             "resume_queue" => Self::ResumeQueue,
             "create_chat" => Self::CreateChat,
             "interrupt_chat" => Self::InterruptChat,
@@ -158,6 +160,11 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::DeleteQueuedMessage => {
             let args: QueueArgs = parse(args)?;
             engine.delete_queued(&args.chat, &args.id).await?;
+            Ok(json!({}))
+        }
+        Tool::SteerQueuedMessage => {
+            let args: QueueArgs = parse(args)?;
+            engine.steer_queued(&args.chat, &args.id).await?;
             Ok(json!({}))
         }
         Tool::ResumeQueue => {

@@ -306,6 +306,10 @@ impl State {
     /// Send the composer's text and images: to the chat, or as a new chat's
     /// first message.
     pub fn send(&mut self, tx: &mut Tx) {
+        if self.chat().is_some_and(|page| page.queue_edit.is_some()) {
+            self.save_queued(tx);
+            return;
+        }
         let Some(page) = self.chat_mut() else { return };
         let typed = page.composer.text.trim().to_owned();
         let creating = page.draft().is_some_and(|d| d.creating);

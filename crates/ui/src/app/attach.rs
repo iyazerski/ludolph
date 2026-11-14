@@ -69,6 +69,9 @@ impl State {
     /// Attach the images a paste carries, each with a link to it at the
     /// caret; any other paste stays text.
     pub fn paste(&mut self, content: &ClipboardContent, _: &mut Tx) -> bool {
+        if self.chat().is_some_and(|page| page.queue_edit.is_some()) {
+            return false;
+        }
         let files = content.files();
         if !files.is_empty() {
             // A copy in Finder also carries the file's icon as its image.
