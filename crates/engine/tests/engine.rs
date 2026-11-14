@@ -238,6 +238,15 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     // as another pi's.
     let refused = engine.send("s1", "mine", Vec::new()).await.unwrap_err();
     assert!(refused.to_string().contains("another pi"), "{refused:#}");
+    let refused = tool(
+        &engine,
+        "move_chat",
+        json!({"chat": "s1", "project": dir.path()}),
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.to_string().contains("another pi"), "{refused:#}");
+    assert!(path.exists());
     engine.take_over("s1").await.unwrap();
     engine.send("s1", "mine", Vec::new()).await.unwrap();
     until(&engine, |c| {
@@ -330,6 +339,15 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
     let id = engine.create(dir.path()).await.unwrap();
     engine.send(&id, "ask", Vec::new()).await.unwrap();
     until(&engine, |c| c[0].status == Status::AwaitingInput).await;
+    assert!(
+        tool(
+            &engine,
+            "move_chat",
+            json!({"chat": id, "project": dir.path()}),
+        )
+        .await
+        .is_err()
+    );
     let image = ludolph_engine::transcript::Image {
         mime_type: "image/png".into(),
         data: "aGk=".into(),
@@ -597,9 +615,31 @@ async fn chats_list_by_project_until_deleted() {
     let more = json!({"limit": 2, "more": [{"project": "/work/app", "limit": 12}]});
     assert_eq!(groups(&engine, more).await[1].2, ["c", "b", "a"]);
 
+    let destination = dir.path().join("another-project");
+    let real = dir.path().join("project-folder");
+    std::fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &destination).unwrap();
+    tool(
+        &engine,
+        "move_chat",
+        json!({"chat": "b", "project": destination}),
+    )
+    .await
+    .unwrap();
+    assert!(!folder.join("b.jsonl").exists() && !copy.join("b.jsonl").exists());
+    let index =
+        ludolph_engine::index::Index::load(&engine.config().state_dir.join("index.json")).unwrap();
+    let moved = index.find("b").unwrap().0.to_owned();
+    assert!(moved.exists());
+    let moved_groups = groups(&engine, json!({})).await;
+    assert_eq!(moved_groups.len(), 3);
+    assert!(moved_groups.iter().any(|(project, total, chats)| {
+        *project == json!(destination) && *total == 1 && chats == &["b"]
+    }));
     tool(&engine, "delete_chat", json!({"chat": "b"}))
         .await
         .unwrap();
+    assert!(!moved.exists());
     assert_eq!(listed(&engine, json!({})).await, ["d", "c", "a"]);
     assert_eq!(groups(&engine, json!({})).await[1].1, 2);
     assert!(!folder.join("b.jsonl").exists() && !copy.join("b.jsonl").exists());
@@ -609,6 +649,103 @@ async fn chats_list_by_project_until_deleted() {
             .is_err()
     );
     engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_a_chat_preserves_its_session_and_resumes_in_the_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("old");
+    let destination = dir.path().join("new project");
+    std::fs::create_dir(&original).unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let id = engine.create(&original).await.unwrap();
+    engine.send(&id, "hi", Vec::new()).await.unwrap();
+    until(&engine, |c| {
+        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("hi")
+    })
+    .await;
+    tool(
+        &engine,
+        "rename_chat",
+        json!({"chat": id, "title": "Keep this title"}),
+    )
+    .await
+    .unwrap();
+    let source = dir.path().join(format!("sessions/--fake--/{id}.jsonl"));
+    let before = std::fs::read_to_string(&source).unwrap();
+    let page = engine.view(&id, Window::Latest(40)).await.unwrap().page;
+    let mut changed = engine.subscribe_chat(&id).unwrap();
+
+    assert!(
+        tool(
+            &engine,
+            "move_chat",
+            json!({"chat": id, "project": dir.path().join("missing")})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), before);
+
+    tool(
+        &engine,
+        "move_chat",
+        json!({"chat": id, "project": destination}),
+    )
+    .await
+    .unwrap();
+    changed.changed().await.unwrap();
+    let listed = tool(&engine, "list_chats", json!({})).await.unwrap();
+    let cwd = destination.clone();
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["chats"][0]["id"], id);
+    assert_eq!(listed["chats"][0]["cwd"], json!(cwd));
+    assert_eq!(listed["chats"][0]["title"], "Keep this title");
+    assert!(!source.exists());
+
+    let index =
+        ludolph_engine::index::Index::load(&engine.config().state_dir.join("index.json")).unwrap();
+    let (moved, _) = index.find(&id).unwrap();
+    let moved = moved.to_owned();
+    let contents = std::fs::read_to_string(&moved).unwrap();
+    let (header, history) = contents.split_once('\n').unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(header).unwrap()["cwd"],
+        json!(cwd)
+    );
+    assert_eq!(history, before.split_once('\n').unwrap().1);
+    assert_eq!(
+        engine.view(&id, Window::Latest(40)).await.unwrap().page,
+        page
+    );
+    all_exited(dir.path()).await;
+
+    tool(
+        &engine,
+        "move_chat",
+        json!({"chat": id, "project": destination}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&moved).unwrap(), contents);
+    engine.shutdown().await.unwrap();
+
+    let restarted = self::engine(dir.path(), Duration::from_secs(60)).await;
+    assert_eq!(restarted.chats()[0].cwd, cwd);
+    restarted.send(&id, "edit", Vec::new()).await.unwrap();
+    until(&restarted, |c| {
+        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("edit")
+    })
+    .await;
+    assert!(destination.join("new.txt").exists());
+    assert!(!original.join("new.txt").exists());
+    assert!(
+        std::fs::read_to_string(&moved)
+            .unwrap()
+            .starts_with(&contents)
+    );
+    restarted.shutdown().await.unwrap();
 }
 
 /// Run git in `repo`, and return what it printed.

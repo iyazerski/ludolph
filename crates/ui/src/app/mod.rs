@@ -27,7 +27,7 @@ use super::prefs::{Frame, Prefs, ProjectPick};
 
 pub use self::actions::Answer;
 pub use self::attach::Prep;
-pub use self::chats::ChatDialog;
+pub use self::chats::{ChatDialog, project_drop_key};
 pub use self::draft::{Catalog, Config, Draft, Load, Pick};
 pub use self::page::{
     Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending, QuestionForm, SkillList,
@@ -108,6 +108,8 @@ pub struct ListState {
     pub error: Option<String>,
     /// How many chats each expanded project shows, by its key.
     pub more: HashMap<String, usize>,
+    pub drag_chat: Option<String>,
+    pub drop_project: Option<String>,
     loading: bool,
     /// The list changed while it loaded, so it loads again after.
     stale: bool,

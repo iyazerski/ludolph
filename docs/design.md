@@ -73,13 +73,13 @@ Both processes run from the same binary inside `Ludolph.app`.
 | UI state (seen turns, folded projects, window frames, last picks) | `~/Library/Application Support/Ludolph/ui.json` | app |
 | Pasted images, which sent messages link to | `~/Library/Application Support/Ludolph/uploads/` | app |
 
-Ludolph never writes to pi's session files directly. It changes them only through pi: prompts, `set_session_name`, and so on.
+Ludolph changes session contents through pi: prompts, `set_session_name`, and so on. Moving a chat is the one exception because pi has no move RPC: with its pi stopped, the engine streams a copy into the destination's session folder, changing only the header's `cwd`, then removes the old copies. The session id, history, and saved turn changes stay the same. Busy chats, queued messages, and sessions open in another pi must be resolved before moving. A destination file is never overwritten.
 
 ### Session files
 
 pi documents the file format in `docs/session-format.md`. What Ludolph uses:
 
-- The first line is the header: `{"type":"session","id":…,"timestamp":…,"cwd":…}`. `cwd` never changes for a session, so it's the chat's project.
+- The first line is the header: `{"type":"session","id":…,"timestamp":…,"cwd":…}`. `cwd` is the chat's project. Moving a chat changes it before pi next resumes the session.
 - `session_info` entries carry the title (`name`). The latest one wins.
 - `message` entries hold user, assistant, and tool-result messages. An assistant message's `stopReason` tells whether the last turn ended well, failed, or was aborted.
 - Files are append-only trees (`id`, `parentId`). pi can still rewrite a whole file, for example when it migrates an old version on load.
@@ -267,6 +267,7 @@ The app and the phone call the same tools:
 | `interrupt_chat` | `clear_queue` and `abort`. A send that hasn't reached pi yet is cancelled. |
 | `respond_to_input` | Answers the [open question](#questions-from-the-agent) with that id, as an `extension_ui_response` |
 | `rename_chat` | `set_session_name` (see [titles](#titles)) |
+| `move_chat` | Stop an idle pi, move its session to the destination project, and update its header's cwd |
 | `delete_chat` | Stop pi, then remove the session's files |
 | `turn_changes` | Saved turn changes |
 | `composer_info` | Branch (`git`), then the model, thinking level and context use (see [pi processes](#pi-processes)) |
@@ -294,6 +295,7 @@ The views are shared by both windows. They're today's Companion views, with the 
 They live in a `ui` crate. Each window gives them its own layout.
 
 - **Main window:** a normal, resizable window. The sidebar has **New chat** (⌘N), search (⌘F), and the projects as folders with their chats under them, each with a **+** for a new chat in it, collapsible, and with **Show more**. Search shows a field in place of its row while it's in use, and Escape clears it. The sidebar and toolbar are a shade lighter than the chat. The window opens where it was last, if that's still on a display. ⌃⌘S hides the sidebar. The open chat is on the right, its transcript capped at a reading width. Its toolbar has the title and project, an action to open the chat in the quick window, and the chat's menu. The quick window's header can open its chat here too, and hides as it does. The window shows a Dock icon while open, and the app can be pinned to the Dock. Closing it keeps the draft but drops the open chat and the window's GPU surface, so the app goes back near its hidden size. **Settings** (⌘, from either window, or the sidebar's last row) replaces the chat on the right, and Escape goes back to it.
+- **Chat actions:** right-clicking a chat in either list and the open chat's More menu offer **Copy Chat ID** (pi's session id), rename and delete. Move a chat only by dragging its row onto another project's heading in the chat panel. The destination highlights during the drag, including collapsed projects. Dropping elsewhere or pressing Escape cancels. Both windows follow a moved chat into its new project.
 - **Quick window:** today's Companion: floating and slightly transparent, shown and hidden with the global shortcut (⌃⌥Space until you record another in Settings). It follows the chat list and the open chat through the socket's feeds while it shows, and drops them when it hides. Its 1-second tick runs only while something on screen counts: a toast, the working clock, a copy check, a retry countdown, or, on the settings page, a phone link that's connecting. The list loads the 200 latest chats and shows 10 per project, with **Show more**.
 - **Dictation:** Apple's speech recognizer, as now, then cleaned up by the sidecar model.
 - **Accessibility:** the composer is a multiline text field named **Message**, with a stable `composer` identifier on Mac. Rune exposes its text and selection through AccessKit, and applies accessibility edits through the same editor as typing. Native spelling suggestions are enabled. Fettle's selected-text shortcut, correction paste and undo work. Automatic underlines do not work at the pinned Rune revision: text runs omit the direction AccessKit needs to return word bounds, so range rectangles are empty. The pinned AccessKit macOS adapter does not implement a setter for selected text alone, so tools that require only that setter cannot apply corrections.

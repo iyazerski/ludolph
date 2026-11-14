@@ -9,7 +9,7 @@ use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit};
 use super::icons;
 use super::list;
 use super::widgets::{busy, dot, engine_note, tones};
-use crate::app::{GROUP_CHATS, State};
+use crate::app::{GROUP_CHATS, State, project_drop_key};
 use crate::data::{Chat, Status};
 use crate::labels::ago;
 
@@ -137,7 +137,13 @@ fn project(s: &State, k: &Kit, key: String, items: &[&Chat]) -> El {
         .expanded(!collapsed)
         .key("folder");
     let mut out = col()
-        .key(format!("project-{key}"))
+        .key(project_drop_key(&key))
+        .radius(8.0)
+        .fill(if s.list.drop_project.as_ref() == Some(&key) {
+            k.c.text_accent.alpha(0.1)
+        } else {
+            rune::Color::TRANSPARENT
+        })
         .w_full()
         .gap(2.0)
         .pb(8.0)
@@ -209,9 +215,16 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
         r = r.avatar(el());
     }
     let id = c.id.clone();
+    let dragging = id.clone();
     let mut out = r
         .build(k)
         .key(format!("chat-{}", c.id))
+        .opacity(if s.list.drag_chat.as_ref() == Some(&c.id) {
+            0.45
+        } else {
+            1.0
+        })
+        .on_drag(move |s: &mut State, drag, tx| s.drag_chat(&dragging, drag, tx))
         .on_secondary_press(move |s: &mut State, at, tx| s.chat_menu(id.clone(), at, tx));
     if let Some(said) = said {
         out = out.help(said);

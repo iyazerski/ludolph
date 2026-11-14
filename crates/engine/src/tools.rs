@@ -49,6 +49,7 @@ pub enum Tool {
     TakeOverChat,
     RespondToInput,
     RenameChat,
+    MoveChat,
     DeleteChat,
     TurnChanges,
     ListModels,
@@ -101,6 +102,7 @@ impl FromStr for Tool {
             "take_over_chat" => Self::TakeOverChat,
             "respond_to_input" => Self::RespondToInput,
             "rename_chat" => Self::RenameChat,
+            "move_chat" => Self::MoveChat,
             "delete_chat" => Self::DeleteChat,
             "turn_changes" => Self::TurnChanges,
             "list_models" => Self::ListModels,
@@ -168,6 +170,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::TakeOverChat => take_over_chat(engine, parse(args)?).await,
         Tool::RespondToInput => respond_to_input(engine, parse(args)?).await,
         Tool::RenameChat => rename_chat(engine, parse(args)?).await,
+        Tool::MoveChat => move_chat(engine, parse(args)?).await,
         Tool::DeleteChat => delete_chat(engine, parse(args)?).await,
         Tool::TurnChanges => turn_changes(engine, parse(args)?).await,
         Tool::ListModels => list_models(engine).await,
@@ -727,6 +730,19 @@ struct RenameArgs {
 async fn rename_chat(engine: &Engine, args: RenameArgs) -> Result<Value> {
     engine.rename(&args.chat, &args.title).await?;
     Ok(json!({"chatId": args.chat, "title": args.title.trim()}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveArgs {
+    chat: String,
+    project: PathBuf,
+}
+
+/// Move a chat's session to the destination project.
+async fn move_chat(engine: &Engine, args: MoveArgs) -> Result<Value> {
+    engine.move_chat(&args.chat, &args.project).await?;
+    Ok(json!({"chatId": args.chat}))
 }
 
 async fn delete_chat(engine: &Engine, args: ChatArgs) -> Result<Value> {

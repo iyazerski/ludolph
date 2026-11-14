@@ -1,10 +1,14 @@
-//! What a chat's menus do to it: open it in the other window, rename it, or
-//! delete it after asking.
+//! Chat menu actions and their dialogs.
 
-use rune::{PointerPress, PopupItem, PopupMenu, TextEdit, Tx};
+use rune::{Drag, Phase, PointerPress, PopupItem, PopupMenu, TextEdit, Tx};
 use serde_json::{Value, json};
 
 use super::{State, Window};
+
+/// Name a project drop surface without ambiguous path-prefix matches.
+pub fn project_drop_key(id: &str) -> String {
+    format!("drop-project-{}-{id}", id.len())
+}
 
 /// The dialog a chat's menu opened.
 pub enum ChatDialog {
@@ -24,14 +28,72 @@ impl State {
         let menu = PopupMenu::new()
             .item(PopupItem::new("peer", other))
             .separator()
+            .item(PopupItem::new("copy-id", "Copy Chat ID"))
             .item(PopupItem::new("rename", "Rename…"))
             .item(PopupItem::new("delete", "Delete…"));
-        tx.popup_menu(menu, at, move |s: &mut State, picked, _| match picked {
+        tx.popup_menu(menu, at, move |s: &mut State, picked, tx| match picked {
             Some("peer") => s.open_in_peer(id),
+            Some("copy-id") => tx.copy(&id),
             Some("rename") => s.ask_rename(id),
             Some("delete") => s.ask_delete(id),
             _ => {}
         });
+    }
+
+    /// Track an internal chat drag and move it only when dropped on another project.
+    pub fn drag_chat(&mut self, id: &str, drag: &Drag, tx: &mut Tx) {
+        if drag.cancelled() {
+            self.list.drag_chat = None;
+            self.list.drop_project = None;
+            return;
+        }
+        if drag.phase == Phase::Down
+            || self.list.drag_chat.is_none() && drag.dx.hypot(drag.dy) < 4.0
+        {
+            return;
+        }
+        self.list.drag_chat = Some(id.to_owned());
+        let id = id.to_owned();
+        let dropped = drag.phase == Phase::Up;
+        let [x, y] = drag.window_point();
+        tx.element_at(x, y, move |s: &mut State, picked, _| {
+            let target = picked.and_then(|picked| {
+                s.list
+                    .chats
+                    .iter()
+                    .flatten()
+                    .filter_map(|chat| chat.project.as_ref())
+                    .find(|project| {
+                        let key = project_drop_key(&project.id);
+                        picked.key() == Some(key.as_str())
+                            || picked.path().contains(&format!("/{key}/"))
+                    })
+                    .map(|project| project.id.clone())
+            });
+            let source = s.list.chats.iter().flatten().find(|chat| chat.id == id);
+            let target = target.filter(|target| source.is_some_and(|chat| chat.cwd != *target));
+            s.list.drop_project = target.clone();
+            if dropped {
+                s.list.drag_chat = None;
+                s.list.drop_project = None;
+                if let Some(project) = target {
+                    s.move_chat(id, project);
+                }
+            }
+        });
+    }
+
+    /// Move a dropped chat to `project`; feeds update both windows.
+    fn move_chat(&mut self, chat: String, project: String) {
+        self.api.call(
+            "move_chat",
+            json!({ "chat": chat, "project": project }),
+            |s, result: Result<Value, String>, _| {
+                if let Err(e) = result {
+                    s.fail("Couldn't move the chat", e);
+                }
+            },
+        );
     }
 
     /// Ask for chat `id`'s new title, starting from its current one.

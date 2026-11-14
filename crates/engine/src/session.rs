@@ -7,11 +7,11 @@
 //! user and assistant messages count as activity.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -22,6 +22,39 @@ use crate::text::one_line;
 
 /// The most characters of a message kept as a preview.
 const PREVIEW_CHARS: usize = 200;
+
+/// Copy a stopped session into pi's folder for `cwd`, changing only its header.
+/// Leave the source intact until the caller updates the index and removes copies.
+pub(crate) fn relocate(path: &Path, sessions: &Path, cwd: &Path) -> Result<PathBuf> {
+    let cwd_text = cwd.to_str().context("the project path isn't UTF-8")?;
+    let encoded = cwd_text
+        .strip_prefix('/')
+        .unwrap_or(cwd_text)
+        .replace(['/', '\\', ':'], "-");
+    let folder = sessions.join(format!("--{encoded}--"));
+    std::fs::create_dir_all(&folder)?;
+    let target = folder.join(path.file_name().context("the session has no filename")?);
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let mut header: serde_json::Value = serde_json::from_str(&line)?;
+    if header["type"] != "session" || !header.is_object() {
+        bail!("the session has no valid header");
+    }
+    header["cwd"] = serde_json::json!(cwd);
+    let mut temporary = tempfile::NamedTempFile::new_in(&folder)?;
+    temporary
+        .as_file()
+        .set_permissions(reader.get_ref().metadata()?.permissions())?;
+    serde_json::to_writer(&mut temporary, &header)?;
+    temporary.write_all(b"\n")?;
+    std::io::copy(&mut reader, &mut temporary)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist_noclobber(&target)
+        .with_context(|| format!("moving the session to {}", target.display()))?;
+    Ok(target)
+}
 
 /// One session file, as the chat list shows it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

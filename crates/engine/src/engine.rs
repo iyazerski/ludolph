@@ -928,6 +928,75 @@ impl Engine {
         Ok(())
     }
 
+    /// Move an idle chat to `cwd`, keeping its session id and history.
+    ///
+    /// # Errors
+    ///
+    /// Fail if the destination isn't a folder, the chat is busy or open elsewhere,
+    /// or its session files can't be moved.
+    pub async fn move_chat(&self, id: &str, cwd: &Path) -> Result<()> {
+        if !cwd.is_absolute() {
+            bail!("the project path must be absolute");
+        }
+        if !cwd.is_dir() {
+            bail!("{} isn't a folder", cwd.display());
+        }
+        let ops = self.ops(id)?;
+        let _ops = ops
+            .try_lock()
+            .context("this chat is busy; try again once it is idle")?;
+        self.refuse_elsewhere(id)?;
+        let pi = {
+            let state = self.state();
+            let chat = state.chats.get(id).context("no such chat")?;
+            if !chat.waiting.is_empty()
+                || chat.run.is_some()
+                || chat
+                    .process
+                    .as_ref()
+                    .is_some_and(|r| r.live.working() || !r.questions.is_empty())
+            {
+                bail!("stop the agent and clear queued messages before moving this chat");
+            }
+            let (_, summary) = state
+                .index
+                .find(id)
+                .context("send a message before moving this chat")?;
+            if summary.cwd == cwd {
+                return Ok(());
+            }
+            chat.process.as_ref().map(|r| r.pi.clone())
+        };
+        if let Some(pi) = pi {
+            pi.stop(self.0.config.grace).await?;
+            self.detach(id, &pi)?;
+        }
+        {
+            let mut state = self.state();
+            let (source, _) = state.index.find(id).context("the session is gone")?;
+            let target = crate::session::relocate(source, &self.0.config.sessions_dir, cwd)?;
+            let copies: Vec<_> = state
+                .index
+                .iter()
+                .filter(|(_, summary)| summary.id == id)
+                .map(|(path, _)| path.to_owned())
+                .collect();
+            state.index.refresh_file(&target)?;
+            for path in copies {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("removing {}", path.display()))?;
+                state.index.refresh_file(&path)?;
+            }
+            if let Some(chat) = state.chats.get_mut(id) {
+                chat.draft = None;
+                chat.changed();
+            }
+        }
+        self.save_index()?;
+        self.changed();
+        Ok(())
+    }
+
     /// Delete chat `id`: stop its pi, then remove every copy of its
     /// session file and its saved turn changes.
     ///

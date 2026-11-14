@@ -193,7 +193,7 @@ fn header(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     bar
 }
 
-/// The chat's menu: stop the agent, rename, delete.
+/// The chat's menu: agent controls and session actions.
 pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let trigger = IconButton::new(&icons::MORE)
         .variant(IconButtonVariant::Ghost)
@@ -227,7 +227,16 @@ pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         return menu.build(k, layer);
     };
     let (rename, delete) = (chat.id.clone(), chat.id.clone());
+    let copy = chat.id.clone();
     menu.item(
+        MenuItem::new("Copy Chat ID")
+            .icon(&icons::COPY)
+            .on_select_tx(move |s: &mut State, tx| {
+                close_menu(s);
+                tx.copy(&copy);
+            }),
+    )
+    .item(
         MenuItem::new("Rename…")
             .icon(&icons::EDIT)
             .on_select(move |s: &mut State| {

@@ -10,7 +10,7 @@ use rune_kit::{
 
 use super::icons;
 use super::widgets::{busy, dot, engine_note, faint, head, head_titles, hide_button, tile, tones};
-use crate::app::{GROUP_CHATS, ListFilter, State, Window};
+use crate::app::{GROUP_CHATS, ListFilter, State, Window, project_drop_key};
 use crate::data::{Chat, Status};
 use crate::labels::{ago, short_model};
 
@@ -241,7 +241,7 @@ fn rows(s: &State, k: &Kit, chats: &[Chat]) -> Vec<El> {
     let mut out = Vec::new();
     for (key, items) in groups(shown) {
         let collapsed = s.prefs.borrow().collapsed.contains(&key);
-        out.push(section(k, &key, &items, collapsed));
+        out.push(section(s, k, &key, &items, collapsed));
         if collapsed {
             continue;
         }
@@ -265,12 +265,18 @@ fn rows(s: &State, k: &Kit, chats: &[Chat]) -> Vec<El> {
     out
 }
 
-fn section(k: &Kit, key: &str, items: &[&Chat], collapsed: bool) -> El {
+fn section(s: &State, k: &Kit, key: &str, items: &[&Chat], collapsed: bool) -> El {
     let project = items[0].project.as_ref();
     let live = items.iter().any(|c| c.is_working());
     let toggle = key.to_owned();
     let mut head = row()
-        .key(format!("section-{key}"))
+        .key(project_drop_key(key))
+        .radius(6.0)
+        .fill(if s.list.drop_project.as_deref() == Some(key) {
+            k.c.text_accent.alpha(0.1)
+        } else {
+            rune::Color::TRANSPARENT
+        })
         .w_full()
         .gap(8.0)
         .px(6.0)
@@ -366,6 +372,7 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
         );
     }
     let id = c.id.clone();
+    let dragging = id.clone();
     k.interactive(
         item.key(format!("chat-{}", c.id))
             .px(8.0)
@@ -376,6 +383,12 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
         let id = id.clone();
         move |s: &mut State| s.open_chat(id.clone())
     })
+    .opacity(if s.list.drag_chat.as_ref() == Some(&c.id) {
+        0.45
+    } else {
+        1.0
+    })
+    .on_drag(move |s: &mut State, drag, tx| s.drag_chat(&dragging, drag, tx))
     .on_secondary_press(move |s: &mut State, at, tx| s.chat_menu(id.clone(), at, tx))
 }
 
