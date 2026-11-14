@@ -333,7 +333,14 @@ a { color: inherit; text-decoration: none; }
 .tools > button { display: flex; align-items: center; height: 26px; max-width: 100%; text-align: left; }
 .tools > button .sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tools .chev { width: 14px; height: 14px; margin: 0 8.5px 0 5.5px; transform: rotate(-90deg); transition: transform .14s ease-out; flex: none; }
-.tools.open .chev { transform: none; }
+.tools.open > button .chev, .tools .nested.open > button .chev { transform: none; }
+.tools .nested > .children { display: none; padding-left: 32px; }
+.tools .nested.open > .children { display: block; }
+.tools .nested > button { width: 100%; color: inherit; font: inherit; text-align: left; }
+.tools .call-note { padding: 0 8px 4px 56px; font-size: 12px; overflow-wrap: anywhere; }
+.tools .call-note.err { color: var(--danger); }
+.tools .cancelled { color: var(--tertiary); }
+.tools .call-output { margin-left: 32px; padding: 6px 0; color: var(--secondary); }
 .tools .rail { display: none; padding-top: 2px; }
 .worked > button { display: flex; align-items: center; height: 26px; font-size: 13.5px; color: var(--secondary); }
 .worked > button .chev { width: 14px; height: 14px; margin-left: 4px; transform: rotate(-90deg); transition: transform .14s ease-out; flex: none; }

@@ -1071,7 +1071,7 @@ const TOOL_VIEW = {
 /** The tools whose subject is a file, shown by name on a badge. */
 const FILE_TOOLS = new Set(["read", "write", "edit"]);
 /** A tool part's state as its row's class. */
-const STATE_CLASS = { running: "run", failed: "err", done: "" };
+const STATE_CLASS = { running: "run", failed: "err", cancelled: "cancelled", done: "" };
 const baseName = path => path.split(/[\\/]/).filter(Boolean).pop() || path;
 
 /** The colour file-type icon for `path`, chosen as rune-theme-opencode's `file_icons::file`. */
@@ -1091,9 +1091,13 @@ const fileBadge = path => h("span", { class: "badge" }, h("span", { class: "well
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 /** A tool group's one-line summary, as the desktop words it. */
 function toolSummary(tools) {
-  let commands = 0, reads = 0, searches = 0, fetches = 0, todos = 0, other = 0, failed = 0;
+  const scripts = tools.filter(t => t.name === "codemode").length;
+  tools = tools.flatMap(t => t.calls?.length ? t.calls : t.name === "codemode" ? [] : [t]);
+  if (!tools.length && scripts) return `Ran ${plural(scripts, "script", "scripts")}`;
+  let commands = 0, reads = 0, searches = 0, fetches = 0, todos = 0, other = 0, failed = 0, cancelled = 0;
   const edited = new Set();
   for (const t of tools) {
+    if (t.state === "cancelled") { cancelled++; continue; }
     if (t.state === "failed") failed++;
     if (t.name === "bash") commands++;
     else if (t.name === "write" || t.name === "edit") edited.add(t.subject || t.id);
@@ -1112,25 +1116,46 @@ function toolSummary(tools) {
   if (todos) parts.push("updated todos");
   if (other) parts.push(`called ${plural(other, "tool", "tools")}`);
   if (failed) parts.push(`${failed} failed`);
+  if (cancelled) parts.push(`${cancelled} cancelled`);
   const s = parts.join(" · ");
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** A run of consecutive tool calls, folded under the desktop's summary; `onOpen(tool)` shows one's output. */
-function toolGroup(tools, open, onToggle, onOpen) {
+function toolGroup(tools, open, onToggle, onOpen, isOpen, toggleCall) {
   const live = tools.some(t => t.state === "running");
   const block = h("div", { class: `tools${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { block.classList.toggle("open"); onToggle(block.classList.contains("open")); haptic(4); } },
     icon("chevDown", "chev"), h("span", { class: `sum${live ? " shimmer" : ""}` }, toolSummary(tools)));
   // One line per call, as the desktop's activity rows: icon, verb, then the
   // subject, or a file call's badge.
-  const items = tools.map(t => {
+  const toolRow = (t, onClick) => {
     const [verb, iconName] = TOOL_VIEW[t.name] || ["Tool", "tool"];
     const arg = TOOL_VIEW[t.name] ? t.subject || "" : [t.name, t.subject].filter(Boolean).join(" · ");
     const subject = FILE_TOOLS.has(t.name) && t.subject ? fileBadge(t.subject) : h("span", { class: "arg" }, arg.replace(/\s+/g, " "));
-    return h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, role: "button", onclick: () => onOpen(t) },
+    const row = h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, role: onClick ? "button" : null, onclick: onClick, "aria-label": `${verb} ${arg} · ${t.state}` },
       h("span", { class: "lead" }, t.state === "running" ? glyph("trail") : icon(iconName)),
       h("span", { class: "verb" }, verb), subject);
+    return row;
+  };
+  const items = tools.map(t => {
+    if (t.name !== "codemode" && !t.calls?.length) return toolRow(t, () => onOpen(t));
+    const key = `${t.id}#calls`;
+    const nested = h("div", { class: `nested${isOpen(key, true) ? " open" : ""}` });
+    const label = t.name === "codemode" ? "Codemode" : t.name;
+    const head = h("button", { class: `item ${STATE_CLASS[t.state] || ""}`, onclick: () => {
+      nested.classList.toggle("open");
+      toggleCall(key, nested.classList.contains("open"));
+      haptic(4);
+    } }, h("span", { class: "lead" }, t.state === "running" ? glyph("trail") : icon("tool")),
+    h("span", { class: "verb" }, label), icon("chevDown", "chev"));
+    const children = (t.calls || []).flatMap(call => [
+      toolRow(call),
+      call.error || call.state === "cancelled" ? h("div", { class: `call-note ${STATE_CLASS[call.state] || ""}` }, call.error || "Cancelled or unfinished") : null,
+    ]);
+    if (t.name !== "codemode") children.push(h("button", { class: "call-output", onclick: () => onOpen(t) }, "Arguments & output"));
+    nested.append(head, h("div", { class: "children" }, children));
+    return nested;
   });
   block.append(head, h("div", { class: "rail" }, items));
   return block;
@@ -1659,7 +1684,7 @@ function chatView(machine, id, fromList) {
 
   function toolsBlock(m, g, byDefault = false) {
     const key = `${m.id}#${g.at}`;
-    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool);
+    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool, isOpen, (key, on) => openGroups.set(key, on));
   }
 
   // A link to a file on the Mac, such as a pasted image, which the phone

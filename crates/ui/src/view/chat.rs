@@ -889,11 +889,14 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
     } else {
         icon(icons::tool(tool.name), 14.0).color(tint)
     };
-    let subject = row().center_y().gap(6.0).child(chevron(k, open)).child(
-        text(format!("{} calls", tool.calls.len()))
-            .font(rail_text(k))
-            .color(tint),
-    );
+    let mut subject = row().center_y().gap(6.0).child(chevron(k, open));
+    if tool.name != "codemode" {
+        subject = subject.child(
+            text(format!("{} calls", tool.calls.len()))
+                .font(rail_text(k))
+                .color(tint),
+        );
+    }
     let title = if tool.name == "codemode" {
         "Codemode"
     } else {
