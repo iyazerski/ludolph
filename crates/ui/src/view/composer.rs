@@ -545,12 +545,27 @@ fn context(page: &ChatPage, k: &Kit) -> El {
     } else {
         (k.c.text_accent, k.c.text_muted)
     };
+    let label_hover = if fraction >= 0.75 {
+        label.mix(k.c.text_base, 0.25)
+    } else {
+        k.c.text_base
+    };
     let content = if page.context_details {
         row()
             .gap(8.0)
             .center_y()
-            .child(text(counts.clone()).font(k.ty.small).color(label))
-            .child(text(cost.clone()).font(k.ty.small).color(k.c.text_muted))
+            .child(
+                text(counts.clone())
+                    .font(k.ty.small)
+                    .color(label)
+                    .group_color(label_hover),
+            )
+            .child(
+                text(cost.clone())
+                    .font(k.ty.small)
+                    .color(k.c.text_muted)
+                    .group_color(k.c.text_base),
+            )
     } else {
         let ring = rune::el()
             .size(14.0, 14.0)
@@ -563,19 +578,22 @@ fn context(page: &ChatPage, k: &Kit) -> El {
             .child(
                 icon(icons::ring(fraction), 14.0)
                     .absolute(0.0, 0.0)
-                    .color(arc),
+                    .color(arc)
+                    .group_color(arc.mix(k.c.text_base, 0.25)),
             );
         let percent = usage.tokens.map_or_else(
             || "—".to_owned(),
             |_| format!("{}%", (fraction * 100.0).round()),
         );
-        row()
-            .gap(6.0)
-            .center_y()
-            .child(ring)
-            .child(text(percent).font(k.ty.small).color(label))
+        row().gap(6.0).center_y().child(ring).child(
+            text(percent)
+                .font(k.ty.small)
+                .color(label)
+                .group_color(label_hover),
+        )
     };
-    k.interactive(content)
+    content
+        .hover_group()
         .key("context-usage")
         .label(if page.context_details {
             format!("{counts}, {cost}. Show context ring")

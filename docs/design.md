@@ -232,7 +232,7 @@ The Mac shows a details card beside an existing chat in the main window. Its hea
 
 ## Turn changes
 
-A completed turn's diff button sits at the right of its Worked header, above the final answer. A reply without folded work shows the button in the same position, without a Worked label. On Mac, the Copy action and timestamp stay visible below the answer, in that order. Messages have more space between them on Mac and phone, while work rows within a reply stay compact. A trailing compaction stays a separate note and doesn't take the reply's button.
+A completed turn's diff button sits at the right of its Worked header, above the final answer. A reply without folded work shows the button in the same position, without a Worked label. On Mac, the Copy action and timestamp stay visible below the answer, in that order. Messages have more space between them on Mac and phone, while work rows within a reply stay compact. Mac work, thought and wrapper toggles, context usage, and the turn diff action brighten their text and icons on hover or keyboard focus without a background highlight. Error colors and diff counts keep their meaning. A trailing compaction stays a separate note and doesn't take the reply's button.
 
 The app shows what each run changed, as zeron-tools does now. A run is everything from the prompt that starts it until pi settles, including any steering messages sent in between. pi's own `turn_start` is one assistant response, which is too small a unit, and the engine can't pause pi to take a snapshot in the middle of a run.
 
