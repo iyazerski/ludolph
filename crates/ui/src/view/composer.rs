@@ -39,6 +39,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         )
         .caret(k.c.text_base, k.selection())
         .spans(markdown_spans(k, &page.composer.text))
+        .spellcheck(true)
         .on_edit(State::composer_field)
         .on_input_key(composer_key)
         .on_input_paste(State::paste)
