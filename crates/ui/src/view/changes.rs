@@ -34,11 +34,16 @@ pub fn button(k: &Kit, counts: &TurnChanges) -> El {
         .h(24.0)
         .center_y()
         .radius(8.0)
-        .child(icon(&icons::DIFF, 12.0).color(k.c.icon_base))
+        .child(
+            icon(&icons::DIFF, 12.0)
+                .color(k.c.icon_base)
+                .group_color(k.c.text_base),
+        )
         .child(
             text(files)
                 .font(small)
                 .color(k.c.text_muted)
+                .group_color(k.c.text_base)
                 .truncate()
                 .min_w(0.0),
         )
@@ -49,9 +54,11 @@ pub fn button(k: &Kit, counts: &TurnChanges) -> El {
         .child(
             icon(&icons::CHEV_DOWN, 12.0)
                 .color(k.c.icon_faint)
+                .group_color(k.c.text_base)
                 .rotate(-std::f32::consts::FRAC_PI_2),
         );
-    k.interactive(face.shrink())
+    face.shrink()
+        .hover_group()
         .label("Show the changes of this turn")
         .on_press(move |s: &mut State| s.open_changes(&turn))
 }

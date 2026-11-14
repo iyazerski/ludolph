@@ -71,7 +71,7 @@ fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
 /// Keep the transcript and composer together when the details card is shown.
 fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let wide = s.window == Window::Main;
-    let mut body = col().key("transcript").w_full().px(14.0).py(10.0).gap(14.0);
+    let mut body = col().key("transcript").w_full().px(14.0).py(10.0).gap(32.0);
     if wide {
         body = body.max_w(READING_WIDTH);
     }
@@ -689,10 +689,17 @@ fn worked(k: &Kit, key: &str, millis: i64, open: bool) -> El {
         .gap(4.0)
         .pr(6.0)
         .center_y()
-        .child(text(label).font(k.ty.ui).color(k.c.text_faint))
+        .child(
+            text(label)
+                .font(k.ty.ui)
+                .color(k.c.text_faint)
+                .group_color(k.c.text_base),
+        )
         .child(chevron(k, open));
-    let head = k
-        .interactive(head.radius(6.0).shrink())
+    let head = head
+        .radius(6.0)
+        .shrink()
+        .hover_group()
         .label(if open {
             "Hide the work"
         } else {
@@ -724,13 +731,16 @@ fn thinking(page: &Existing, k: &Kit, key: &str, text_in: &str, live: bool) -> E
                     size: TOOL_TEXT,
                     ..k.ty.ui
                 })
-                .color(k.c.text_muted),
+                .color(k.c.text_muted)
+                .group_color(k.c.text_base),
         );
     if live {
         head = head.child(busy(11.0, k));
     }
-    let head = k
-        .interactive(head.radius(6.0).shrink())
+    let head = head
+        .radius(6.0)
+        .shrink()
+        .hover_group()
         .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
     let mut out = col()
         .key(format!("thinking-{key}"))
@@ -757,6 +767,7 @@ fn thinking(page: &Existing, k: &Kit, key: &str, text_in: &str, live: bool) -> E
 fn chevron(k: &Kit, open: bool) -> El {
     icon(&icons::CHEV_DOWN, RAIL_X * 2.0)
         .color(k.c.icon_faint)
+        .group_color(k.c.text_base)
         .rotate(if open {
             0.0
         } else {
@@ -771,20 +782,9 @@ fn toggle_group(s: &mut State, key: &str, open: bool) {
     }
 }
 
-/// Show a finished reply's timestamp and copy action.
+/// Show a finished reply's Copy action followed by its timestamp.
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     let mut out = row().w_full().gap(8.0).center_y();
-    if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {
-        out = out.child(
-            text(
-                at.with_timezone(&chrono::Local)
-                    .format("%b %-d, %-I:%M %p")
-                    .to_string(),
-            )
-            .font(k.ty.small)
-            .color(k.c.text_faint),
-        );
-    }
     if m.has_answer() {
         let copied = page.just_copied(&m.id);
         let id = m.id.clone();
@@ -796,6 +796,17 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .help("Copy the answer")
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_answer(&id, tx))
                 .build(k),
+        );
+    }
+    if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {
+        out = out.child(
+            text(
+                at.with_timezone(&chrono::Local)
+                    .format("%b %-d, %-I:%M %p")
+                    .to_string(),
+            )
+            .font(k.ty.small)
+            .color(k.c.text_faint),
         );
     }
     out
@@ -841,14 +852,17 @@ fn tool_group(
                     ..k.ty.ui
                 })
                 .color(k.c.text_muted)
+                .group_color(k.c.text_base)
                 .truncate()
                 .min_w(0.0),
         );
     if busy_now {
         head = head.child(busy(11.0, k));
     }
-    let head = k
-        .interactive(head.radius(6.0).shrink())
+    let head = head
+        .radius(6.0)
+        .shrink()
+        .hover_group()
         .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
     let mut group = col()
         .key(format!("tools-{key}"))
@@ -881,17 +895,25 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
     } else {
         k.c.text_muted
     };
+    let hover = if tool.state == ToolState::Failed {
+        tint
+    } else {
+        k.c.text_base
+    };
     let lead = if tool.state == ToolState::Running {
         busy(12.0, k)
     } else {
-        icon(icons::tool(tool.name), 14.0).color(tint)
+        icon(icons::tool(tool.name), 14.0)
+            .color(tint)
+            .group_color(hover)
     };
     let mut subject = row().center_y().gap(6.0).child(chevron(k, open));
     if tool.name != "codemode" {
         subject = subject.child(
             text(format!("{} calls", tool.calls.len()))
                 .font(rail_text(k))
-                .color(tint),
+                .color(tint)
+                .group_color(hover),
         );
     }
     let title = if tool.name == "codemode" {
@@ -899,8 +921,8 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
     } else {
         tool.name
     };
-    let head = k
-        .interactive(rail_row(k, last && !open, lead, title, tint, subject))
+    let head = rail_row(k, last && !open, lead, title, tint, Some(hover), subject)
+        .hover_group()
         .on_press(move |s: &mut State| toggle_group(s, &key, open));
     let mut out = col().w_full().child(head);
     if open {
@@ -933,9 +955,18 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
             let call = tool.id.to_owned();
             let opened = page.tool_outputs.contains_key(tool.id);
             let label = "Arguments & output";
-            let details = rail_row(k, true, chevron(k, opened), label, k.c.text_faint, el());
+            let details = rail_row(
+                k,
+                true,
+                chevron(k, opened),
+                label,
+                k.c.text_faint,
+                Some(k.c.text_base),
+                el(),
+            );
             children = children.child(
-                k.interactive(details)
+                details
+                    .hover_group()
                     .on_press(move |s: &mut State| s.toggle_tool_output(&call)),
             );
             if let Some(output) = page.tool_outputs.get(tool.id) {
@@ -1021,7 +1052,7 @@ fn tool_row(k: &Kit, tool: &ToolCall, last: bool) -> El {
             .truncate()
             .min_w(0.0)
     };
-    rail_row(k, last, lead, tool.verb(), tint, subject)
+    rail_row(k, last, lead, tool.verb(), tint, None, subject)
 }
 
 /// A step of thinking on the rail: its first line, which is often a
@@ -1031,19 +1062,30 @@ fn thought_row(k: &Kit, key: &str, text_in: &str, live: bool, open: bool, last: 
     let lead = if live {
         busy(12.0, k)
     } else {
-        icon(&icons::THOUGHT, 14.0).color(tint)
+        icon(&icons::THOUGHT, 14.0)
+            .color(tint)
+            .group_color(k.c.text_base)
     };
     let first = text_in.lines().map(str::trim).find(|l| !l.is_empty());
     let subject = text(first.unwrap_or_default().replace("**", ""))
         .font(rail_text(k))
         .color(k.c.text_faint)
+        .group_color(k.c.text_base)
         .truncate()
         .min_w(0.0);
     let verb = if live { "Thinking" } else { "Thought" };
     let toggle = key.to_owned();
-    let line = k
-        .interactive(rail_row(k, last && !open, lead, verb, tint, subject))
-        .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
+    let line = rail_row(
+        k,
+        last && !open,
+        lead,
+        verb,
+        tint,
+        Some(k.c.text_base),
+        subject,
+    )
+    .hover_group()
+    .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
     if !open {
         return line;
     }
@@ -1077,7 +1119,19 @@ fn rail_text(k: &Kit) -> TextStyle {
 
 /// A row on the rail: an elbow off the trunk, `lead`, `verb`, and `subject`
 /// on one line.
-fn rail_row(k: &Kit, last: bool, lead: El, verb: &str, tint: Color, subject: El) -> El {
+fn rail_row(
+    k: &Kit,
+    last: bool,
+    lead: El,
+    verb: &str,
+    tint: Color,
+    hover: Option<Color>,
+    subject: El,
+) -> El {
+    let mut label = text(verb.to_owned()).font(rail_text(k)).color(tint).mr(8.0);
+    if let Some(hover) = hover {
+        label = label.group_color(hover);
+    }
     let elbow = rune::el()
         .w(12.0)
         .h(TOOL_ROW_HEIGHT / 2.0)
@@ -1094,7 +1148,7 @@ fn rail_row(k: &Kit, last: bool, lead: El, verb: &str, tint: Color, subject: El)
         .center_y()
         .child(branch)
         .child(rune::el().w(14.0).center().child(lead).ml(4.0).mr(8.0))
-        .child(text(verb.to_owned()).font(rail_text(k)).color(tint).mr(8.0))
+        .child(label)
         .child(subject.shrink())
 }
 
