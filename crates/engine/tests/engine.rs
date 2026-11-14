@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use ludolph_engine::engine::{AlertKind, ChatInfo, Config, Delivery, Engine, SecretStore, Status};
+use ludolph_engine::engine::{
+    AlertKind, ChatInfo, Config, Delivery, Engine, SecretStore, Status, View,
+};
 use ludolph_engine::seal::{Keys, Purpose};
 use ludolph_engine::server;
 use ludolph_engine::settings::{Notify, Settings};
@@ -61,6 +63,23 @@ async fn until(engine: &Engine, check: impl Fn(&[ChatInfo]) -> bool) -> Vec<Chat
     tokio::time::timeout(Duration::from_secs(5), wait)
         .await
         .expect("the chat list never got there")
+}
+
+/// Wait for a chat's view, including changes that do not update the list.
+async fn view_until(engine: &Engine, id: &str, check: impl Fn(&View) -> bool) -> View {
+    let mut changes = engine.subscribe_chat(id).unwrap();
+    let wait = async {
+        loop {
+            let view = engine.view(id, Window::Latest(40)).await.unwrap();
+            if check(&view) {
+                return view;
+            }
+            changes.changed().await.unwrap();
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .expect("the chat view never got there")
 }
 
 /// Wait until pi's log has `lines`.
@@ -381,12 +400,13 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
     )
     .await
     .unwrap();
-    until(&engine, |c| {
-        c[0].status == Status::Idle && last_prompt(&c[0]) == Some("last")
+    // The run can settle before its RPC acknowledgement removes the queued draft.
+    let view = view_until(&engine, &id, |view| {
+        view.chat.status == Status::Idle
+            && last_prompt(&view.chat) == Some("last")
+            && view.queued.is_empty()
     })
     .await;
-    let view = engine.view(&id, Window::Latest(40)).await.unwrap();
-    assert!(view.queued.is_empty());
     let prompts: Vec<_> = view
         .page
         .messages
@@ -440,8 +460,10 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
     )
     .await
     .unwrap();
-    until(&engine, |c| c[0].status == Status::Failed).await;
-    let failed = engine.view(&id, Window::Latest(40)).await.unwrap();
+    let failed = view_until(&engine, &id, |view| {
+        view.chat.status == Status::Failed && view.queued.len() == 1
+    })
+    .await;
     assert_eq!(
         failed.failure.as_deref(),
         Some("Auto-compaction failed: monthly spend limit")
