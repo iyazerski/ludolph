@@ -1334,6 +1334,17 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         assert_eq!(opened_reply(keys, nonce, &reply)["ok"]["total"], 1);
     }
 
+    // A restarted engine connects its saved link again.
+    engine.shutdown().await.unwrap();
+    drop(socket);
+    let engine = self::engine(dir.path(), Duration::from_secs(60)).await;
+    let (mut socket, path, bearer) = accept_mac(&listener).await;
+    assert_eq!(
+        (path.as_str(), bearer.as_deref()),
+        ("/connect", Some("Bearer t0ken"))
+    );
+    assert_eq!(from_mac(&mut socket).await["type"], "hello");
+
     // Unlinking drops the connection, forgets the link, and has the relay
     // forget the Mac.
     let unlinked = tool(&engine, "unlink_phone", json!({})).await.unwrap();

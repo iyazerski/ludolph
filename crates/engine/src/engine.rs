@@ -406,7 +406,6 @@ impl Engine {
         let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
         // The engine's folder has no `.pi` settings to change the list.
         let catalog = Catalog::new(config.pi.clone(), config.state_dir.clone(), config.grace);
-        let link = Link::load(&config.state_dir, config.secrets)?;
         let engine = Self(Arc::new_cyclic(|inner| Inner {
             turns,
             catalog,
@@ -424,9 +423,7 @@ impl Engine {
             pairing: watch::channel(None).0,
             config,
         }));
-        if let Some(link) = link {
-            engine.connect(link)?;
-        }
+        tokio::spawn(engine.clone().reconnect());
         Ok(engine)
     }
 
@@ -1101,6 +1098,24 @@ impl Engine {
             });
         }
         Ok(())
+    }
+
+    /// Connect the saved link, if there is one. macOS may ask the user before
+    /// it gives out the Keychain item, say after the app's signature changed,
+    /// so the engine serves the app meanwhile, and a refusal leaves it
+    /// unlinked.
+    async fn reconnect(self) {
+        let (dir, store) = (self.0.config.state_dir.clone(), self.0.config.secrets);
+        let loaded = tokio::task::spawn_blocking(move || Link::load(&dir, store)).await;
+        let connected = match loaded {
+            Ok(Ok(Some(link))) => self.connect(link),
+            Ok(Ok(None)) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(e.into()),
+        };
+        if let Err(e) = connected {
+            eprintln!("relay: not connecting the saved link: {e:#}");
+        }
     }
 
     /// Keep `link` to the relay from now on, in place of any other.
