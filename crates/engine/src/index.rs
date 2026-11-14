@@ -14,7 +14,7 @@ use crate::session::{Freshness, Summary};
 
 /// The saved index's format. A file in any other format is ignored, and the
 /// index is built again from the session files.
-const FORMAT: u32 = 4;
+const FORMAT: u32 = 5;
 
 /// Every session file pi has written, by path, and the chats whose run the
 /// engine cut short.

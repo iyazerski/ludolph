@@ -86,6 +86,36 @@ fn summarizes_a_session_file() {
 }
 
 #[test]
+fn spend_includes_all_usage_and_survives_a_restart() {
+    let usage = json!({"input": 100, "output": 20, "cacheRead": 40, "cacheWrite": 8,
+                       "totalTokens": 168, "cost": {"total": 0.125}});
+    let mut answer = assistant("a1", "aborted", 2);
+    answer["message"]["usage"] = usage.clone();
+    let mut result = tool_result("t1");
+    result["message"]["usage"] = usage.clone();
+    let (dir, path) = sessions(&[header(3), user("u1", json!("hi"), 1), answer, result]);
+    let mut index = Index::default();
+    index.refresh(dir.path()).unwrap();
+    assert_eq!(index.get(&path).unwrap().spent.tokens, 336);
+    assert_eq!(index.get(&path).unwrap().spent.cost, 0.25);
+    let entries: Vec<_> = ["compaction", "branch_summary", "usage"]
+        .into_iter()
+        .map(|kind| json!({"type": kind, "usage": usage}))
+        .collect();
+    append(&path, &lines(&entries));
+    index.refresh(dir.path()).unwrap();
+    let summary = index.get(&path).unwrap();
+    assert_eq!(summary.spent.tokens, 840);
+    assert_eq!(summary.spent.cost, 0.625);
+    assert_eq!(summary.context_tokens, None);
+    let state = dir.path().join("index.json");
+    index.save(&state).unwrap();
+    let mut loaded = Index::load(&state).unwrap();
+    loaded.refresh(dir.path()).unwrap();
+    assert_eq!(loaded.get(&path).unwrap().spent, summary.spent);
+}
+
+#[test]
 fn outcome_follows_the_last_message() {
     let cases = [
         (assistant("a", "stop", 1), Outcome::Done),

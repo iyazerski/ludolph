@@ -536,6 +536,7 @@ fn settings(composer: &Composer) -> Value {
             "tokens": composer.context_tokens,
             "window": composer.context_window,
         },
+        "spent": composer.spent,
     })
 }
 

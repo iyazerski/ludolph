@@ -601,7 +601,8 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     })
     .await;
     let info = json!({"checkout": "local", "branch": "main", "model": "fake/deep",
-                      "reasoning": "high", "contextUsage": {"tokens": 1500, "window": 200_000}});
+                      "reasoning": "high", "contextUsage": {"tokens": 1500, "window": 200_000},
+                      "spent": {"tokens": 2500, "cost": 0.625}});
     let composer = |engine| tool(engine, "composer_info", json!({"chat": id}));
     assert_eq!(composer(&first).await.unwrap(), info, "as its pi says");
     first.shutdown().await.unwrap();
@@ -628,7 +629,8 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     let saved = tool(&engine, "set_chat_model", quick).await.unwrap();
     assert_eq!(
         saved,
-        json!({"model": "fake/quick", "reasoning": "off", "contextUsage": {"tokens": null, "window": 100_000}}),
+        json!({"model": "fake/quick", "reasoning": "off", "contextUsage": {"tokens": null, "window": 100_000},
+               "spent": {"tokens": 2500, "cost": 0.625}}),
         "the level fits the model"
     );
     let unknown = json!({"chat": id, "model": "nope/x"});

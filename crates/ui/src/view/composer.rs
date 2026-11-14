@@ -13,7 +13,7 @@ use crate::app::{
     Catalog, ChatPage, Config, LEVELS_KEPT, Overlay, Pick, Prep, Sheet, SkillList, State, Voice,
 };
 use crate::data::{Skill, levels_of};
-use crate::labels::reasoning_name;
+use crate::labels::{context_help, reasoning_name};
 use crate::markup;
 use crate::message::skill_query;
 
@@ -445,8 +445,10 @@ fn context(page: &ChatPage, k: &Kit) -> El {
     let Some(window) = usage.window.filter(|w| *w > 0) else {
         return rune::el();
     };
+    let spent = page.info.as_ref().and_then(|i| i.spent);
+    let help = context_help(usage.tokens, window, spent);
     let Some(tokens) = usage.tokens else {
-        return text("—").font(k.ty.small).color(k.c.text_faint);
+        return text("—").font(k.ty.small).color(k.c.text_faint).help(help);
     };
     let fraction = tokens as f64 / window as f64;
     let (arc, label) = if fraction >= 0.9 {
@@ -478,10 +480,7 @@ fn context(page: &ChatPage, k: &Kit) -> El {
                 .font(k.ty.small)
                 .color(label),
         )
-        .help(format!(
-            "{tokens} / {window} tokens. {} tokens remaining.",
-            window.saturating_sub(tokens)
-        ))
+        .help(help)
 }
 
 fn sheets(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {

@@ -146,13 +146,18 @@ function ring(fraction, color) {
   return wrap.firstChild;
 }
 
-/** The desktop's context card text (context_usage.rs details). */
-function contextDetails({ tokens, window: size } = {}) {
+/** The desktop's context ring tooltip (labels::context_help), as one line per fact. */
+function contextDetails({ tokens, window: size }, spent) {
   const n = v => v.toLocaleString("en-US");
-  if (tokens != null && size > 0) return `${n(tokens)} / ${n(size)} tokens. ${n(Math.max(size - tokens, 0))} tokens remaining.`;
-  if (tokens != null) return `${n(tokens)} tokens used. Context limit not reported.`;
-  if (size > 0) return `${n(size)} token capacity. Waiting for context usage.`;
-  return "Context usage not reported by this agent yet.";
+  const lines = [tokens != null
+    ? `${n(tokens)} of ${n(size)} tokens (${Math.round(tokens / size * 100)}%), ${n(Math.max(size - tokens, 0))} left`
+    // pi can't tell until the first answer after a compaction.
+    : `${n(size)} tokens, size known after the next answer`];
+  if (spent?.tokens > 0) {
+    const cost = spent.cost >= 0.01 ? `${spent.cost.toFixed(2)}` : "under $0.01";
+    lines.push(`This chat: ${n(spent.tokens)} tokens${spent.cost > 0 ? `, ${cost}` : ""}`);
+  }
+  return lines.map(line => h("div", {}, line));
 }
 
 // The desktop's project tones (project_icon.rs), indexed by FNV-1a of the
@@ -1862,7 +1867,7 @@ function chatView(machine, id, fromList) {
     const left = info.checkout && h("span", { class: "branch-ref" }, icon("branch"), h("span", { class: "txt" }, info.branch || "No ref"));
     // A model without a known window gets no ring, as on the desktop.
     const right = usage?.window > 0 && h("button", { class: "ctx", style: { color: fraction == null ? "var(--tertiary)" : tone },
-      "aria-label": "Context window", onclick: () => toast({ title: "Context window", body: contextDetails(usage), kind: "info", timeout: 4000 }) },
+      "aria-label": "Context window", onclick: () => toast({ title: "Context window", body: contextDetails(usage, info.spent), kind: "info", timeout: 4000 }) },
       ring(fraction || 0, tone), fraction == null ? "—" : `${Math.round(fraction * 100)}%`);
     meta.replaceChildren(projectChip || "", left || "");
     ctxSlot.replaceChildren(right || "");

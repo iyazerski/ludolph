@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::data::ToolState;
+use crate::data::{Spent, ToolState};
 
 /// Compact age, like the desktop sidebar: now, 34m, 4h, 2d, 3w.
 pub fn ago(when: DateTime<Utc>, now: DateTime<Utc>) -> String {
@@ -30,6 +30,57 @@ pub fn worked(secs: i64) -> String {
         format!("{}m {}s", s / 60, s % 60)
     } else {
         format!("{}h {}m", s / 3600, s % 3600 / 60)
+    }
+}
+
+/// The context ring's tooltip: how full the context is, and what the chat
+/// has spent so far.
+pub fn context_help(tokens: Option<u64>, window: u64, spent: Option<Spent>) -> String {
+    let mut help = match tokens {
+        Some(tokens) => format!(
+            "Context: {} of {} tokens ({}%)\n{} tokens left",
+            count(tokens),
+            count(window),
+            (tokens as f64 / window as f64 * 100.0).round(),
+            count(window.saturating_sub(tokens)),
+        ),
+        // pi can't tell until the first answer after a compaction.
+        None => format!(
+            "Context: {} tokens\nSize known after the next answer",
+            count(window)
+        ),
+    };
+    match spent.filter(|spent| spent.tokens > 0) {
+        Some(spent) if spent.cost > 0.0 => help.push_str(&format!(
+            "\nThis chat: {} tokens, {}",
+            count(spent.tokens),
+            dollars(spent.cost)
+        )),
+        Some(spent) => help.push_str(&format!("\nThis chat: {} tokens", count(spent.tokens))),
+        None => {}
+    }
+    help
+}
+
+/// A count with thousands separators: 1,234,567.
+fn count(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// US dollars to the cent, with a floor so a tiny cost doesn't read as free.
+fn dollars(cost: f64) -> String {
+    if cost < 0.01 {
+        "under $0.01".to_owned()
+    } else {
+        format!("${cost:.2}")
     }
 }
 
@@ -170,6 +221,36 @@ pub fn tool_summary(tools: &[ToolCall]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_help_reads_the_context_and_the_spend() {
+        let spent = |tokens, cost| Some(Spent { tokens, cost });
+        let cases = [
+            (
+                Some(96_000),
+                spent(1_234_567, 0.454),
+                "Context: 96,000 of 200,000 tokens (48%)\n104,000 tokens left\nThis chat: 1,234,567 tokens, $0.45",
+            ),
+            (
+                None,
+                spent(512, 0.001),
+                "Context: 200,000 tokens\nSize known after the next answer\nThis chat: 512 tokens, under $0.01",
+            ),
+            (
+                Some(0),
+                spent(900, 0.0),
+                "Context: 0 of 200,000 tokens (0%)\n200,000 tokens left\nThis chat: 900 tokens",
+            ),
+            (
+                Some(1_000),
+                spent(0, 0.0),
+                "Context: 1,000 of 200,000 tokens (1%)\n199,000 tokens left",
+            ),
+        ];
+        for (tokens, spent, want) in cases {
+            assert_eq!(context_help(tokens, 200_000, spent), want);
+        }
+    }
 
     #[test]
     fn tool_groups_summarize_like_the_phone() {
