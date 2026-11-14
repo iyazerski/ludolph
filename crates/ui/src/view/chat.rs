@@ -316,9 +316,6 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
         );
     }
     let last = shown.last().map(|m| m.id.as_str());
-    // The latest run's button waits until it's over and nothing is asked.
-    let settled = !working && page.question.is_none();
-    let changes = page.before_changes.iter().chain(&page.turn_changes);
     // When the turn of the reply next shown began: its prompt's time.
     let mut started = None;
     for m in page.messages() {
@@ -342,11 +339,6 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
                 out.push(assistant(page, k, &style, m, started, streaming, expanded).key(key));
             }
             Role::System => out.push(system_note(k, m).key(key)),
-        }
-        if let Some(counts) = changes.clone().find(|t| t.after == m.id)
-            && (settled || Some(m.id.as_str()) != last)
-        {
-            out.push(super::changes::button(k, counts).key(format!("changes-{}", counts.turn)));
         }
     }
     for (i, p) in page.pending.iter().enumerate() {
@@ -751,10 +743,9 @@ fn toggle_group(s: &mut State, key: &str, open: bool) {
     }
 }
 
-/// When the message started, and a button that copies its closing answer as
-/// Markdown, as the desktop shows under a finished reply.
+/// Show a finished reply's timestamp, copy action and saved turn diff.
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
-    let mut out = row().gap(8.0).center_y();
+    let mut out = row().w_full().gap(8.0).center_y();
     if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {
         out = out.child(
             text(
@@ -778,6 +769,16 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_answer(&id, tx))
                 .build(k),
         );
+    }
+    if let Some(counts) = page
+        .before_changes
+        .iter()
+        .chain(&page.turn_changes)
+        .find(|counts| counts.after == m.id)
+    {
+        out = out
+            .child(rune::spacer())
+            .child(super::changes::button(k, counts));
     }
     out
 }

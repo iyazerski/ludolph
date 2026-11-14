@@ -170,6 +170,10 @@ struct Chat {
     /// The run Ludolph started, from its snapshot until its changes are
     /// saved.
     run: Option<Run>,
+    /// The latest run boundary, including while its snapshot is being saved.
+    latest_turn: Option<i64>,
+    /// Bumped when a run starts or its changes finish saving.
+    turns_revision: u64,
     /// Bumped whenever the chat's view changes.
     changes: watch::Sender<u64>,
 }
@@ -187,6 +191,8 @@ impl Default for Chat {
             named: None,
             titling: false,
             run: None,
+            latest_turn: None,
+            turns_revision: 0,
             changes: watch::channel(0).0,
         }
     }
@@ -302,6 +308,10 @@ pub struct View {
     pub page: Page,
     /// Changes whenever the page would, while the chat is working.
     pub revision: u64,
+    /// The latest run boundary, before its diff has necessarily been saved.
+    pub latest_turn: Option<i64>,
+    /// Changes when run boundaries or saved diffs change, not on streamed text.
+    pub turns_revision: u64,
     /// The oldest dialog the chat's pi waits on.
     pub question: Option<Question>,
     /// What the chat's run waits on, while one is going.
@@ -538,7 +548,19 @@ impl Engine {
     ///
     /// Fails if there's no such chat, or its session file can't be read.
     pub async fn view(&self, id: &str, window: Window) -> Result<View> {
-        let (chat, path, messages, streaming, revision, question, run, failure, queued) = {
+        let (
+            chat,
+            path,
+            messages,
+            streaming,
+            revision,
+            question,
+            run,
+            failure,
+            queued,
+            latest_turn,
+            turns_revision,
+        ) = {
             let state = self.state();
             let chat = state.chats.get(id);
             let info = match state.index.find(id) {
@@ -564,7 +586,17 @@ impl Engine {
             let revision = chat.map_or(0, |chat| *chat.changes.borrow());
             let queued = Self::queued(chat);
             (
-                info, path, messages, streaming, revision, question, run, failure, queued,
+                info,
+                path,
+                messages,
+                streaming,
+                revision,
+                question,
+                run,
+                failure,
+                queued,
+                chat.and_then(|c| c.latest_turn),
+                chat.map_or(0, |c| c.turns_revision),
             )
         };
         let transcripts = self.0.transcripts.clone();
@@ -581,6 +613,8 @@ impl Engine {
             chat,
             page,
             revision,
+            latest_turn,
+            turns_revision,
             question,
             run,
             failure,
@@ -793,7 +827,8 @@ impl Engine {
         };
         match saved.await {
             Ok(()) => {
-                if let Some(chat) = self.state().chats.get(id) {
+                if let Some(chat) = self.state().chats.get_mut(id) {
+                    chat.turns_revision += 1;
                     chat.changed();
                 }
             }
@@ -1719,6 +1754,8 @@ impl Engine {
                 && message["role"] == "user"
             {
                 run.key = message["timestamp"].as_i64();
+                chat.latest_turn = run.key;
+                chat.turns_revision += 1;
             }
         }
         let mut finish = false;

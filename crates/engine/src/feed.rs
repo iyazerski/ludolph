@@ -53,9 +53,8 @@ pub struct Feed {
     /// it, so new messages don't push out ones the subscriber has.
     anchor: Option<String>,
     sent: HashMap<String, Message>,
-    /// The run changes, with the messages and status they were found for:
-    /// runs are saved as they settle, which changes one or the other.
-    changes: Option<(Vec<String>, Status, Vec<Value>)>,
+    /// The run changes, invalidated by message ids, status or saved diffs.
+    changes: Option<(Vec<String>, Status, u64, Vec<Value>)>,
 }
 
 impl Feed {
@@ -119,7 +118,15 @@ impl Feed {
             .iter()
             .filter(|m| self.sent.get(&m.id) != Some(*m))
             .collect();
-        let turn_changes = self.turn_changes(&messages, &ids, view.chat.status).await;
+        let turn_changes = self
+            .turn_changes(
+                &messages,
+                &ids,
+                view.chat.status,
+                view.latest_turn,
+                view.turns_revision,
+            )
+            .await;
         let frame = json!({
             "reset": reset,
             "chat": summary(&view.chat, self.engine.config()),
@@ -138,28 +145,31 @@ impl Feed {
     }
 
     /// The saved runs among `messages` that changed files, read again only
-    /// when the messages or the status changed.
+    /// when the messages, status, run boundary or saved diffs changed.
     async fn turn_changes(
         &mut self,
         messages: &[Message],
         ids: &[String],
         status: Status,
+        latest_turn: Option<i64>,
+        revision: u64,
     ) -> Vec<Value> {
-        if let Some((for_ids, for_status, changes)) = &self.changes
+        if let Some((for_ids, for_status, for_revision, changes)) = &self.changes
             && for_ids == ids
             && *for_status == status
+            && *for_revision == revision
         {
             return changes.clone();
         }
         let changes = match self.engine.run_counts(&self.chat).await {
-            Ok(runs) => turn_changes_of(messages, &runs),
+            Ok(runs) => turn_changes_of(messages, &runs, latest_turn),
             // The chat still shows; it only loses its changes buttons.
             Err(e) => {
                 eprintln!("reading chat {}'s run changes: {e:#}", self.chat);
                 Vec::new()
             }
         };
-        self.changes = Some((ids.to_vec(), status, changes.clone()));
+        self.changes = Some((ids.to_vec(), status, revision, changes.clone()));
         changes
     }
 }

@@ -859,6 +859,20 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         (&json!(2), &json!(2), &json!(0))
     );
     assert_eq!(run["after"], messages.last().unwrap()["id"]);
+    append(
+        &dir.path().join(format!("sessions/--fake--/{id}.jsonl")),
+        &json!({
+            "type": "compaction", "id": "footer-compaction", "parentId": run["after"],
+            "timestamp": chrono::Utc::now().to_rfc3339(), "summary": "Earlier work",
+            "firstKeptEntryId": messages[0]["id"], "tokensBefore": 1000
+        }),
+    );
+    let (noted, with_note) = turn_changes(&engine, &id, 1).await;
+    assert_eq!(with_note.last().unwrap()["role"], "system");
+    assert_eq!(
+        noted[0]["after"], run["after"],
+        "a trailing compaction does not take the reply's diff"
+    );
 
     let diff = tool(
         &engine,
@@ -877,12 +891,38 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         "{patch}"
     );
 
+    // The previous diff stays on its reply while the next run is still working.
+    let mut feed = ludolph_engine::feed::Feed::new(engine.clone(), id.clone(), true);
+    let first = feed.frame().await.unwrap();
+    assert_eq!(first["turnChanges"][0]["after"], run["after"]);
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    view_until(&engine, &id, |view| {
+        view.chat.status == Status::AwaitingInput
+    })
+    .await;
+    let running = tool(&engine, "chat_view", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(running["read"]["turnChanges"][0]["after"], run["after"]);
+    let frame = feed.frame().await.unwrap();
+    assert_eq!(frame["turnChanges"][0]["after"], run["after"]);
+
     // A run that changes nothing gets no button, and ends the one before.
-    engine.send(&id, "hi", Vec::new()).await.unwrap();
+    tool(
+        &engine,
+        "respond_to_input",
+        json!({"chat": id, "id": "d1", "value": "red"}),
+    )
+    .await
+    .unwrap();
     let (changes, messages) = turn_changes(&engine, &id, 2).await;
     let second = messages.iter().rposition(|m| m["role"] == "user").unwrap();
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0]["after"], messages[second - 1]["id"]);
+    let reply = messages[..second]
+        .iter()
+        .rfind(|message| message["role"] == "assistant")
+        .unwrap();
+    assert_eq!(changes[0]["after"], reply["id"]);
 
     assert_eq!(status, "M  b.txt\n");
     let status = git(&repo, &["status", "--porcelain"]);

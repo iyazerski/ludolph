@@ -375,7 +375,7 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
         None
     } else {
         let runs = match engine.run_counts(&args.chat).await {
-            Ok(runs) => turn_changes_of(&view.page.messages, &runs),
+            Ok(runs) => turn_changes_of(&view.page.messages, &runs, view.latest_turn),
             // The chat still shows; it only loses its changes buttons.
             Err(e) => {
                 eprintln!("reading chat {}'s run changes: {e:#}", args.chat);
@@ -402,11 +402,18 @@ async fn chat_view(engine: &Engine, args: ViewArgs) -> Result<Value> {
 
 /// The saved runs among `messages` that changed files, as
 /// `{turn, after, files, additions, deletions}`. `turn` names the run for
-/// `turn_changes`, and `after` is its last message, which the button
-/// follows. A run lasts until the next one starts, so steering messages
+/// `turn_changes`, and `after` is its last assistant reply, whose footer
+/// holds the button. A run lasts until the next one starts, so steering messages
 /// stay in it.
-pub(crate) fn turn_changes_of(messages: &[Message], runs: &BTreeMap<i64, Counts>) -> Vec<Value> {
-    let starts = |m: &Message| m.role == Role::User && runs.contains_key(&m.created_at);
+pub(crate) fn turn_changes_of(
+    messages: &[Message],
+    runs: &BTreeMap<i64, Counts>,
+    latest_turn: Option<i64>,
+) -> Vec<Value> {
+    let starts = |m: &Message| {
+        m.role == Role::User
+            && (runs.contains_key(&m.created_at) || latest_turn == Some(m.created_at))
+    };
     let mut out = Vec::new();
     for (i, message) in messages.iter().enumerate() {
         let Some(counts) = runs.get(&message.created_at).filter(|_| starts(message)) else {
@@ -419,9 +426,15 @@ pub(crate) fn turn_changes_of(messages: &[Message], runs: &BTreeMap<i64, Counts>
             .iter()
             .position(starts)
             .map_or(messages.len(), |n| i + 1 + n);
+        let Some(reply) = messages[i..end]
+            .iter()
+            .rfind(|message| message.role == Role::Assistant)
+        else {
+            continue;
+        };
         out.push(json!({
             "turn": message.created_at.to_string(),
-            "after": messages[end - 1].id,
+            "after": reply.id,
             "files": counts.files,
             "additions": counts.additions,
             "deletions": counts.deletions,

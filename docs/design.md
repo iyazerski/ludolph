@@ -222,13 +222,15 @@ A chat you're done with is deleted, not archived. Right-clicking a chat in eithe
 
 ## Turn changes
 
+A completed turn's diff button sits at the right of its final reply's timestamp and copy row. A trailing compaction stays a separate note and doesn't take the reply's button.
+
 The app shows what each run changed, as zeron-tools does now. A run is everything from the prompt that starts it until pi settles, including any steering messages sent in between. pi's own `turn_start` is one assistant response, which is too small a unit, and the engine can't pause pi to take a snapshot in the middle of a run.
 
 The engine takes its snapshots with git, without touching your repo:
 
 1. **Before** it forwards a prompt to an idle chat, it snapshots the working tree, and only then sends the prompt. So no tool can change a file before the snapshot.
 2. When the run settles, it snapshots again. A new prompt waits for that snapshot.
-3. It diffs the two snapshots and saves the patch and its line counts as `turns/<session id>/<key>.json`. The key is the timestamp of the user message that started the run, which pi reports as the run starts. `chat_view` matches it to that message's `createdAt`, and a run lasts until the next saved run starts, so steering messages stay in it.
+3. It diffs the two snapshots and saves the patch and its line counts as `turns/<session id>/<key>.json`. The key is the timestamp of the user message that started the run, which pi reports as the run starts. `chat_view` matches it to that message's `createdAt`, and a run lasts until the next run starts, including a run still in progress, so steering messages stay in it and a completed turn's diff stays below its own reply. The feed invalidates its run-change cache when a run boundary changes or a diff finishes saving, even if the transcript ids and chat status stay the same.
 
 A snapshot copies the repo's index to a temporary file and runs `git add -A` and `git write-tree` against that copy (`GIT_INDEX_FILE`). New file contents go to an object store of the run's own (`GIT_OBJECT_DIRECTORY`), with the repo's objects as an alternate (`GIT_ALTERNATE_OBJECT_DIRECTORIES`). So the repo gets no new objects, your index and staged changes stay as they are, and `.gitignore` is respected, which keeps ignored secrets out. Once the patch is saved, the run's store is deleted, so nothing needs pruning. A store left by a stopped engine is deleted at start. A warm snapshot takes about 30 ms on zeron-tools and on Ludolph's own repo.
 
