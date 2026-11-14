@@ -330,7 +330,7 @@ async fn groups(engine: &Engine, args: Value) -> Vec<(Value, u64, Vec<String>)> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn chats_list_by_project_and_stay_archived_until_used_again() {
+async fn chats_list_by_project_until_deleted() {
     let dir = tempfile::tempdir().unwrap();
     let folder = dir.path().join("sessions/--app--");
     std::fs::create_dir_all(&folder).unwrap();
@@ -352,6 +352,11 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
         )
         .unwrap();
     }
+    // A tool that moves chats between folders can leave a copy; deleting
+    // removes every one.
+    let copy = dir.path().join("sessions/--elsewhere--");
+    std::fs::create_dir_all(&copy).unwrap();
+    std::fs::copy(folder.join("b.jsonl"), copy.join("b.jsonl")).unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
     let app = json!("/work/app");
     assert_eq!(
@@ -364,35 +369,17 @@ async fn chats_list_by_project_and_stay_archived_until_used_again() {
     let more = json!({"limit": 2, "more": [{"project": "/work/app", "limit": 12}]});
     assert_eq!(groups(&engine, more).await[1].2, ["c", "b", "a"]);
 
-    tool(&engine, "archive_chat", json!({"chat": "b"}))
+    tool(&engine, "delete_chat", json!({"chat": "b"}))
         .await
         .unwrap();
-    tool(&engine, "archive_chat", json!({"chat": "a"}))
-        .await
-        .unwrap();
-    assert_eq!(listed(&engine, json!({})).await, ["d", "c"]);
-    assert_eq!(listed(&engine, json!({"archived": true})).await, ["b", "a"]);
-    assert_eq!(groups(&engine, json!({})).await[1].1, 1);
-    tool(
-        &engine,
-        "archive_chat",
-        json!({"chat": "a", "archived": false}),
-    )
-    .await
-    .unwrap();
     assert_eq!(listed(&engine, json!({})).await, ["d", "c", "a"]);
-
-    // A chat used again comes back, and the rest stay archived after a restart.
-    tool(&engine, "archive_chat", json!({"chat": "c"}))
-        .await
-        .unwrap();
-    append(&folder.join("b.jsonl"), &user(5_000));
-    until(&engine, |c| c.iter().any(|c| c.id == "b" && !c.archived)).await;
-    engine.shutdown().await.unwrap();
-    drop(engine);
-    let engine = self::engine(dir.path(), Duration::from_secs(60)).await;
-    assert_eq!(listed(&engine, json!({})).await, ["b", "d", "a"]);
-    assert_eq!(listed(&engine, json!({"archived": true})).await, ["c"]);
+    assert_eq!(groups(&engine, json!({})).await[1].1, 2);
+    assert!(!folder.join("b.jsonl").exists() && !copy.join("b.jsonl").exists());
+    assert!(
+        tool(&engine, "delete_chat", json!({"chat": "b"}))
+            .await
+            .is_err()
+    );
     engine.shutdown().await.unwrap();
 }
 

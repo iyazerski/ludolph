@@ -203,7 +203,11 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
         // An empty lead the folder icon's size, so the title lines up with the project's name.
         r = r.avatar(el());
     }
-    let mut out = r.build(k).key(format!("chat-{}", c.id));
+    let id = c.id.clone();
+    let mut out = r
+        .build(k)
+        .key(format!("chat-{}", c.id))
+        .on_secondary_press(move |s: &mut State, at, tx| s.chat_menu(id.clone(), at, tx));
     if let Some(said) = said {
         out = out.help(said);
     }

@@ -8,9 +8,9 @@ Ludolph is a Mac app for [pi](https://pi.dev) coding agents. It replaces two thi
 
 It keeps what zeron-tools has today, and nothing more from Zeron:
 
-- chats grouped by project, with live transcripts, tool-call rows, each turn's changes, and the composer (images, dictation, skills, model and thinking level, stop, archive)
+- chats grouped by project, with live transcripts, tool-call rows, each turn's changes, and the composer (images, dictation, skills, model and thinking level, stop, rename, delete)
 - questions from the agent, answered in the app
-- titles and archiving as part of the main flow, not as workarounds
+- titles and deleting as part of the main flow, not as workarounds
 - a floating quick window on a global shortcut (today's Companion)
 - a phone web app through a self-hosted relay, with notifications
 
@@ -48,7 +48,7 @@ So memory goes on two things: Zeron's engine, which Ludolph removes, and one pi 
                                          └── git            (turn changes)
 ```
 
-- **Engine** (`ludolph engine`): a launchd job. It restarts after a crash, and keeps running when the app quits, so agents and the phone carry on. It owns the pi processes, the index, titles, archiving, turn changes, and the relay link. It has no UI.
+- **Engine** (`ludolph engine`): a launchd job. It restarts after a crash, and keeps running when the app quits, so agents and the phone carry on. It owns the pi processes, the index, titles, deleting chats, turn changes, and the relay link. It has no UI.
   - Nothing of Ludolph's starts at login unless you turn on **Open at login**. So the engine's plist isn't in `~/Library/LaunchAgents`: it's `engine.plist` in the state folder, and each time `Ludolph.app` starts, it loads that job for the rest of the login session. It reloads it if the app moved, and starts the engine if it stopped, as after an update. The engine logs to `~/Library/Logs/Ludolph/engine.log`. `ludolph uninstall` stops it and removes the app's login item.
   - launchd's environment is bare, so the engine starts by asking your login shell for its own, like VS Code does. It runs `env` through `-i -l -c` with your shell from the user database, with a 10-second limit, and keeps launchd's if that fails. It takes about 120 ms on this Mac. pi and its tools then find what a terminal would: tools you install later, and the API keys and proxy settings your rc files export.
 - **App** (`Ludolph.app`): one UI process with both windows. With **Open at login** on, it starts at login, so the global shortcut always works. It shows a Dock icon only while the main window is open, and runs as an accessory app otherwise. Rune supports several windows in one app and switches between the regular and accessory activation policies (checked in Rune's source at the pinned revision).
@@ -92,7 +92,7 @@ A fork (`/fork`, `/clone`) copies entries, with their ids, into a new file. So a
 One row per session file, in two parts:
 
 - **Derived from the file**, and rebuilt from it at any time: path, session id, cwd, created time, title, last activity, a preview of the last user message, the last turn's outcome, the current leaf, and the byte offset the row was built up to.
-- **Ludolph's own**, which can't be rebuilt: the archive state (see [the chat list and archiving](#the-chat-list-and-archiving)).
+- **Ludolph's own**, which can't be rebuilt: which chats the engine cut short (see [engine restarts](#pi-processes)).
 
 Since files are append-only, the engine parses only the bytes after the saved offset, and only complete lines. A partial last line waits for the next read. If a file got smaller or its header changed, the engine parses it again from the start. The parse streams line by line and keeps only the index fields, so a 45 MB file never sits in memory whole. On this Mac that's 270 files and 511 MB, so the first build reads everything once, and later builds read only what's new.
 
@@ -125,7 +125,7 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 - **Live view:** see [live view and the file](#live-view-and-the-file).
 - **Stopping idle processes:** once a chat settles (`agent_settled`) and has no open question, the engine closes its process's stdin after 5 idle minutes. pi then shuts down cleanly, and the next message starts it again with `--session <file>`. A restart costs about 270 ms even for a large session, while a loaded process holds up to ~300 MB, so stopping idle processes is the biggest memory saving.
 - **Crashes:** if pi exits during a run, the chat shows as interrupted, and the next message starts pi again. A pi that crashes takes its process group with it, so its tools don't keep changing files. A clean exit leaves background jobs the agent started, such as a dev server, as a terminal pi does.
-- **Engine restarts:** the engine writes a small runtime file, `runtime.json`, with each pi process's pid, its session, and whether a run is in flight. On start, it stops any pi it finds there that's still running, before any new pi may write to that session. Its stdin closed with the old engine, so it gets SIGTERM, and its process group gets SIGKILL if it's still running after 10 s. The file keeps each process's start time, so a reused pid is left alone. A run that was in flight shows as interrupted. It doesn't count as finished, since the file alone can't tell: pi writes the same `aborted` reply on its way out as for a Stop. The mark is kept in the index with the chat's last activity, as the archive is, so it lasts across restarts and ends with the chat's next activity.
+- **Engine restarts:** the engine writes a small runtime file, `runtime.json`, with each pi process's pid, its session, and whether a run is in flight. On start, it stops any pi it finds there that's still running, before any new pi may write to that session. Its stdin closed with the old engine, so it gets SIGTERM, and its process group gets SIGKILL if it's still running after 10 s. The file keeps each process's start time, so a reused pid is left alone. A run that was in flight shows as interrupted. It doesn't count as finished, since the file alone can't tell: pi writes the same `aborted` reply on its way out as for a Stop. The mark is kept in the index with the chat's last activity, so it lasts across restarts and ends with the chat's next activity.
 - **Shutdown:** on SIGTERM, the engine closes every pi's stdin and gives them 10 s to finish before it kills what's left, with their process groups. Runs it stops this way show as interrupted once it's back, without notices, since the stop was on purpose. No new pi starts once shutdown begins.
 
 ### Live view and the file
@@ -200,22 +200,21 @@ Renaming a chat by hand (`rename_chat`) goes through the same `set_session_name`
 
 A session written without a name, by pi in a terminal or by another tool, gets a title the next time it runs in Ludolph. Until then, the list shows its first prompt.
 
-## The chat list and archiving
+## The chat list and deleting
 
-Nothing is archived automatically. Zeron's rule (archive all but each project's 10 newest chats) existed because Zeron slowed down with many chats. Ludolph's index keeps every summary in memory, so a long list costs nothing to produce. Keeping it short is the list's job:
+Ludolph's index keeps every summary in memory, so a long list costs nothing to produce. Keeping it short is the list's job:
 
 - Each project, and **No project**, shows its 5 newest chats, each with how long ago it was last active, and its total. **Show more** adds 5. The windows remember what's expanded in memory only, so a restart shows 5 again.
 - `list_chat_groups` returns every group with its newest chats, and takes a higher limit for each expanded group. A window asks for the whole list again on each list notice, so there are no offsets that drift when chats change order.
 - The phone keeps its flat `list_chats`, the 200 newest chats.
 
-Archiving is something you do, to put away a chat you're done with:
+"Activity" means a new user or assistant message. A new title doesn't count, so titling doesn't move a chat up the list.
 
-- An archived chat leaves the groups and the phone's list. `list_chats` with `archived: true` lists the archived chats, for an **Archived** section that pages the same way.
-- An archived chat opens and resumes like any other. When it has new activity, it's no longer archived.
+A chat you're done with is deleted, not archived. Right-clicking a chat in either window's list opens a native menu: open it in the other window, **Rename…** and **Delete…**. The chat's own menu has the last two as well, and so does the phone's. Delete asks first, since it can't be undone:
 
-"Activity" means a new user or assistant message. A new title doesn't count, so titling neither moves a chat up the list nor brings it back from the archive.
-
-The archive state is Ludolph's own part of the index: each archived chat's id, with its last activity at that moment. The index drops it when the chat's activity is newer.
+- `delete_chat` stops the chat's pi if it runs, without marking the run as interrupted, then removes every copy of its session file and its saved turn changes.
+- It refuses a chat another pi has open, since that pi would write the file again.
+- The windows leave a deleted chat's page, and the list's notice drops its row.
 
 ## Turn changes
 
@@ -262,7 +261,7 @@ The app and the phone call the same tools:
 | `interrupt_chat` | `clear_queue` and `abort`. A send that hasn't reached pi yet is cancelled. |
 | `respond_to_input` | Answers the [open question](#questions-from-the-agent) with that id, as an `extension_ui_response` |
 | `rename_chat` | `set_session_name` (see [titles](#titles)) |
-| `archive_chat` | Index |
+| `delete_chat` | Stop pi, then remove the session's files |
 | `turn_changes` | Saved turn changes |
 | `composer_info` | Branch (`git`), then the model, thinking level and context use (see [pi processes](#pi-processes)) |
 | `set_chat_model` | `set_model`, `set_thinking_level` |
@@ -369,7 +368,7 @@ A Cargo workspace, following fettle where it applies (bundle, signing, release):
 
 ```
 crates/
-  engine/       pi processes, index, titles, archiving, turn changes, tools
+  engine/       pi processes, index, titles, deleting, turn changes, tools
   ui/           shared Rune views
   relay/        the relay server and the phone app
   relay-proto/  the Mac ↔ relay messages
@@ -390,14 +389,14 @@ Settings checks for a newer release each time it opens, and offers to update. Th
 
 ## Existing sessions
 
-There's nothing to import. The first time the engine starts, it indexes every session under `~/.pi/agent/sessions`, whichever tool ran pi, and lists each by its `cwd`, title and activity. Nothing starts archived.
+There's nothing to import. The first time the engine starts, it indexes every session under `~/.pi/agent/sessions`, whichever tool ran pi, and lists each by its `cwd`, title and activity.
 
 - **Copies:** a session file copied under another folder keeps its session id. The index lists a session once, by the copy written last.
 - **Untitled sessions:** see [titles](#titles).
 
 ## Milestones
 
-1. **Engine:** the index, pi processes, status, titles, archiving, turn changes, the socket API, and the relay link. The phone works against it.
+1. **Engine:** the index, pi processes, status, titles, deleting, turn changes, the socket API, and the relay link. The phone works against it.
 2. **Quick window:** the Companion ported to the engine's socket, with the views moved into `ui`.
 3. **Main window:** the sidebar, Dock icon, and app bundle, signed like fettle.
 4. **Settings:** including linking a phone.

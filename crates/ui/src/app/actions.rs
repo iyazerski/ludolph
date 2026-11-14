@@ -1,5 +1,5 @@
 //! What a chat's page does with the engine: follow the chat's feed, load
-//! earlier messages, send, answer pi's dialogs, stop, archive, dictate, and
+//! earlier messages, send, answer pi's dialogs, stop, dictate, and
 //! load what the composer shows.
 
 use std::collections::{HashMap, VecDeque};
@@ -26,7 +26,6 @@ const CLOCK_SLACK_MS: i64 = 2000;
 /// A call on the open chat; the feed shows what it changes.
 enum ChatAction {
     Stop,
-    Archive,
     Respond(Answer),
 }
 
@@ -344,14 +343,12 @@ impl State {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
         let Some(chat) = page.existing() else { return };
-        let archive = matches!(action, ChatAction::Archive);
         let (tool, failed) = match &action {
             ChatAction::Stop => ("interrupt_chat", "Couldn't stop"),
-            ChatAction::Archive => ("archive_chat", "Couldn't archive"),
             ChatAction::Respond(_) => ("respond_to_input", "Not sent"),
         };
         let args = match action {
-            ChatAction::Stop | ChatAction::Archive => json!({ "chat": chat.id }),
+            ChatAction::Stop => json!({ "chat": chat.id }),
             ChatAction::Respond(answer) => {
                 let id = chat.question.as_ref().map(|q| q.dialog.id.clone());
                 match answer {
@@ -366,12 +363,6 @@ impl State {
             tool,
             args,
             move |s, result: Result<Value, String>, _| match result {
-                Ok(_) if archive => {
-                    s.notify("Chat archived");
-                    if s.page_at(nav).is_some() {
-                        s.leave_chat();
-                    }
-                }
                 Ok(_) => {}
                 Err(e) => {
                     if let Some(q) = s.existing_at(nav).and_then(|c| c.question.as_mut()) {
@@ -385,10 +376,6 @@ impl State {
 
     pub fn stop(&mut self) {
         self.chat_action(ChatAction::Stop);
-    }
-
-    pub fn archive(&mut self) {
-        self.chat_action(ChatAction::Archive);
     }
 
     pub fn dictate(&mut self) {

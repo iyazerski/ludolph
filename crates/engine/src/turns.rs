@@ -264,6 +264,22 @@ impl Turns {
         Ok(counts)
     }
 
+    /// Drop session `session`'s saved runs, as its chat is deleted.
+    ///
+    /// # Errors
+    ///
+    /// Fails if they can't be removed.
+    pub fn forget(&self, session: &str) -> Result<()> {
+        let dir = self.dir.join(checked(session)?);
+        self.lock().remove(session);
+        match std::fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {}", dir.display()))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Drop the oldest saved runs until they fit the budget.
     fn prune(&self) -> Result<()> {
         let mut saved: Vec<(SystemTime, u64, String, i64, PathBuf)> = Vec::new();

@@ -444,6 +444,7 @@ a { color: inherit; text-decoration: none; }
 .btn:disabled { opacity: .4; }
 .btn.solid { background: var(--solid); color: var(--on-solid); }
 .btn.full { width: 100%; }
+.btn.danger { background: var(--danger); color: #fff; }
 .btn .i { width: 18px; height: 18px; }
 
 /* The composer floats at the bottom, as a glass capsule. */

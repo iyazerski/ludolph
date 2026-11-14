@@ -112,10 +112,10 @@ pub static BOT: Icon = icon(
     24.0,
     r#"<rect x="4.75" y="7.75" width="14.5" height="11.5" rx="2.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12 7.5V5.25M9.25 12.25V14M14.75 12.25V14M2 12.5V15M22 12.5V15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="3.75" r="1.25" fill="currentColor"/>"#,
 );
-pub static ARCHIVE: Icon = icon(
-    "archive",
+pub static DELETE: Icon = icon(
+    "trash",
     24.0,
-    r#"<path d="M2 12c0-4.714 0-7.071 1.464-8.536C4.93 2 7.286 2 12 2s7.071 0 8.535 1.464C22 4.93 22 7.286 22 12" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="6" width="20" height="16" rx="5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m9.5 14.4l1.429 1.6l3.571-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    r#"<path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M20.5 6h-17M18.833 8.5l-.46 6.9c-.177 2.654-.265 3.981-1.13 4.79s-2.196.81-4.856.81h-.774c-2.66 0-3.991 0-4.856-.81s-.953-2.136-1.13-4.79l-.46-6.9M9.5 11l.5 5M14.5 11l-.5 5"/><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M6.5 6h.11a2 2 0 0 0 1.83-1.32l.034-.103l.097-.291c.083-.249.125-.373.18-.479a1.5 1.5 0 0 1 1.094-.788C9.962 3 10.093 3 10.355 3h3.29c.262 0 .393 0 .51.019a1.5 1.5 0 0 1 1.094.788c.055.106.097.23.18.479l.097.291A2 2 0 0 0 17.5 6"/>"#,
 );
 pub static SKILL: Icon = icon(
     "skill",
