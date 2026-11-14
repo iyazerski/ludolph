@@ -8,12 +8,13 @@ use rune_kit::{
 };
 
 use super::icons;
-use super::widgets::{busy, tile};
+use super::widgets::{busy, markdown_spans, tile};
 use crate::app::{
     Catalog, ChatPage, Config, LEVELS_KEPT, Overlay, Pick, Prep, Sheet, SkillList, State, Voice,
 };
 use crate::data::{Skill, levels_of};
 use crate::labels::reasoning_name;
+use crate::markup;
 use crate::message::skill_query;
 
 /// The `$` menu's width, in points.
@@ -37,6 +38,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
             k.c.text_faint,
         )
         .caret(k.c.text_base, k.selection())
+        .spans(markdown_spans(k, &page.composer.text))
         .on_edit(State::composer_field)
         .on_input_key(composer_key)
         .on_input_paste(State::paste)
@@ -257,6 +259,20 @@ fn composer_key(s: &mut State, key: &KeyEvent, _: &mut Tx) -> bool {
     let Some(page) = s.chat_mut() else {
         return false;
     };
+    let edit = &mut page.composer;
+    let (from, to) = edit.range();
+    if key.key == Key::Enter
+        && key.mods.shift
+        && from == to
+        && !edit.is_composing()
+        && let Some((range, insert)) = markup::list_break(&edit.text, to)
+    {
+        edit.undo_group(|e| {
+            e.set_selection(range.start, range.end);
+            e.insert(&insert);
+        });
+        return true;
+    }
     let Some((start, q)) = query(page) else {
         return false;
     };

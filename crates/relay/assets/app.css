@@ -308,7 +308,7 @@ a { color: inherit; text-decoration: none; }
 .msg.user { align-self: flex-end; max-width: 86%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .msg.user .bubble {
   background: var(--bubble); padding: 10px 15px; border-radius: 20px;
-  white-space: pre-wrap; overflow-wrap: anywhere;
+  overflow-wrap: anywhere;
 }
 @media (prefers-color-scheme: light) { .msg.user .bubble { box-shadow: 0 0 0 1px var(--hairline); } }
 .msg.user.pending { opacity: .6; }

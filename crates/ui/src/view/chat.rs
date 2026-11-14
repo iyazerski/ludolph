@@ -2,7 +2,7 @@
 //! tool groups, thinking and errors, pi's dialogs, and the composer under
 //! them.
 
-use rune::{Color, El, ScrollSpec, Span, TextStyle, Tx, col, el, icon, rich, row, text};
+use rune::{Color, El, Link, ScrollSpec, Span, TextStyle, Tx, col, el, icon, rich, row, text};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Markdown, Menu,
@@ -420,6 +420,8 @@ fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
             );
         }
     }
+    spans.extend(super::widgets::markdown_spans(k, &shown));
+    let links = crate::markup::links(&shown);
     let mut out = col().w_full().pl(40.0).items_end().gap(4.0);
     if !images.is_empty() {
         out = out.child(row().gap(6.0).children(images.into_iter().enumerate().map(
@@ -437,6 +439,15 @@ fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
         )));
     }
     if !shown.is_empty() {
+        let mut body = rich(shown, spans)
+            .font(k.ty.ui)
+            .color(k.c.text_base)
+            .wrap_anywhere()
+            .selectable(true);
+        for (range, url) in links {
+            body = body.link(Link::new(range, url));
+        }
+        body = body.on_link(|s: &mut State, url: &str, tx: &mut Tx| s.open_link(url, tx));
         out = out.child(
             col()
                 .shrink()
@@ -446,13 +457,7 @@ fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
                 .radius(14.0)
                 .fill(k.c.layer_03)
                 .opacity(opacity)
-                .child(
-                    rich(shown, spans)
-                        .font(k.ty.ui)
-                        .color(k.c.text_base)
-                        .wrap_anywhere()
-                        .selectable(true),
-                ),
+                .child(body),
         );
     }
     if shade == Shade::Queued {
@@ -612,11 +617,7 @@ fn prose(page: &Existing, k: &Kit, style: &MarkdownStyle, text: &str, streaming:
         .copy_source(soft.is_none())
         .on_link_tx(|s: &mut State, url: &str, tx: &mut Tx| {
             // Code links are paths; Rune opens web links only.
-            if url.starts_with('/') {
-                s.open_path(url.to_owned());
-            } else {
-                drop(tx.open_url(url));
-            }
+            s.open_link(url, tx);
         });
     if let Some(links) = links {
         md = md.code_link(k.c.text_accent, links);

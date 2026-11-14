@@ -71,6 +71,7 @@ Both processes run from the same binary inside `Ludolph.app`.
 | Turn changes | `~/Library/Application Support/Ludolph/turns/<session id>/<entry id>.json` | engine |
 | Settings | `~/Library/Application Support/Ludolph/settings.json` | engine; the app changes them through it |
 | UI state (seen turns, folded projects, window frames, last picks) | `~/Library/Application Support/Ludolph/ui.json` | app |
+| Pasted images, which sent messages link to | `~/Library/Application Support/Ludolph/uploads/` | app |
 
 Ludolph never writes to pi's session files directly. It changes them only through pi: prompts, `set_session_name`, and so on.
 
@@ -121,7 +122,8 @@ The engine talks to pi only through RPC mode (`pi --mode rpc`, see pi's `docs/rp
 - **Skills** (the `$` menu): `get_commands`, keeping those with `source: "skill"`. It asks the chat's process if it's running. Otherwise, and for a new chat, it asks a short-lived `pi --mode rpc --no-session` in the chat's or project's folder, since project skills depend on it. The list isn't cached: the composer asks once, on the first `$`.
   - A skill's ref is pi's own `/skill:name`. The composer puts it where `$name` was typed, but pi runs a skill only from the start of a prompt, so the engine moves the first one there. Later ones stay as text.
   - pi saves a run skill as a `<skill>` block with the whole `SKILL.md`, then the request. The transcript and the list show it as `/skill:name` and the request, as pi's own view does (`parseSkillBlock`).
-- **Images:** sent in the `prompt` command as base64. There's no upload store.
+- **Images:** sent in the `prompt` command as base64. A pasted image is also saved as a PNG under `uploads/` in the app's state folder, and a Markdown link to it, `[Image 1](path)`, goes into the text where it was pasted. The agent then knows where each image sits in the message and has a file to work with. Removing the image's thumbnail removes its link. The files are kept, since the sent messages link to them. A file dropped or pasted from Finder is linked where it is.
+- **Markdown:** you write Markdown, and pi gets it as typed. The composer and your sent messages show the source shaded: headings and bold heavier, list markers and link targets faint, link text in the accent colour. Shift+Return in a list item starts the next item, numbered one up, and in an empty item ends the list. Links in a sent message open: a path in its app, a URL in the browser. The phone renders your messages as Markdown, and shows a link to a file on the Mac as its label, since the image chips open the images.
 - **Live view:** see [live view and the file](#live-view-and-the-file).
 - **Stopping idle processes:** once a chat settles (`agent_settled`) and has no open question, the engine closes its process's stdin after 5 idle minutes. pi then shuts down cleanly, and the next message starts it again with `--session <file>`. A restart costs about 270 ms even for a large session, while a loaded process holds up to ~300 MB, so stopping idle processes is the biggest memory saving.
 - **Crashes:** if pi exits during a run, the chat shows as interrupted, and the next message starts pi again. A pi that crashes takes its process group with it, so its tools don't keep changing files. A clean exit leaves background jobs the agent started, such as a dev server, as a terminal pi does.

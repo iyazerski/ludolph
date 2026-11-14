@@ -4,7 +4,7 @@
 //! writer ([`Shared`]).
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,18 +29,24 @@ pub struct Shared {
     rt: Handle,
     client: Client,
     prefs: Arc<watch::Sender<Value>>,
+    uploads: Arc<Path>,
 }
 
 impl Shared {
     /// Connect to the engine at `socket` and write the prefs to
-    /// `prefs_path`, both on `rt`.
-    pub fn start(rt: Handle, socket: PathBuf, prefs_path: PathBuf) -> Self {
+    /// `prefs_path`, both on `rt`. Pasted images are saved under `uploads`.
+    pub fn start(rt: Handle, socket: PathBuf, prefs_path: PathBuf, uploads: PathBuf) -> Self {
         let client = {
             let _entered = rt.enter();
             Client::start(socket)
         };
         let prefs = Arc::new(write_prefs(&rt, prefs_path));
-        Self { rt, client, prefs }
+        Self {
+            rt,
+            client,
+            prefs,
+            uploads: uploads.into(),
+        }
     }
 }
 
@@ -53,13 +59,19 @@ pub struct Api {
     peer: AppHandle<State>,
     prefs: Arc<watch::Sender<Value>>,
     ticking: watch::Sender<bool>,
+    uploads: Arc<Path>,
 }
 
 impl Api {
     /// Serve the window behind `app` over `shared`'s connection: tell it
     /// when the engine comes and goes, and tick it while it asks.
     pub fn start(shared: &Shared, app: AppHandle<State>, peer: AppHandle<State>) -> Self {
-        let Shared { rt, client, prefs } = shared.clone();
+        let Shared {
+            rt,
+            client,
+            prefs,
+            uploads,
+        } = shared.clone();
         let mut up = client.up();
         let to_ui = app.clone();
         rt.spawn(async move {
@@ -96,7 +108,13 @@ impl Api {
             peer,
             prefs,
             ticking,
+            uploads,
         }
+    }
+
+    /// Where pasted images are saved, so a message can link to them.
+    pub fn uploads(&self) -> &Path {
+        &self.uploads
     }
 
     /// Tick each second, or stop.

@@ -3,13 +3,14 @@
 use std::sync::LazyLock;
 
 use rune::color::hex;
-use rune::{Color, Cycle, El, TextStyle, col, el, icon, row, text};
+use rune::{Color, Cycle, El, Span, TextStyle, col, el, icon, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 use super::icons;
 use crate::app::State;
 use crate::data::Project;
 use crate::labels::tone_index;
+use crate::markup::{self, Shade};
 
 /// The desktop's project tones (`project_icon.rs`): slate, blue, violet,
 /// rose, amber, emerald, teal, orange.
@@ -23,6 +24,25 @@ const TONES_LIGHT: [&str; 8] = [
 /// The height of a page header's title block: a chat's title over its
 /// subtitle. Both pages use it, so the header buttons sit in the same place.
 const HEAD_TITLES_HEIGHT: f32 = 39.0;
+
+/// How Markdown source you write draws: in the composer and in your sent
+/// messages, its headings and bold heavier, its syntax faint, links and
+/// code coloured.
+pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
+    markup::shades(text)
+        .into_iter()
+        .map(|(range, shade)| {
+            let span = Span::new(range.start, range.end);
+            match shade {
+                Shade::Heading | Shade::Strong => span.weight(600.0),
+                Shade::Marker | Shade::Target => span.color(k.c.text_faint),
+                Shade::Link => span.color(k.c.text_accent),
+                Shade::Code => span.mono().color(k.c.text_muted),
+                Shade::Emphasis => span.italic(),
+            }
+        })
+        .collect()
+}
 
 pub fn head(key: &'static str) -> El {
     row()
