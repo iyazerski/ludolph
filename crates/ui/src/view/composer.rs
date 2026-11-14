@@ -28,6 +28,8 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let dictating = !matches!(page.voice, Voice::Idle);
     let field = text_input(&page.composer, k.ty.ui.lh(19.0))
         .key("composer")
+        .label("Message")
+        .description("Press Return to send. Press Shift-Return for a new line.")
         .w_full()
         .color(k.c.text_base)
         .placeholder(

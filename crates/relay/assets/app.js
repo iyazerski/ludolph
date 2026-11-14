@@ -1181,7 +1181,7 @@ function chatView(machine, id, fromList) {
   const questionSlot = h("div");
   msgs.append(working, questionSlot);
   const scroll = h("div", { class: "scroll" }, msgs);
-  const textarea = h("textarea", { rows: 1, placeholder: isDraft ? "Describe the task" : "Message" });
+  const textarea = h("textarea", { rows: 1, "aria-label": "Message", spellcheck: "true", placeholder: isDraft ? "Describe the task" : "Message" });
   const sendBtn = h("button", { class: "send", "aria-label": "Send", disabled: true }, icon("send"));
   // The browser's speech recognition, where it has one (Safari, Chrome).
   const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
