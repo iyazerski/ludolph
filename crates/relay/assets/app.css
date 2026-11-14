@@ -342,9 +342,11 @@ a { color: inherit; text-decoration: none; }
 .tools .cancelled { color: var(--tertiary); }
 .tools .call-output { margin-left: 32px; padding: 6px 0; color: var(--secondary); }
 .tools .rail { display: none; padding-top: 2px; }
-.worked > button { display: flex; align-items: center; height: 26px; font-size: 13.5px; color: var(--secondary); }
-.worked > button .chev { width: 14px; height: 14px; margin-left: 4px; transform: rotate(-90deg); transition: transform .14s ease-out; flex: none; }
-.worked.open > button .chev { transform: none; }
+.work-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; }
+.work-head > .turn-changes { margin-left: auto; }
+.work-head > button { display: flex; align-items: center; height: 26px; font-size: 13.5px; color: var(--secondary); }
+.work-head > button .chev { width: 14px; height: 14px; margin-left: 4px; transform: rotate(-90deg); transition: transform .14s ease-out; flex: none; }
+.worked.open > .work-head > button .chev { transform: none; }
 .worked > .body { display: none; }
 .worked.open > .body { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; }
 .worked-rule { height: 1px; background: var(--rail); }
@@ -596,8 +598,8 @@ a { color: inherit; text-decoration: none; }
 /* ---- turn changes ------------------------------------------------------- */
 
 .turn-changes {
-  display: inline-flex; align-self: flex-start; align-items: center; gap: 8px; height: 34px; padding: 0 10px;
-  margin-left: -10px; border-radius: 10px; font-size: 13.5px; color: var(--secondary);
+  display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; height: 30px; padding: 0 6px;
+  white-space: nowrap; border-radius: 10px; font-size: 13.5px; color: var(--secondary);
 }
 .turn-changes:active { background: var(--control); }
 .turn-changes .i { width: 16px; height: 16px; }

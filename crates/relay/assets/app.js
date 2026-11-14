@@ -1170,11 +1170,11 @@ function workedFor(ms) {
 }
 
 /** A finished turn's work before its answer, folded under how long it took. */
-function workedFold(ms, blocks, open, onToggle) {
+function workedFold(ms, blocks, open, onToggle, changes) {
   const fold = h("div", { class: `worked${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { fold.classList.toggle("open"); onToggle(fold.classList.contains("open")); haptic(4); } },
     h("span", {}, ms > 0 ? `Worked for ${workedFor(ms)}` : "Worked"), icon("chevDown", "chev"));
-  fold.append(head, h("div", { class: "body" }, ...blocks));
+  fold.append(h("div", { class: "work-head" }, head, changes), h("div", { class: "body" }, ...blocks));
   return fold;
 }
 
@@ -1705,7 +1705,7 @@ function chatView(machine, id, fromList) {
   // Prose, tool groups, and errors in transcript order, as on the desktop:
   // only the work under way shows open, and once the turn ends, what came
   // before its answer folds under how long it took.
-  function assistantMessage(m, isLast, startedAt) {
+  function assistantMessage(m, isLast, startedAt, changes) {
     const streaming = m.status === "streaming" || (isLast && isWorking());
     const parts = grouped(m.parts);
     const blocks = parts.map((p, i) => {
@@ -1724,8 +1724,10 @@ function chatView(machine, id, fromList) {
     if (!streaming && answer > 0) {
       const key = `${m.id}#worked`;
       const fold = workedFold(startedAt ? m.endedAt - startedAt : 0, blocks.slice(0, answer),
-        isOpen(key, false), on => openGroups.set(key, on));
+        isOpen(key, false), on => openGroups.set(key, on), changes && changesButton(changes));
       blocks.splice(0, answer, fold, h("div", { class: "worked-rule" }));
+    } else if (!streaming && changes) {
+      blocks.unshift(h("div", { class: "work-head" }, changesButton(changes)));
     }
     return h("div", { class: "msg assistant" }, ...blocks,
       m.status === "aborted" ? h("div", { class: "aborted" }, "Stopped") : null);
@@ -1743,18 +1745,17 @@ function chatView(machine, id, fromList) {
       if (m.role === "system") continue;
       if (m.role === "user") startedAt = m.createdAt;
       const isLast = m === last;
-      const sig = JSON.stringify([m.parts, m.status, isLast && isWorking(), expandTools, startedAt, m.endedAt]);
+      const changes = m.role === "assistant" && (!isLast || (!isWorking() && !read.pendingInput))
+        ? read.turnChanges.find(t => t.after === m.id) : null;
+      const sig = JSON.stringify([m.parts, m.status, isLast && isWorking(), expandTools, startedAt, m.endedAt, changes]);
       let entry = rendered.get(m.id);
       if (!entry || entry.sig !== sig) {
-        const node = m.role === "user" ? userBubble(m) : assistantMessage(m, isLast, startedAt);
+        const node = m.role === "user" ? userBubble(m) : assistantMessage(m, isLast, startedAt, changes);
         if (!entry && !firstPaint) node.classList.add("new");
         entry = { sig, node };
         rendered.set(m.id, entry);
       }
       nodes.push(entry.node);
-      // The latest turn's button waits until it's over and nothing is asked.
-      const changes = read.turnChanges.find(t => t.after === m.id);
-      if (changes && (!isLast || (!isWorking() && !read.pendingInput))) nodes.push(changesButton(changes));
     }
     // Drop optimistic bubbles once the transcript has the real message.
     pending = pending.filter(p => {
@@ -1888,7 +1889,7 @@ function chatView(machine, id, fromList) {
     let kept = changeButtons.get(c.turn);
     if (!kept || kept.sig !== sig) {
       kept = { sig, node: h("a", { class: "turn-changes", href: `${chatHash(machine, id)}/changes/${encodeURIComponent(c.turn)}` },
-        icon("diff"), h("span", {}, `${c.files} ${c.files === 1 ? "file" : "files"} changed`),
+        icon("diff"), h("span", {}, plural(c.files, "file", "files")),
         h("span", { class: "plus" }, `+${c.additions}`), h("span", { class: "minus" }, `−${c.deletions}`), icon("chevRight", "chev")) };
       changeButtons.set(c.turn, kept);
     }
