@@ -300,7 +300,7 @@ An open chat streams to the phone rather than being polled. The phone opens `GET
 
 The views are shared by both windows. They're today's Companion views, with the Companion's theme, syntax colors, animations, and activity rows, not Zeron's:
 
-- the chat view: transcript, tool-call rows, questions, copy buttons, links
+- the chat view: transcript, tool-call rows, questions, copy buttons, links. Read, Write and Edit file badges open with the file type's default macOS app. Relative paths use the chat's cwd, absolute and home-relative paths keep their meaning, and nested tool calls work the same way. File subjects preserve the original path; the UI alone truncates the label.
 - the turn changes page
 - the composer: images, dictation, skills, model, stop
 - the chat list rows and status filters

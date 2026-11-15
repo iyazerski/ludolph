@@ -173,6 +173,7 @@ fn details_follow_final_answers_on_the_current_branch_but_count_all_compactions(
 
 #[test]
 fn nested_calls_show_live_and_reopen_without_losing_their_own_outcomes() {
+    let read_path = format!("src/{}a  file.rs", "long-directory/".repeat(14));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.jsonl");
     std::fs::write(&path, format!("{HEADER}\n")).unwrap();
@@ -242,7 +243,7 @@ fn nested_calls_show_live_and_reopen_without_losing_their_own_outcomes() {
         "nestedCalls": {"calls": [
             {"id": "c1/1", "name": "bash", "arguments": {"command": "cargo test"}, "status": "ok", "durationMs": 10},
             {"id": "c1/2", "name": "mcp__check", "arguments": {"query": "diagnostics"}, "status": "error", "error": "permission denied"},
-            {"id": "c1/3", "name": "read", "arguments": {"path": "src/lib.rs"}, "status": "unfinished"}
+            {"id": "c1/3", "name": "read", "arguments": {"path": read_path}, "status": "unfinished"}
         ]},
         "details": {"calls": [
             {"id": "c1/1", "name": "bash", "args": "{truncated", "status": "ok"},
@@ -278,7 +279,7 @@ fn nested_calls_show_live_and_reopen_without_losing_their_own_outcomes() {
         "prefer recorded arguments over truncated display JSON"
     );
     assert_eq!(calls[1].error.as_deref(), Some("permission denied"));
-    assert_eq!(calls[3].subject.as_deref(), Some("src/lib.rs"));
+    assert_eq!(calls[3].subject.as_deref(), Some(read_path.as_str()));
     assert_eq!(
         calls[2].name, "models.classify",
         "preserve helper launch order"
@@ -295,7 +296,8 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("s1.jsonl");
     std::fs::write(&path, format!("{HEADER}\n")).unwrap();
-    let read = json!({"type": "toolCall", "id": "c3", "name": "read", "arguments": {"path": "src/a.rs", "content": "big"}});
+    let read_path = format!("src/{}a  file.rs", "long-directory/".repeat(14));
+    let read = json!({"type": "toolCall", "id": "c3", "name": "read", "arguments": {"path": read_path, "content": "big"}});
     append(
         &path,
         &[
@@ -382,7 +384,7 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
                     text("Looking."),
                     tool("c1", "bash", "cargo test", ToolState::Failed),
                     tool("c2", "bash", "ls", ToolState::Done),
-                    tool("c3", "read", "src/a.rs", ToolState::Done),
+                    tool("c3", "read", &read_path, ToolState::Done),
                     Part::Error {
                         error: "overloaded".into()
                     },

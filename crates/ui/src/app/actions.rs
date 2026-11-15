@@ -575,6 +575,18 @@ impl State {
         }
     }
 
+    pub fn open_chat_file(&mut self, path: &str) {
+        let Some(chat) = self
+            .chat()
+            .and_then(ChatPage::existing)
+            .and_then(|c| c.chat.as_ref())
+        else {
+            return;
+        };
+        let path = crate::paths::expand_home(&chat.cwd).join(crate::paths::expand_home(path));
+        self.open_path(path.to_string_lossy().into_owned());
+    }
+
     pub fn open_path(&mut self, path: String) {
         self.api.run(
             move |_| async move {

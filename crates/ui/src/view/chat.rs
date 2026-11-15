@@ -1105,6 +1105,7 @@ fn rail_row(
 }
 
 fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
+    let open = path.to_owned();
     let name = path
         .rsplit(['/', '\\'])
         .find(|s| !s.is_empty())
@@ -1119,6 +1120,11 @@ fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
         .center_y()
         .min_w(0.0)
         .fill(k.c.text_base.alpha(0.06))
+        .hover_group()
+        .role("link")
+        .label(format!("Open {name}"))
+        .help(path)
+        .on_press(move |s: &mut State| s.open_chat_file(&open))
         .child(
             rune::el()
                 .size(20.0, 20.0)
@@ -1137,6 +1143,11 @@ fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
                     tones(k).failed
                 } else {
                     k.c.text_base.alpha(0.85)
+                })
+                .group_color(if failed {
+                    tones(k).failed
+                } else {
+                    k.c.text_base
                 })
                 .truncate()
                 .min_w(0.0),
