@@ -1,14 +1,14 @@
-use std::sync::OnceLock;
-
-use rune::{El, SurfaceFit, col, el, row, text};
+use rune::{Color, El, SurfaceFit, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, Combobox, ComboboxOption, Kit, SegmentedControl, ShortcutRecorder,
     Switch, TextInput, shortcut_error_message,
 };
 
+use super::theme;
 use super::widgets::{busy, dot, model_options};
 use crate::app::{QR_SIZE, SettingsPage, State, Update};
 use crate::data::{LinkStatus, Notify, Pairing, RelayLink, SendBehavior};
+use crate::prefs::Accent;
 
 const MAX_WIDTH: f32 = 640.0;
 const PAD: f32 = 12.0;
@@ -19,8 +19,14 @@ const CONTROL: f32 = 300.0;
 const DEFAULT_MODEL: &str = "default";
 
 pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>) -> El {
-    let k = controls_kit(k);
-    let mut body = col().w_full().max_w(MAX_WIDTH).gap(8.0).px(24.0).py(20.0);
+    let mut body = col()
+        .w_full()
+        .max_w(MAX_WIDTH)
+        .gap(8.0)
+        .px(24.0)
+        .py(20.0)
+        .child(section(k, "Appearance"))
+        .child(group(k, vec![accents(s, k)]));
     match (&page.settings, &page.error) {
         (Some(_), _) => {
             body = body
@@ -57,6 +63,46 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
             stick_bottom: false,
         })
         .child(row().w_full().justify_center().child(body))
+}
+
+fn accents(s: &State, k: &Kit) -> El {
+    let current = s.prefs.borrow().accent;
+    let choices = row()
+        .role("radiogroup")
+        .label("Accent color")
+        .gap(8.0)
+        .children(Accent::ALL.map(|accent| {
+            let color = theme::get(k.dark, accent).base.c.bg_accent;
+            el().key(accent.name())
+                .role("radio")
+                .label(accent.name())
+                .checked(current == accent)
+                .focusable(true)
+                .focus_ring(2.0, 2.0, k.c.border_focus)
+                .size(28.0, 28.0)
+                .radius(14.0)
+                .border(
+                    2.0,
+                    if current == accent {
+                        color
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                )
+                .child(el().size(18.0, 18.0).radius(9.0).fill(color).a11y_hidden())
+                .items_center()
+                .justify_center()
+                .help(accent.name())
+                .on_press(move |s: &mut State| {
+                    s.prefs.borrow_mut().accent = accent;
+                    s.save_prefs();
+                })
+        }));
+    with_hint(
+        compact(k, "Accent color", None, choices),
+        k,
+        "Colors user messages, links and inline code in both windows.",
+    )
 }
 
 fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
@@ -512,17 +558,6 @@ fn group(k: &Kit, rows: Vec<El>) -> El {
         card = card.child(line);
     }
     card
-}
-
-fn controls_kit(k: &'static Kit) -> &'static Kit {
-    static LIGHT: OnceLock<Kit> = OnceLock::new();
-    static DARK: OnceLock<Kit> = OnceLock::new();
-    let cell = if k.dark { &DARK } else { &LIGHT };
-    cell.get_or_init(|| {
-        let mut controls = k.clone();
-        controls.c.bg_base = k.c.bg_base.mix(k.c.text_base, 0.035);
-        controls
-    })
 }
 
 fn wide(k: &Kit, label: &str, control: El) -> El {

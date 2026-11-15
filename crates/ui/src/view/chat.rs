@@ -336,7 +336,11 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
                     })
                     .collect();
                 started = Some(m.created_at);
-                out.push(user_bubble(k, &m.text(), images, Shade::Sent).key(key));
+                out.push(
+                    user_bubble(k, &m.text(), images, Shade::Sent)
+                        .child(footer(page, k, m))
+                        .key(key),
+                );
             }
             Role::Assistant => {
                 let streaming = m.status == MessageStatus::Streaming
@@ -457,7 +461,7 @@ fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
                 .px(12.0)
                 .py(8.0)
                 .radius(14.0)
-                .fill(k.c.layer_03)
+                .fill(super::theme::message_bg(k))
                 .opacity(opacity)
                 .child(body),
         );
@@ -741,7 +745,12 @@ fn toggle_group(s: &mut State, key: &str, open: bool) {
 
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     let mut out = row().w_full().gap(8.0).center_y();
-    if m.has_answer() {
+    if m.role == Role::User {
+        out = out.justify_end();
+    }
+    if m.has_answer()
+        || (m.role == Role::User && m.parts.iter().any(|p| matches!(p, Part::Text { .. })))
+    {
         let copied = page.just_copied(&m.id);
         let id = m.id.clone();
         out = out.child(
@@ -749,8 +758,12 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .variant(IconButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
                 .label(if copied { "Copied" } else { "Copy" })
-                .help("Copy the answer")
-                .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_answer(&id, tx))
+                .help(if m.role == Role::User {
+                    "Copy the message"
+                } else {
+                    "Copy the answer"
+                })
+                .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_message(&id, tx))
                 .build(k),
         );
     }
@@ -1092,6 +1105,7 @@ fn rail_row(
 }
 
 fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
+    let open = path.to_owned();
     let name = path
         .rsplit(['/', '\\'])
         .find(|s| !s.is_empty())
@@ -1106,6 +1120,11 @@ fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
         .center_y()
         .min_w(0.0)
         .fill(k.c.text_base.alpha(0.06))
+        .hover_group()
+        .role("link")
+        .label(format!("Open {name}"))
+        .help(path)
+        .on_press(move |s: &mut State| s.open_chat_file(&open))
         .child(
             rune::el()
                 .size(20.0, 20.0)
@@ -1124,6 +1143,11 @@ fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
                     tones(k).failed
                 } else {
                     k.c.text_base.alpha(0.85)
+                })
+                .group_color(if failed {
+                    tones(k).failed
+                } else {
+                    k.c.text_base
                 })
                 .truncate()
                 .min_w(0.0),

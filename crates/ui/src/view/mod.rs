@@ -12,6 +12,7 @@ mod project;
 mod queue;
 mod settings;
 mod sidebar;
+mod theme;
 mod widgets;
 
 use rune::{Color, Cx, El, Key, KeyEvent, SystemMaterial, Tx, col};
@@ -31,7 +32,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
 }
 
 fn quick(s: &State, cx: &mut Cx<State>) -> El {
-    let k = rune_theme_opencode::kit(cx.system_dark());
+    let theme = theme::get(cx.system_dark(), s.prefs.borrow().accent);
+    let k = &theme.base;
     let mut layer = Vec::new();
     let page = match &s.page {
         Page::List | Page::Settings(_) => list::view(s, k),

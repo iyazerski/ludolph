@@ -232,7 +232,7 @@ The Mac shows a details card beside an existing chat in the main window. Its hea
 
 ## Turn changes
 
-A completed turn's diff button sits at the right of its Worked header, above the final answer. A reply without folded work shows the button in the same position, without a Worked label. On Mac, the Copy action and timestamp stay visible below the answer, in that order. Messages have more space between them on Mac and phone, while work rows within a reply stay compact. Mac work, thought and wrapper toggles, context usage, and the turn diff action brighten their text and icons on hover or keyboard focus without a background highlight. Error colors and diff counts keep their meaning. A trailing compaction stays a separate note and doesn't take the reply's button.
+A completed turn's diff button sits at the right of its Worked header, above the final answer. A reply without folded work shows the button in the same position, without a Worked label. On Mac, the Copy action and timestamp stay visible below sent user messages and finished answers, in that order. User-message footers align to the right. Copy takes the whole user message, but only the final answer from an assistant reply. Messages have more space between them on Mac and phone, while work rows within a reply stay compact. Mac work, thought and wrapper toggles, model and reasoning pickers, the new-chat project picker, context usage, and the turn diff action brighten their text and icons on hover or keyboard focus without a background highlight. Error colors and diff counts keep their meaning. A trailing compaction stays a separate note and doesn't take the reply's button.
 
 The app shows what each run changed, as zeron-tools does now. A run is everything from the prompt that starts it until pi settles, including any steering messages sent in between. pi's own `turn_start` is one assistant response, which is too small a unit, and the engine can't pause pi to take a snapshot in the middle of a run.
 
@@ -300,7 +300,7 @@ An open chat streams to the phone rather than being polled. The phone opens `GET
 
 The views are shared by both windows. They're today's Companion views, with the Companion's theme, syntax colors, animations, and activity rows, not Zeron's:
 
-- the chat view: transcript, tool-call rows, questions, copy buttons, links
+- the chat view: transcript, tool-call rows, questions, copy buttons, links. Read, Write and Edit file badges open with the file type's default macOS app. Relative paths use the chat's cwd, absolute and home-relative paths keep their meaning, and nested tool calls work the same way. File subjects preserve the original path; the UI alone truncates the label.
 - the turn changes page
 - the composer: images, dictation, skills, model, stop
 - the chat list rows and status filters
@@ -323,6 +323,7 @@ The engine keeps most of them, since it's the one using them and it runs while t
 - Send while working (`sendBehavior`: `queue`, the default, or `steer`), shared by Mac and phone
 - Phone: link a phone with a QR code, see whether the link is connected, or unlink (`link_phone`, `stop_linking_phone`, `get_phone_link`, `unlink_phone`; see "Phone and relay")
 - Tool calls collapsed or expanded (`expandTools`): the engine's, so both windows and the phone draw them alike. A reply's work between two texts, its tool calls and thinking, is one group on a rail. The setting only decides whether the group under way shows open while the agent works; a group folds once the agent writes again, and a click opens or closes one group either way. Once a turn ends, everything before its last text folds under **Worked for 6m 56s** over a rule, whatever the setting.
+- Accent color: blue (default), purple, pink, orange, green or gray, saved in `ui.json` and shared by both Mac windows. It tints user-message bubbles and colors links and inline code, including the composer. Light and dark appearances use separate link inks, with at least 4.5:1 contrast for body text, links and code on the chat and bubble surfaces. Fenced code keeps its syntax palette.
 - Global shortcut: the app's own, since it registers it, so it's in `ui.json`. The recorder registers the new chord before it lets the old one go, so a chord another app holds is refused and the old one stays. If the saved one is taken when the app starts, the page says so.
 
 ## Phone and relay

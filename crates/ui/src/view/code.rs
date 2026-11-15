@@ -1,5 +1,5 @@
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::LazyLock;
 
 use pulldown_cmark::{Event, Options, Parser};
@@ -10,6 +10,7 @@ use rune_kit::markdown::{Highlight, MarkdownStyle, Syntax};
 
 use super::breaks::ZWSP;
 use crate::app::FileLinks;
+use crate::paths::expand_home;
 
 /// The Markdown options Rune's Markdown parses with, so source ranges found
 /// here match its own.
@@ -67,7 +68,7 @@ pub fn inline_code_marks(
     src: &str,
     link: impl Fn(&str) -> Option<String>,
 ) -> Vec<(Range<usize>, Highlight)> {
-    let color = palette(k)[0].1;
+    let color = super::theme::inline_code(k);
     inline_code(src)
         .into_iter()
         .filter(|r| link(src[r.clone()].trim_matches('`').trim()).is_none())
@@ -111,16 +112,6 @@ fn file_link(code: &str, cwd: &Path) -> Option<String> {
     }
     let full = cwd.join(expand_home(path));
     full.exists().then(|| full.to_string_lossy().into_owned())
-}
-
-fn expand_home(path: &str) -> PathBuf {
-    match path.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME").map_or_else(
-            || PathBuf::from(path),
-            |home| PathBuf::from(home).join(rest),
-        ),
-        None => PathBuf::from(path),
-    }
 }
 
 fn palette(k: &Kit) -> &'static [(Syntax, Color)] {
