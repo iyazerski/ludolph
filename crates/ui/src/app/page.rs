@@ -33,6 +33,7 @@ pub struct ChatPage {
     pub queue_edit: Option<QueueEdit>,
     pub attached: Vec<Attached>,
     pub far_from_bottom: bool,
+    pub transcript_height: f32,
     pub voice: Voice,
     /// Edits aimed at a field that's gone (an answered question) land here.
     pub(super) scratch: TextEdit,
@@ -88,6 +89,8 @@ pub struct Existing {
     pub queued: Vec<Queued>,
     pub error: Option<String>,
     pub pending: Vec<Pending>,
+    /// The locally sent prompt held at the top, first by send time, then pi's timestamp.
+    pub top_message: Option<i64>,
     /// The folds the user opened (`true`) or closed, by key; the rest show
     /// as their kind does by default.
     pub open_groups: HashMap<String, bool>,
@@ -159,7 +162,7 @@ pub struct Pending {
     pub images: Vec<Option<Image>>,
     /// When it was sent, in epoch milliseconds, so an older message with the
     /// same text doesn't stand for it.
-    pub(super) at: i64,
+    pub at: i64,
 }
 
 pub struct QuestionForm {
@@ -183,6 +186,7 @@ impl ChatPage {
             queue_edit: None,
             attached: Vec::new(),
             far_from_bottom: false,
+            transcript_height: 0.0,
             voice: Voice::Idle,
             scratch: TextEdit::default(),
             next_dictation: 0,
@@ -308,6 +312,7 @@ impl Existing {
             queued: Vec::new(),
             error: None,
             pending: Vec::new(),
+            top_message: None,
             open_groups: HashMap::new(),
             wrapped_code: HashSet::new(),
             tool_outputs: HashMap::new(),
@@ -335,6 +340,16 @@ impl Existing {
             .flat_map(|r| r.steering.iter().chain(&r.follow_up))
             .map(|t| t.trim())
             .collect();
+        if let Some(pending) = self.pending.iter().find(|p| Some(p.at) == self.top_message) {
+            if let Some(message) = page
+                .iter()
+                .find(|m| pending.written(std::slice::from_ref(m)))
+            {
+                self.top_message = Some(message.created_at);
+            } else if pending.images.is_empty() && queued.contains(&pending.text.as_str()) {
+                self.top_message = None;
+            }
+        }
         self.pending.retain(|p| {
             let arrived = p.written(page);
             !arrived && !(p.images.is_empty() && queued.contains(&p.text.as_str()))

@@ -89,7 +89,7 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         Target::New(_) => body.child(hero(k)),
         Target::Existing(chat) => {
             let expanded = s.expand_tools.get();
-            body.children(transcript(chat, k, expanded))
+            body.children(transcript(chat, k, expanded, page.transcript_height))
         }
     };
     let mut scroll = col()
@@ -97,8 +97,21 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .scroll(ScrollSpec { stick_bottom: true })
+        .scroll(ScrollSpec {
+            stick_bottom: page
+                .existing()
+                .is_none_or(|chat| chat.top_message.is_none()),
+        })
         .scroll_anchor()
+        .on_layout_tx(|s: &mut State, [_, _, _, height], tx| {
+            if let Some(page) = s.chat_mut() {
+                if (page.transcript_height - height).abs() < 0.5 {
+                    tx.live_only();
+                } else {
+                    page.transcript_height = height;
+                }
+            }
+        })
         .on_far_from_bottom(160.0, |s: &mut State, far| {
             if let Some(page) = s.chat_mut() {
                 page.far_from_bottom = far;
@@ -113,7 +126,12 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         let jump = IconButton::new(&icons::CHEV_DOWN)
             .variant(IconButtonVariant::Neutral)
             .label("Scroll to bottom")
-            .on_press_tx(|_: &mut State, tx: &mut Tx| tx.scroll_to_bottom("transcript"))
+            .on_press_tx(|s: &mut State, tx: &mut Tx| {
+                if let Some(chat) = s.chat_mut().and_then(ChatPage::existing_mut) {
+                    chat.top_message = None;
+                }
+                tx.scroll_to_bottom("transcript");
+            })
             .build(k);
         stack = stack.child(
             row()
@@ -299,7 +317,7 @@ fn errbox(k: &Kit, why: &str) -> El {
         )
 }
 
-fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
+fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> {
     let Some(shown) = &page.page else {
         return vec![
             row()
@@ -324,10 +342,14 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
     }
     let last = shown.last().map(|m| m.id.as_str());
     let mut started = None;
+    let mut top = None;
     for m in page.messages() {
         let key = format!("m-{}", m.id);
         match m.role {
             Role::User => {
+                if page.top_message == Some(m.created_at) {
+                    top = Some(out.len());
+                }
                 let images = m
                     .images()
                     .map(|i| {
@@ -352,6 +374,9 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
         }
     }
     for (i, p) in page.pending.iter().enumerate() {
+        if page.top_message == Some(p.at) {
+            top = Some(out.len());
+        }
         let images = p.images.iter().map(|t| (t.as_ref(), None)).collect();
         out.push(
             user_bubble(
@@ -395,6 +420,18 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
     }
     if let Some(form) = &page.question {
         out.push(question(k, form).key(format!("q-{}", form.dialog.id)));
+    }
+    if let Some(top) = top {
+        let turn = out.split_off(top);
+        // Leave enough room below a new prompt to align it with the viewport's top.
+        out.push(
+            col()
+                .key("sent-turn")
+                .w_full()
+                .gap(32.0)
+                .min_h((height - 20.0).max(0.0))
+                .children(turn),
+        );
     }
     out
 }
