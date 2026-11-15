@@ -1,0 +1,7 @@
+{
+  "name": "ludolph-phone",
+  "private": true,
+  "devDependencies": {
+    "happy-dom": "21.0.4"
+  }
+}

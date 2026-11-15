@@ -19,9 +19,11 @@ make install   # build Ludolph.app and put it in /Applications
 
 The development engine and app don't touch the installed ones, but the installed app keeps the ⌃⌥Space shortcut. `make install` signs with a local identity it makes on first use, so macOS keeps the microphone grant across installs.
 
+For phone UI changes, install [Bun](https://bun.sh), run `bun install`, then `bun test crates/relay/tests`. The UI tests use a local DOM and simulated relay, not your linked Mac.
+
 Before you open a pull request:
 
-1. Install the hooks with [prek](https://github.com/j178/prek): `prek install`. They run `cargo fmt`, `cargo check` and `cargo clippy`.
+1. Install the hooks with [prek](https://github.com/j178/prek): `prek install`. They run the phone tests, `cargo fmt`, `cargo check` and `cargo clippy`.
 2. Run `make test`.
 3. If you changed dependencies, run `make licenses` and commit `THIRD_PARTY_LICENSES.md`. It needs [cargo-about](https://github.com/EmbarkStudios/cargo-about).
 4. Keep pull requests small and focused on one change.
