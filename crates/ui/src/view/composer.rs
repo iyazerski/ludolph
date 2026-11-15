@@ -378,24 +378,32 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
     let label = model.map_or("Default model".to_owned(), |id| s.catalog.label(id));
     let models = s.catalog.ready().unwrap_or_default();
     let options = model_options(models);
-    let trigger = k.interactive(
-        row()
-            .gap(5.0)
-            .px(6.0)
-            .py(3.0)
-            .radius(7.0)
-            .center_y()
-            .min_w(0.0)
-            .max_w(210.0)
-            .child(icon(icons::mark(model.unwrap_or_default()), 13.0).color(k.c.icon_muted))
-            .child(
-                text(label)
-                    .font(k.ty.small_medium)
-                    .color(k.c.text_muted)
-                    .truncate(),
-            )
-            .child(icon(k.glyph.chevron_down, 10.0).color(k.c.icon_faint)),
-    );
+    let trigger = row()
+        .gap(5.0)
+        .px(6.0)
+        .py(3.0)
+        .radius(7.0)
+        .center_y()
+        .min_w(0.0)
+        .max_w(210.0)
+        .hover_group()
+        .child(
+            icon(icons::mark(model.unwrap_or_default()), 13.0)
+                .color(k.c.icon_muted)
+                .group_color(k.c.text_base),
+        )
+        .child(
+            text(label)
+                .font(k.ty.small_medium)
+                .color(k.c.text_muted)
+                .group_color(k.c.text_base)
+                .truncate(),
+        )
+        .child(
+            icon(k.glyph.chevron_down, 10.0)
+                .color(k.c.icon_faint)
+                .group_color(k.c.text_base),
+        );
     let picker = Combobox::new(
         "composer-model",
         &page.model_picker,
@@ -443,20 +451,24 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
     .label("Reasoning")
     .current(chosen)
     .trigger(
-        k.interactive(
-            row()
-                .gap(4.0)
-                .px(4.0)
-                .py(3.0)
-                .radius(7.0)
-                .center_y()
-                .child(
-                    text(chosen.map_or("Loading…".to_owned(), reasoning_name))
-                        .font(k.ty.small)
-                        .color(k.c.text_faint),
-                )
-                .child(icon(k.glyph.chevron_down, 10.0).color(k.c.icon_faint)),
-        ),
+        row()
+            .gap(4.0)
+            .px(4.0)
+            .py(3.0)
+            .radius(7.0)
+            .center_y()
+            .child(
+                text(chosen.map_or("Loading…".to_owned(), reasoning_name))
+                    .font(k.ty.small)
+                    .color(k.c.text_faint)
+                    .group_color(k.c.text_base),
+            )
+            .child(
+                icon(k.glyph.chevron_down, 10.0)
+                    .color(k.c.icon_faint)
+                    .group_color(k.c.text_base),
+            )
+            .hover_group(),
     )
     .placement(Placement::TopStart)
     .width(180.0)

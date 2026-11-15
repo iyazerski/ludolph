@@ -17,22 +17,21 @@ pub fn picker(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .projects
         .iter()
         .find(|p| Some(&p.id) == draft.project.as_ref());
-    let trigger = k
-        .interactive(
-            row()
-                .gap(5.0)
-                .px(6.0)
-                .py(3.0)
-                .radius(7.0)
-                .center_y()
-                .child(tile(k, selected, 13.0))
-                .child(
-                    text(selected.map_or("No project", |p| p.name.as_str()))
-                        .font(k.ty.small)
-                        .color(k.c.text_muted)
-                        .truncate(),
-                ),
+    let trigger = row()
+        .gap(5.0)
+        .px(6.0)
+        .py(3.0)
+        .radius(7.0)
+        .center_y()
+        .child(tile(k, selected, 13.0))
+        .child(
+            text(selected.map_or("No project", |p| p.name.as_str()))
+                .font(k.ty.small)
+                .color(k.c.text_muted)
+                .group_color(k.c.text_base)
+                .truncate(),
         )
+        .hover_group()
         .key("project-chip")
         .label("Project")
         .on_press(|s: &mut State| {
