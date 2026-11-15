@@ -6,6 +6,8 @@ mod draft;
 mod page;
 mod queue;
 mod settings;
+#[cfg(test)]
+mod ui_tests;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;

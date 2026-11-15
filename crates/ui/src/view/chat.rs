@@ -1,4 +1,4 @@
-use rune::{Color, El, Link, ScrollSpec, TextStyle, Tx, col, el, icon, rich, row, text};
+use rune::{Color, El, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Markdown, Menu,
@@ -337,7 +337,7 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
                     .collect();
                 started = Some(m.created_at);
                 out.push(
-                    user_bubble(k, &m.text(), images, Shade::Sent)
+                    user_bubble(page, k, &m.id, &m.text(), images, Shade::Sent)
                         .child(footer(page, k, m))
                         .key(key),
                 );
@@ -353,14 +353,34 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
     }
     for (i, p) in page.pending.iter().enumerate() {
         let images = p.images.iter().map(|t| (t.as_ref(), None)).collect();
-        out.push(user_bubble(k, &p.text, images, Shade::Pending).key(format!("pending-{i}")));
+        out.push(
+            user_bubble(
+                page,
+                k,
+                &format!("pending-{i}"),
+                &p.text,
+                images,
+                Shade::Pending,
+            )
+            .key(format!("pending-{i}")),
+        );
     }
     let queued = page
         .run
         .iter()
         .flat_map(|r| r.steering.iter().chain(&r.follow_up));
     for (i, text) in queued.enumerate() {
-        out.push(user_bubble(k, text, Vec::new(), Shade::Queued).key(format!("queued-{i}")));
+        out.push(
+            user_bubble(
+                page,
+                k,
+                &format!("queued-{i}"),
+                text,
+                Vec::new(),
+                Shade::Queued,
+            )
+            .key(format!("queued-{i}")),
+        );
     }
     if let Some(note) = run_note(k, page.run.as_ref()) {
         out.push(note.key("run-note"));
@@ -423,11 +443,16 @@ enum Shade {
 
 type Tile<'a> = (Option<&'a Image>, Option<(String, usize)>);
 
-fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
+fn user_bubble(
+    page: &Existing,
+    k: &Kit,
+    key: &str,
+    text_in: &str,
+    images: Vec<Tile>,
+    shade: Shade,
+) -> El {
     let opacity = if shade == Shade::Sent { 1.0 } else { 0.6 };
     let shown = text_in.trim().to_owned();
-    let spans = super::widgets::markdown_spans(k, &shown);
-    let links = crate::markup::links(&shown);
     let mut out = col().w_full().pl(40.0).items_end().gap(4.0);
     if !images.is_empty() {
         out = out.child(row().gap(6.0).children(images.into_iter().enumerate().map(
@@ -445,26 +470,8 @@ fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
         )));
     }
     if !shown.is_empty() {
-        let mut body = rich(shown, spans)
-            .font(k.ty.ui)
-            .color(k.c.text_base)
-            .wrap_anywhere()
-            .selectable(true);
-        for (range, url) in links {
-            body = body.link(Link::new(range, url));
-        }
-        body = body.on_link(|s: &mut State, url: &str, tx: &mut Tx| s.open_link(url, tx));
-        out = out.child(
-            col()
-                .shrink()
-                .min_w(0.0)
-                .px(12.0)
-                .py(8.0)
-                .radius(14.0)
-                .fill(super::theme::message_bg(k))
-                .opacity(opacity)
-                .child(body),
-        );
+        let body = code::user_message(page, k, &shown, key);
+        out = out.child(body.opacity(opacity));
     }
     if shade == Shade::Queued {
         out = out.child(text("Queued").font(k.ty.text_xsmall).color(k.c.text_faint));
@@ -577,7 +584,15 @@ fn assistant(
         }
         out = out.children(match piece {
             Piece::Part(i, Part::Text { text }) => vec![
-                prose(page, k, style, text, streaming && i == last).key(format!("{}#{i}", m.id)),
+                prose(
+                    page,
+                    k,
+                    style,
+                    &format!("{}#{i}", m.id),
+                    text,
+                    streaming && i == last,
+                )
+                .key(format!("{}#{i}", m.id)),
             ],
             Piece::Part(_, Part::Error { error }) => vec![errbox(k, error)],
             Piece::Part(_, Part::Note { text }) => vec![note(k, text)],
@@ -612,7 +627,14 @@ fn assistant(
     out
 }
 
-fn prose(page: &Existing, k: &Kit, style: &MarkdownStyle, text: &str, streaming: bool) -> El {
+fn prose(
+    page: &Existing,
+    k: &Kit,
+    style: &MarkdownStyle,
+    key: &str,
+    text: &str,
+    streaming: bool,
+) -> El {
     let soft = breaks::breakable(text);
     let shown = soft.as_deref().unwrap_or(text);
     let links = page
@@ -633,7 +655,7 @@ fn prose(page: &Existing, k: &Kit, style: &MarkdownStyle, text: &str, streaming:
     if let Some(links) = links {
         md = md.code_link(k.c.text_accent, links);
     }
-    let md = md.build(k);
+    let md = code::frames(md, page, k, key).build(k);
     match soft {
         Some(_) => col()
             .w_full()
