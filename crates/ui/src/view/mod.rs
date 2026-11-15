@@ -1,7 +1,3 @@
-//! What the windows draw, and their keys: the quick window's chat list or
-//! chat page, the main window's sidebar and chat ([`main_window`]), each
-//! under the toast.
-
 mod breaks;
 mod changes;
 mod chat;
@@ -38,7 +34,6 @@ fn quick(s: &State, cx: &mut Cx<State>) -> El {
     let k = rune_theme_opencode::kit(cx.system_dark());
     let mut layer = Vec::new();
     let page = match &s.page {
-        // The quick window hands the settings to the main one.
         Page::List | Page::Settings(_) => list::view(s, k),
         Page::Chat(page) => chat::view(s, page, k, &mut layer),
     };
@@ -69,7 +64,6 @@ fn quick(s: &State, cx: &mut Cx<State>) -> El {
     rune_kit::root(body, layer)
 }
 
-/// The window's toast, if it shows one.
 fn toast(s: &State, k: &Kit) -> Option<El> {
     let t = s.toast.as_ref()?;
     let mut toast = Toast::new("toast", t.title.clone());
@@ -159,7 +153,6 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
         .chat()
         .and_then(ChatPage::existing)
         .is_some_and(|c| c.changes.is_some());
-    // Its hunk and file keys, and copying its selected lines.
     if changes && s.diff_mut().key(key, tx) {
         return true;
     }
@@ -175,7 +168,6 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
         Some(page) if page.overlay != Overlay::Closed => page.overlay = Overlay::Closed,
         Some(page) if page.queue_edit.is_some() => page.cancel_queue_edit(),
         _ if changes || details => s.back(),
-        // Escape puts the floating window away; a regular window stays.
         _ if quick => s.hide(),
         _ => return false,
     }

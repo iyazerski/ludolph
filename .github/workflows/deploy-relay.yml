@@ -1,8 +1,5 @@
 name: Deploy relay
 
-# Deploys the maintainer's relay. It runs only where the RELAY_PUBLIC_HOST
-# variable and the KUBE_CONFIG_B64 secret are set, so forks skip it.
-
 on:
   push:
     branches: ["main"]
@@ -38,7 +35,6 @@ jobs:
       APP_IMAGE: ghcr.io/${{ github.repository }}/relay:${{ github.sha }}
       NAMESPACE: ${{ vars.KUBE_NAMESPACE || 'default' }}
       PUBLIC_HOST: ${{ vars.RELAY_PUBLIC_HOST }}
-      # The cluster's secret for pulling from ghcr.io, if the image is private.
       PULL_SECRET: ${{ vars.KUBE_PULL_SECRET }}
     steps:
       - uses: actions/checkout@v7
@@ -76,9 +72,7 @@ jobs:
           echo "${KUBE_CONFIG_B64}" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
 
-      # The cluster already has cert-manager's letsencrypt-prod ClusterIssuer.
       - name: Record running release
-        # Remember the live revision, so a failed deploy or smoke check can restore it.
         run: scripts/release_guard.sh record deployment/ludolph-relay
 
       - name: Deploy

@@ -1,7 +1,3 @@
-//! The composer under a chat: the text and its images, its `$` skill menu,
-//! the model chip with its picker, a new chat's project, the branch, the
-//! context ring, dictation, and Send.
-
 use rune::{El, Image, Key, KeyEvent, SurfaceFit, Tx, auto_grow, col, icon, row, text, text_input};
 use rune_kit::{
     Combobox, ComboboxOption, IconButton, IconButtonVariant, Kit, Placement, PopupItem, PopupList,
@@ -15,7 +11,6 @@ use crate::labels::{context_readout, reasoning_name};
 use crate::markup;
 use ludolph_prompt::skill_query;
 
-/// The `$` menu's width, in points.
 const SKILL_MENU_WIDTH: f32 = 320.0;
 
 pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -85,7 +80,6 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     )
     .on_press_tx(move |s: &mut State, tx: &mut Tx| if stop { s.stop() } else { s.send(tx) })
     .build(k)
-    // Round: a regular icon button is 24 points square.
     .radius(12.0);
     let listening = page.voice.listening().is_some();
     let dictate = IconButton::new(&icons::MIC)
@@ -119,7 +113,6 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .pt(12.0)
         .pb(8.0)
         .radius(16.0)
-        // A faint tint over the window's own glass: the transcript never scrolls under it.
         .fill(k.c.text_base.alpha(0.035))
         .border(1.0, k.c.border_base);
     if let Some(edit) = editing {
@@ -171,9 +164,6 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     dock.child(footer)
 }
 
-/// While dictating, what stands in for the text, as in Codex: a waveform of
-/// the microphone's loudness and the time, then a spinner while the words are
-/// cleaned up. The raw words never show.
 fn recorder(page: &ChatPage, k: &Kit) -> Option<El> {
     let line = row().key("recorder").w_full().h(19.0).gap(10.0).center_y();
     if matches!(page.voice, Voice::Polishing) {
@@ -195,8 +185,6 @@ fn recorder(page: &ChatPage, k: &Kit) -> Option<El> {
     let secs = d.started.elapsed().as_secs();
     Some(
         line.child(
-            // Newest on the right, the oldest fading out on the left. As wide
-            // as the readings kept, which fits the narrowest window.
             row()
                 .w(LEVELS_KEPT as f32 * 4.0 - 2.0)
                 .h(19.0)
@@ -215,7 +203,6 @@ fn recorder(page: &ChatPage, k: &Kit) -> Option<El> {
     )
 }
 
-/// The composer's images: a spinner while one saves, red when it didn't.
 fn attachments(page: &ChatPage, k: &Kit) -> El {
     row()
         .w_full()
@@ -255,7 +242,6 @@ fn attachments(page: &ChatPage, k: &Kit) -> El {
         }))
 }
 
-/// An image cropped to a square tile, or an empty tile while it decodes.
 pub fn thumb(k: &Kit, image: Option<&Image>, size: f32) -> El {
     let tile = rune::el()
         .size(size, size)
@@ -269,7 +255,6 @@ pub fn thumb(k: &Kit, image: Option<&Image>, size: f32) -> El {
     }
 }
 
-/// The `$` word at the caret, unless Escape closed its menu.
 fn query(page: &ChatPage) -> Option<(usize, String)> {
     let edit = &page.composer;
     if !edit.focused || edit.anchor != edit.focus {
@@ -278,8 +263,6 @@ fn query(page: &ChatPage) -> Option<(usize, String)> {
     skill_query(&edit.text, edit.focus).filter(|(start, _)| page.skills.dismissed != Some(*start))
 }
 
-/// The skills that match the `$` word: names that start with it first. `None`
-/// hides the menu, as for a `$` word no skill matches (a price).
 fn matching<'a>(page: &'a ChatPage, q: &str) -> Option<Result<Vec<&'a Skill>, &'a str>> {
     match &page.skills.list {
         SkillList::Loading => Some(Ok(Vec::new())),
@@ -292,7 +275,6 @@ fn matching<'a>(page: &'a ChatPage, q: &str) -> Option<Result<Vec<&'a Skill>, &'
                     name.contains(q).then(|| (!name.starts_with(q), s))
                 })
                 .collect();
-            // Stable: names that start with the query first, each in list order.
             found.sort_by_key(|&(later, _)| later);
             let found: Vec<&Skill> = found.into_iter().map(|(_, s)| s).collect();
             (!found.is_empty() || q.is_empty() || skills.is_empty()).then_some(Ok(found))
@@ -341,7 +323,6 @@ fn composer_key(s: &mut State, key: &KeyEvent, _: &mut Tx) -> bool {
     true
 }
 
-/// Replace the `$` word at the caret with the skill's name.
 fn pick_skill(s: &mut State, name: &str) {
     let Some(page) = s.chat_mut() else { return };
     let Some((start, _)) = query(page) else {
@@ -358,7 +339,6 @@ fn pick_skill(s: &mut State, name: &str) {
     page.skills.active = 0;
 }
 
-/// The `$` menu over the composer. Keys stay in the field (`composer_key`).
 fn skill_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
     let Some((_, q)) = query(page) else { return };
     let Some(found) = matching(page, &q) else {
@@ -392,7 +372,6 @@ fn skill_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
-/// Use the settings combobox in place, so choosing a model never covers the chat.
 fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let Config { model, reasoning } = s.config();
     let model = model.or(s.catalog.default_model());
@@ -508,7 +487,6 @@ fn meta(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         out = out.child(super::project::picker(page, k, layer));
     }
     let Some(info) = &page.info else { return out };
-    // A set checkout means a git project, the only place the branch shows.
     if info.checkout.is_none() {
         return out;
     }
@@ -527,7 +505,6 @@ fn meta(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     )
 }
 
-/// Toggle between the context ring and compact usage/cost figures.
 fn context(page: &ChatPage, k: &Kit) -> El {
     let Some(usage) = page.info.as_ref().and_then(|i| i.context_usage) else {
         return rune::el();

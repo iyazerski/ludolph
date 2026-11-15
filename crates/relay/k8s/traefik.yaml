@@ -26,7 +26,6 @@ spec:
     stsIncludeSubdomains: true
     referrerPolicy: no-referrer
 ---
-# Per client IP. The app polls about twice a second per open chat.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:

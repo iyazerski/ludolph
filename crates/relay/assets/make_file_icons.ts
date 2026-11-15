@@ -1,7 +1,4 @@
-// Writes file-icons.js: the colour file-type badges Zeron shows on its tool
-// rows, for the names and extensions agents touch most. They come from
-// rune-theme-opencode's catalog (the one the Companion draws), so both look
-// the same. Run: bun make_file_icons.ts <rune checkout>/themes/opencode/src/file_icons/catalog.rs
+// Run: bun make_file_icons.ts <rune checkout>/themes/opencode/src/file_icons/catalog.rs
 
 const NAMES = [
   "readme.md", "license", "package.json", "dockerfile", "makefile", ".gitignore", "cargo.toml", "cargo.lock",
@@ -18,7 +15,6 @@ const icons = new Map<string, { view: number; body: string }>();
 for (const m of src.matchAll(/static (\w+): Icon = Icon \{\s*name: "[^"]*",\s*view: ([\d.]+),\s*body: r##"([\s\S]*?)"##,/g)) {
   icons.set(m[1], { view: Number(m[2]), body: m[3] });
 }
-/** The `key => &ICON` arms of the catalog's `fn <name>`. */
 function table(fn: string): Map<string, string> {
   const start = src.indexOf(`fn ${fn}(`);
   const body = src.slice(start, src.indexOf("\n}\n", start));

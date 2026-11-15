@@ -1,5 +1,3 @@
-//! Revisions of the files that determine pi's available models.
-
 use std::io::ErrorKind;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -11,7 +9,6 @@ use anyhow::Result;
 pub(crate) struct Sources([Option<(u64, u64, i64, i64)>; 3]);
 
 impl Sources {
-    /// Read revisions, treating absent files as unconfigured sources.
     pub(super) fn read(files: &[PathBuf; 3]) -> Result<Self> {
         let mut revisions = [None; 3];
         for (slot, path) in revisions.iter_mut().zip(files) {

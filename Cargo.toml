@@ -33,15 +33,12 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
-# The relay's session cookie and a Mac's Bearer token.
 axum-extra = { version = "0.12", default-features = false, features = ["cookie", "typed-header"] }
 base64 = "0.23"
-# The composer's dictation: the microphone and Apple's speech recognizer.
 block2 = "0.6"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-# Shrinks image thumbnails before Rune keeps them; matches Rune's own image build.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 dispatch2 = { version = "0.3", default-features = false, features = ["alloc"] }
 libc = "0.2"
@@ -58,18 +55,12 @@ objc2-io-kit = { version = "0.3", default-features = false, features = ["libc", 
 objc2-core-services = { version = "0.3", default-features = false, features = ["FSEvents", "dispatch2", "std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
 objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-avf-audio", "SFSpeechRecognitionMetadata", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognizer", "SFTranscription"] }
-# The QR code a phone scans to link, drawn as SVG for Rune to rasterize.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-# launchd's plists: the engine's job and the app's login item.
 plist = { version = "1", default-features = false, features = ["serde"] }
-# Finds inline code in the transcript's Markdown, to colour it, and writes
-# the HTML a copy puts beside the plain text.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
-# Compares the app's version with the latest release's.
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-# The relay's Web Push: rustls on ring, which also signs the VAPID tokens.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 ring = "0.17"
 # The windows. Rune is pre-release and changes often: keep one tested revision.
@@ -79,21 +70,16 @@ rune-theme-opencode = { git = "https://github.com/anomalyco/rune", rev = "b53fe7
 # With only `ring` enabled, rustls picks its crypto provider on its own;
 # tokio-tungstenite leaves that to the app.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-# The relay token in the login keychain.
 security-framework = "3"
 tempfile = "3"
-# The relay's session cookie Max-Age, as the cookie crate takes it.
 time = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-# Splits dictated text into words to compare transcriptions.
 unicode-segmentation = "1"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
-# Web Push encryption (RFC 8291).
 web-push-native = { version = "0.5", default-features = false }
 webauthn-rs = "0.6"
-# reqwest's TLS roots for Web Push (see the relay's `Push::open`).
 webpki-root-certs = "1"
 
 [workspace.lints.rust]

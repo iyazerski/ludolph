@@ -1,6 +1,4 @@
-//! Embeds Info.plist in the binary, so it also has one outside the app
-//! bundle. macOS reads it to explain the dictation's microphone and speech
-//! recognition prompts, and stops a process that asks for them without it.
+//! Embed Info.plist outside app bundles too: macOS requires it for speech and microphone access.
 
 use std::path::PathBuf;
 
@@ -13,7 +11,6 @@ fn main() {
         return;
     }
     let template = std::fs::read_to_string(PLIST).expect("reading assets/Info.plist");
-    // The release's version, as `ludolph_engine::VERSION` has it.
     let version = std::env::var("LUDOLPH_VERSION")
         .or_else(|_| std::env::var("CARGO_PKG_VERSION"))
         .expect("cargo sets CARGO_PKG_VERSION");

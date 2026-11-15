@@ -1,5 +1,3 @@
-//! Load chat details only while their card or page is on screen.
-
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -7,11 +5,9 @@ use serde_json::json;
 use super::{ChatPage, State, Window};
 use crate::data::ChatDetails;
 
-/// External working-tree changes need no chat event; refresh at most this often.
 const DETAILS_EVERY: Duration = Duration::from_secs(8);
 
 impl State {
-    /// Open quick-window details, or toggle the main window's saved card.
     pub fn toggle_details(&mut self) {
         if self.window == Window::Quick {
             if let Some(chat) = self.chat_mut().and_then(ChatPage::existing_mut) {
@@ -36,7 +32,6 @@ impl State {
         self.sync_tick();
     }
 
-    /// Whether details occupy the main card or the quick window's page.
     pub(super) fn details_visible(&self) -> bool {
         self.chat()
             .and_then(ChatPage::existing)
@@ -49,7 +44,6 @@ impl State {
             })
     }
 
-    /// Refresh visible details without polling pi or the network.
     pub(super) fn load_details(&mut self) {
         if !self.shown || !self.engine_up || !self.details_visible() {
             return;

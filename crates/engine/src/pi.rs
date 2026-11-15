@@ -1,6 +1,3 @@
-//! One pi process in RPC mode (pi's `docs/rpc.md`): commands and their
-//! responses, matched by id, and the events it streams.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -17,53 +14,38 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::jsonl::fix_surrogates;
 
-/// How many events wait for the engine before pi has to wait. pi honors
-/// stdout backpressure, so a slow reader slows pi rather than growing memory.
+/// Backpressure stalls pi's stdout rather than growing the engine's memory.
 const EVENT_QUEUE: usize = 256;
 
-/// How long [`Pi::ask`] waits for its answer. pi loads its extensions
-/// first, and one could hang.
 const ASK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Which session a process opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Session {
-    /// A new session with this id, created in the process's folder.
     New(String),
-    /// The session in this file.
     Resume(PathBuf),
-    /// No session file at all, for a pi that only answers questions.
     None,
 }
 
-/// How to start a pi process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
-    /// The `pi` executable.
     pub program: PathBuf,
-    /// The folder pi runs in, which is the chat's project.
     pub cwd: PathBuf,
     pub session: Session,
-    /// Extensions to load with `--extension`, on top of pi's own.
     pub extensions: Vec<PathBuf>,
-    /// Extra environment variables.
     pub env: Vec<(String, String)>,
 }
 
-/// A running pi. Dropping it kills its process group; [`Pi::stop`] stops
-/// it cleanly.
+/// Dropping pi kills its process group; `stop` permits a clean exit first.
 #[derive(Debug)]
 pub struct Pi {
     pid: u32,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     pending: Pending,
     next_id: AtomicU64,
-    /// The exit status once pi has exited; `None` inside if it couldn't be read.
     exit: watch::Receiver<Option<Option<ExitStatus>>>,
 }
 
-/// Calls waiting for their response, by id. The reader takes the map when pi
-/// exits, which fails the calls still waiting and any later ones.
+/// Taking the map on exit also rejects calls arriving after the reader has stopped.
 type Pending = Arc<Mutex<Option<HashMap<String, oneshot::Sender<Response>>>>>;
 
 #[derive(Debug, Deserialize)]
@@ -74,8 +56,6 @@ struct Response {
     error: Option<String>,
 }
 
-/// An event pi streams (pi's `docs/json.md` and `docs/rpc-extension-ui.md`),
-/// with the ones the engine doesn't use as `Other`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(
     tag = "type",
@@ -85,18 +65,15 @@ struct Response {
 #[non_exhaustive]
 pub enum Event {
     AgentStart,
-    /// pi has no more automatic work for the run.
     AgentSettled {
         aborted: bool,
     },
     MessageStart {
         message: Value,
     },
-    /// One content-block change to the streaming assistant message.
     MessageUpdate {
         assistant_message_event: Value,
     },
-    /// The final message, which replaces the streamed one.
     MessageEnd {
         message: Value,
     },
@@ -118,7 +95,6 @@ pub enum Event {
         #[serde(default)]
         result: Value,
     },
-    /// The whole steering and follow-up queue.
     QueueUpdate {
         steering: Vec<String>,
         follow_up: Vec<String>,
@@ -137,14 +113,11 @@ pub enum Event {
         final_error: Option<String>,
     },
     CompactionStart {
-        /// `manual`, `threshold` or `overflow`.
         reason: Option<String>,
     },
     CompactionEnd {
         error_message: Option<String>,
     },
-    /// An extension asking something, or telling something (`notify` and
-    /// the other fire-and-forget methods).
     ExtensionUiRequest {
         id: String,
         method: String,
@@ -160,15 +133,6 @@ pub enum Event {
 }
 
 impl Pi {
-    /// Start pi in RPC mode, and return it with its events.
-    ///
-    /// The events end when pi exits. pi runs in its own process group, so
-    /// [`Pi::stop`] can stop the tools it started with it. Its stderr goes to
-    /// the engine's.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi can't be started.
     pub fn start(options: &Options) -> Result<(Self, mpsc::Receiver<Event>)> {
         let mut command = Command::new(&options.program);
         command.args(["--mode", "rpc"]);
@@ -207,26 +171,11 @@ impl Pi {
         Ok((pi, receiver))
     }
 
-    /// Start pi without a session in `cwd`, send it one command, stop it,
-    /// and return the command's answer. It's for questions that need no chat,
-    /// like which models or skills there are.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi can't be started, refuses the command, or doesn't answer
-    /// in time.
     pub async fn ask(program: &Path, cwd: &Path, grace: Duration, command: Value) -> Result<Value> {
         let mut answers = Self::ask_all(program, cwd, grace, vec![command]).await?;
         Ok(answers.remove(0))
     }
 
-    /// [`Pi::ask`] with several commands, one after another, for one pi's
-    /// start-up cost. Returns their answers in order.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi can't be started, refuses a command, or doesn't answer
-    /// them all in time.
     pub async fn ask_all(
         program: &Path,
         cwd: &Path,
@@ -255,27 +204,15 @@ impl Pi {
         answer.map_err(|_| anyhow!("pi didn't answer in {ASK_TIMEOUT:?}"))?
     }
 
-    /// The process id, which is also its process group id.
     pub fn pid(&self) -> u32 {
         self.pid
     }
 
-    /// Send a command, such as `{"type": "get_state"}`, and return its
-    /// response's `data` (`null` if it has none).
-    ///
-    /// # Errors
-    ///
-    /// Fails with pi's error if pi refuses the command, and fails if pi exits
-    /// before it answers.
     pub async fn call(&self, command: Value) -> Result<Value> {
         self.call_checked(command, || Ok(())).await
     }
 
-    /// Run `check` under the stdin lock immediately before writing a command.
-    ///
-    /// # Errors
-    ///
-    /// Fail if the check fails, pi refuses the command, or pi exits before answering.
+    /// Check cancellation under the stdin lock immediately before writing.
     pub(crate) async fn call_checked(
         &self,
         mut command: Value,
@@ -306,17 +243,10 @@ impl Pi {
         Ok(response.data.unwrap_or(Value::Null))
     }
 
-    /// Write one record that gets no response, such as an
-    /// `extension_ui_response`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi has exited or is being stopped.
     pub async fn send(&self, record: &Value) -> Result<()> {
         self.send_checked(record, || Ok(())).await
     }
 
-    /// Check permission to write after earlier stdin writes have finished.
     async fn send_checked(&self, record: &Value, check: impl FnOnce() -> Result<()>) -> Result<()> {
         let mut line = serde_json::to_vec(record)?;
         line.push(b'\n');
@@ -327,12 +257,6 @@ impl Pi {
         stdin.flush().await.context("writing to pi")
     }
 
-    /// Stop pi: close its stdin, which asks it to finish and exit, and kill
-    /// its process group if it hasn't exited after `grace`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if waiting for the process fails.
     pub async fn stop(&self, grace: Duration) -> Result<ExitStatus> {
         self.stdin.lock().await.take();
         if let Ok(status) = tokio::time::timeout(grace, self.wait()).await {
@@ -342,11 +266,6 @@ impl Pi {
         self.wait().await
     }
 
-    /// Wait for pi to exit.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi's exit status couldn't be read.
     pub async fn wait(&self) -> Result<ExitStatus> {
         let mut exit = self.exit.clone();
         let status = exit
@@ -365,18 +284,13 @@ impl Drop for Pi {
     }
 }
 
-/// Wait for pi to exit, stop its tools if it crashed, and publish its
-/// status.
 async fn reap(mut child: Child, exited: watch::Sender<Option<Option<ExitStatus>>>) {
     let pid = child.id();
     let status = child.wait().await;
     if let Err(e) = &status {
         eprintln!("waiting for pi: {e}");
     }
-    // A crashed pi's tools would keep changing files with no one watching.
-    // A clean exit leaves the jobs the agent started on purpose, such as a
-    // dev server, as a terminal pi does. Right away, so the group's id
-    // can't have been reused yet.
+    // Kill crashed tools before their process-group id can be reused; clean exits may leave dev servers.
     if let Some(pid) = pid
         && !status.as_ref().is_ok_and(ExitStatus::success)
     {
@@ -385,8 +299,6 @@ async fn reap(mut child: Child, exited: watch::Sender<Option<Option<ExitStatus>>
     exited.send_replace(Some(status.ok()));
 }
 
-/// Read pi's stdout until it closes: responses go to their calls, and events
-/// to `events`.
 async fn read(stdout: ChildStdout, pending: Pending, events: mpsc::Sender<Event>) {
     let mut reader = BufReader::new(stdout);
     let mut line = Vec::new();
@@ -400,7 +312,6 @@ async fn read(stdout: ChildStdout, pending: Pending, events: mpsc::Sender<Event>
                 break;
             }
         }
-        // Records end with LF, maybe after a CR (`docs/rpc.md`).
         fix_surrogates(&mut line);
         let record = line.strip_suffix(b"\n").unwrap_or(&line);
         let record = record.strip_suffix(b"\r").unwrap_or(record);
@@ -428,7 +339,6 @@ async fn read(stdout: ChildStdout, pending: Pending, events: mpsc::Sender<Event>
     pending.lock().expect("lock poisoned").take();
 }
 
-/// Hand a response to the call waiting for it.
 fn respond(pending: &Pending, value: Value) {
     let response: Response = match serde_json::from_value(value) {
         Ok(response) => response,
@@ -447,7 +357,6 @@ fn respond(pending: &Pending, value: Value) {
         .as_mut()
         .and_then(|pending| pending.remove(id));
     if let Some(waiting) = waiting {
-        // The call may have been dropped; then nobody needs the answer.
         let _ = waiting.send(response);
     }
 }

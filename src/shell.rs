@@ -1,6 +1,4 @@
-//! The login shell's environment. launchd starts the engine with a bare
-//! one, but pi needs what a terminal has: a `PATH` for its tools (`git`,
-//! `cargo`, `uv`, …), and the API keys and proxy settings rc files export.
+//! launchd has a bare environment; import the login shell's tool paths, API keys and proxy settings.
 
 use std::ffi::CStr;
 use std::io::Read;
@@ -10,11 +8,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
-/// How long the shell may take: an interactive one loads your rc files.
 const TIMEOUT: Duration = Duration::from_secs(10);
-/// Marks the values in the output, since rc files may print too.
 const MARK: &str = "_LUDOLPH_ENV_";
-/// The shell's own bookkeeping, which means nothing to the engine.
 const SKIP: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 /// Add the login shell's environment to the engine's from now on, or keep

@@ -10,7 +10,6 @@ use serde_json::{Value, json};
 
 const HEADER: &str = r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-05-01T10:00:00.000Z","cwd":"/tmp"}"#;
 
-/// Append entries to a session file.
 fn append(path: &Path, entries: &[Value]) {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -22,7 +21,6 @@ fn append(path: &Path, entries: &[Value]) {
     }
 }
 
-/// A message entry `id`, child of `parent`.
 fn message(id: &str, parent: Option<&str>, message: Value) -> Value {
     json!({
         "type": "message", "id": id, "parentId": parent,
@@ -52,7 +50,6 @@ fn tool(id: &str, name: &str, subject: &str, state: ToolState) -> Part {
     }
 }
 
-/// The page's messages as role, status and parts.
 fn shown(page: &Page) -> Vec<(Role, MessageStatus, Vec<Part>)> {
     page.messages
         .iter()
@@ -331,7 +328,6 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
                 Some("r1"),
                 json!({"role": "toolResult", "toolCallId": "c2", "content": [], "timestamp": 5}),
             ),
-            // An abandoned branch from u1, which the leaf's path doesn't take.
             message(
                 "x1",
                 Some("u1"),
@@ -416,12 +412,9 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
     );
     assert_eq!(page.messages[1].id, "a1");
     assert_eq!(page.messages[1].created_at, 3);
-    // The turn ran until its last entry, the error.
     assert_eq!(page.messages[1].ended_at, 7);
     assert_eq!(page.leaf.as_deref(), Some("a3"));
 
-    // A call's details load on request: its arguments and output, and a
-    // command you ran yourself.
     let failed = transcripts.tool(&path, "c1").unwrap().unwrap();
     assert_eq!(failed.name, "bash");
     assert_eq!(failed.args, json!({"command": "cargo test"}));
@@ -439,7 +432,6 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
     assert_eq!(transcripts.image(&path, "u2", 0).unwrap(), Some(image));
     assert_eq!(transcripts.image(&path, "u2", 1).unwrap(), None);
 
-    // A page has the last messages, and what pi appends shows next time.
     append(&path, &[message("u3", Some("a3"), user("next", 11))]);
     let page = transcripts
         .page(Some(&path), Tail::default(), &Window::Latest(2))
@@ -447,8 +439,6 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
     assert_eq!((page.total, page.older()), (7, 5));
     assert_eq!(shown(&page)[1].2, [text("next")]);
 
-    // Anchored on a message, a page keeps it as more come, and can reach
-    // back from it.
     let from = |id: &str, earlier| Window::From {
         id: id.into(),
         earlier,
@@ -463,7 +453,6 @@ fn a_transcript_follows_the_leafs_branch_and_groups_turns() {
         .page(Some(&path), Tail::default(), &from("u3", 2))
         .unwrap();
     assert_eq!((page.messages.len(), page.older()), (4, 4));
-    // An anchor that's gone gives the latest page.
     let page = transcripts
         .page(Some(&path), Tail::default(), &from("nope", 2))
         .unwrap();
@@ -528,7 +517,6 @@ fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
     std::fs::write(&path, format!("{HEADER}\n")).unwrap();
     let first = json!({"role": "assistant", "stopReason": "toolUse", "timestamp": 3, "content": [bash("c1", "ls")]});
     let result = json!({"role": "toolResult", "toolCallId": "c1", "content": [], "timestamp": 4});
-    // pi wrote the prompt and the first reply, but not the result yet.
     append(
         &path,
         &[
@@ -566,7 +554,6 @@ fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
     );
     assert_eq!(page.messages[1].id, "a1");
 
-    // A new chat has only its tail.
     let page = transcripts.page(None, tail, &Window::Latest(40)).unwrap();
     assert_eq!(page.messages.len(), 2);
     assert_eq!(page.messages[0].id, "live-0");

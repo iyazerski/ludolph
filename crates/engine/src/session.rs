@@ -1,11 +1,3 @@
-//! What the chat list needs from one pi session file, read incrementally.
-//!
-//! pi appends to its session files (`docs/session-format.md`), so a
-//! [`Summary`] remembers how far it read and later reads only what's new. The
-//! fields follow pi's own session list (`buildSessionInfo` in pi's
-//! `session-manager.js`): the latest `session_info` names the session, and
-//! user and assistant messages count as activity.
-
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -20,11 +12,9 @@ use crate::jsonl::{self, Mark, Reopen, fix_surrogates, open, read_header, read_l
 use crate::skills;
 use crate::text::one_line;
 
-/// The most characters of a message kept as a preview.
 const PREVIEW_CHARS: usize = 200;
 
-/// Copy a stopped session into pi's folder for `cwd`, changing only its header.
-/// Leave the source intact until the caller updates the index and removes copies.
+/// Keep the source until the caller has indexed the destination and removed all copies.
 pub(crate) fn relocate(path: &Path, sessions: &Path, cwd: &Path) -> Result<PathBuf> {
     let cwd_text = cwd.to_str().context("the project path isn't UTF-8")?;
     let encoded = cwd_text
@@ -38,7 +28,7 @@ pub(crate) fn relocate(path: &Path, sessions: &Path, cwd: &Path) -> Result<PathB
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut header: serde_json::Value = serde_json::from_str(&line)?;
-    if header["type"] != "session" || !header.is_object() {
+    if header["type"] != "session" {
         bail!("the session has no valid header");
     }
     header["cwd"] = serde_json::json!(cwd);
@@ -56,124 +46,82 @@ pub(crate) fn relocate(path: &Path, sessions: &Path, cwd: &Path) -> Result<PathB
     Ok(target)
 }
 
-/// One session file, as the chat list shows it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
-    /// pi's session id, from the file's header.
     pub id: String,
-    /// The folder pi ran in, which is the chat's project.
     pub cwd: PathBuf,
-    /// When pi created the session, from the header.
     pub created: DateTime<Utc>,
-    /// The latest `session_info` name; an empty one clears it, as in pi.
     pub title: Option<String>,
-    /// The first user message with text, for a chat that has no title yet.
     pub first_prompt: Option<String>,
-    /// The last user message with text.
     pub last_prompt: Option<String>,
-    /// The `timestamp` pi gave the last user message, in milliseconds. pi
-    /// copies it from the message it reports, so it tells whose pi sent it.
+    /// pi's epoch-millisecond timestamp identifies which process submitted the prompt.
     pub last_user_at: Option<i64>,
-    /// The newest user or assistant message.
     pub last_activity: Option<DateTime<Utc>>,
-    /// How the last message left the chat; `None` before the first one.
     pub outcome: Option<Outcome>,
-    /// The last entry in the file, which pi resumes from.
     pub leaf: Option<String>,
-    /// The model the chat uses, as `provider/model`: the latest
-    /// `model_change`, or the model of the latest answer.
     #[serde(default)]
     pub model: Option<String>,
-    /// The thinking level the chat uses, from the latest change.
     #[serde(default)]
     pub thinking: Option<String>,
-    /// The tokens in the context, from the last answer's usage, as pi
-    /// estimates them. A compaction clears it until the next answer.
+    /// Unknown after compaction until the next answer reports usage.
     #[serde(default)]
     pub context_tokens: Option<u64>,
-    /// What the chat has spent, as pi's `get_session_stats` totals it.
+    /// Match pi's cumulative get_session_stats totals.
     #[serde(default)]
     pub spent: Spent,
     progress: Progress,
 }
 
-/// The tokens and money a chat has spent: every answer and tool result, and
-/// the usage, compaction and branch summary entries.
+/// Include tool, compaction, branch-summary and explicit usage entries, not just assistant answers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Spent {
     pub tokens: u64,
-    /// In US dollars, at the model's prices.
     pub cost: f64,
 }
 
 impl Spent {
-    /// Add one usage, as pi's `addUsageToTotals` does.
     fn add(&mut self, usage: &Usage) {
         self.tokens += usage.input + usage.output + usage.cache_read + usage.cache_write;
         self.cost += usage.cost.total;
     }
 }
 
-/// How the last user, assistant or tool message left a chat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
-    /// The assistant finished its answer.
     Done,
-    /// The assistant stopped on an error or the context limit.
     Failed,
-    /// Someone stopped the run.
     Aborted,
-    /// The run hadn't ended when the file was last written: it's either still
-    /// working or it was interrupted.
+    /// Still running or interrupted; only the live process can distinguish them.
     Unfinished,
 }
 
-/// What [`Summary::update`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Freshness {
-    /// The file hasn't changed since the last read.
     Unchanged,
-    /// The summary now includes what was appended.
     Updated,
-    /// pi rewrote the file (it does when it migrates an old version), so it
-    /// has to be read again with [`Summary::read`].
     Rewritten,
 }
 
-/// How far a summary has read its file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Progress {
-    /// The header's format version, which a rewrite changes.
     version: u32,
-    /// The end of the last complete line read.
     offset: u64,
-    /// The file's size and modification time when it was last read, to skip
-    /// opening a file that hasn't changed.
     len: u64,
     modified: SystemTime,
 }
 
 impl Summary {
-    /// When the chat was last active: its last user or assistant message, or
-    /// its start. A new title doesn't count.
+    /// Renames are not activity.
     pub fn activity(&self) -> DateTime<Utc> {
         self.last_activity.unwrap_or(self.created)
     }
 
-    /// When the file was last modified, as of its last read.
     pub fn modified(&self) -> SystemTime {
         self.progress.modified
     }
 
-    /// Read the session file at `path` from the start.
-    ///
-    /// Returns `None` if the file doesn't start with a complete pi session
-    /// header, like a file pi hasn't finished writing.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file can't be read.
+    /// An incomplete header is not a session yet; retry it after the next write.
     pub fn read(path: &Path) -> Result<Option<Self>> {
         let (mut reader, len, modified) = open(path)?;
         let mut buf = Vec::new();
@@ -206,11 +154,6 @@ impl Summary {
         Ok(Some(summary))
     }
 
-    /// Read what was appended to the file at `path` since the last read.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file can't be read.
     pub fn update(&mut self, path: &Path) -> Result<Freshness> {
         let mark = Mark {
             id: &self.id,
@@ -234,7 +177,6 @@ impl Summary {
         Ok(Freshness::Updated)
     }
 
-    /// Read complete lines from the reader's position, and fold them in.
     fn read_entries(
         &mut self,
         reader: &mut BufReader<File>,
@@ -251,7 +193,6 @@ impl Summary {
         Ok(())
     }
 
-    /// Fold one entry into the summary.
     fn add(&mut self, entry: Entry) {
         if entry.id.is_some() {
             self.leaf = entry.id;
@@ -287,15 +228,12 @@ impl Summary {
         }
     }
 
-    /// Count what an entry spent, if it says.
     fn add_usage(&mut self, usage: Option<&Usage>) {
         if let Some(usage) = usage {
             self.spent.add(usage);
         }
     }
 
-    /// Fold one message into the summary; `entry_time` stands in for a
-    /// message without a timestamp.
     fn add_message(&mut self, message: Message, entry_time: Option<DateTime<Utc>>) {
         let (Role::User | Role::Assistant | Role::ToolResult) = message.role else {
             return;
@@ -347,8 +285,7 @@ impl Summary {
     }
 }
 
-/// One session entry, with only the fields a summary needs. Message content
-/// stays raw, so long tool output and images are skipped, not copied.
+/// Keep content raw so indexing skips large outputs and images without copying them.
 #[derive(Deserialize)]
 struct Entry<'a> {
     #[serde(rename = "type")]
@@ -358,17 +295,14 @@ struct Entry<'a> {
     name: Option<String>,
     #[serde(borrow)]
     message: Option<Message<'a>>,
-    /// A `model_change`'s model.
     provider: Option<String>,
     #[serde(rename = "modelId")]
     model_id: Option<String>,
     #[serde(rename = "thinkingLevel")]
     thinking_level: Option<String>,
-    /// A `usage`, `compaction` or `branch_summary` entry's usage.
     usage: Option<Usage>,
 }
 
-/// A message entry's message, with its content left raw.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Message<'a> {
@@ -377,13 +311,11 @@ struct Message<'a> {
     content: Option<&'a RawValue>,
     timestamp: Option<i64>,
     stop_reason: Option<StopReason>,
-    /// An assistant message's model, and an assistant or tool result's usage.
     provider: Option<String>,
     model: Option<String>,
     usage: Option<Usage>,
 }
 
-/// An answer's token usage (`docs/message-types.md`).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Usage {
@@ -400,7 +332,6 @@ struct Usage {
     cost: Cost,
 }
 
-/// What a usage cost, in US dollars.
 #[derive(Deserialize, Default)]
 struct Cost {
     #[serde(default)]
@@ -408,8 +339,7 @@ struct Cost {
 }
 
 impl Usage {
-    /// The context's size after the answer, as pi's `calculateContextTokens`
-    /// counts it.
+    /// Match pi's calculateContextTokens estimate after an answer.
     fn tokens(&self) -> u64 {
         self.total_tokens
             .filter(|&total| total > 0)
@@ -417,7 +347,6 @@ impl Usage {
     }
 }
 
-/// An entry's type, with the ones a summary ignores as `Other`.
 #[derive(Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
@@ -432,7 +361,6 @@ enum Kind {
     Other,
 }
 
-/// Who wrote a message (`docs/message-types.md`).
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum Role {
@@ -443,7 +371,6 @@ enum Role {
     Other,
 }
 
-/// Why an assistant message ended (`docs/message-types.md`).
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 enum StopReason {
@@ -455,9 +382,6 @@ enum StopReason {
     Other,
 }
 
-/// A user message's text as typed, on one line and cut to
-/// [`PREVIEW_CHARS`]; `None` if it has none, like a message that's only an
-/// image.
 fn preview(content: &str) -> Option<String> {
     #[derive(Deserialize)]
     #[serde(untagged)]

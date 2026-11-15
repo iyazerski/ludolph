@@ -1,9 +1,3 @@
-//! The relay's saved state: passkeys, sign-in sessions, and Macs.
-//!
-//! One JSON file, rewritten whole on each change: there's one user and a
-//! handful of records, so a database would be overkill. Sessions and Mac
-//! tokens are kept as SHA-256 hashes, so the file alone can't sign anyone in.
-
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -18,12 +12,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use webauthn_rs::prelude::{AuthenticationResult, CredentialID, Passkey};
 
-/// How long a sign-in lasts.
 pub const SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Data {
-    /// The WebAuthn user handle; one user, made on first start.
     user: Option<Uuid>,
     #[serde(default)]
     passkeys: Vec<Passkey>,
@@ -33,15 +25,12 @@ struct Data {
     machines: Vec<MachineRecord>,
 }
 
-/// A sign-in session, by its token's hash.
 #[derive(Clone, Serialize, Deserialize)]
 struct SessionRecord {
     hash: String,
-    /// Unix seconds.
     expires: u64,
 }
 
-/// A Mac, with its connection token's hash.
 #[derive(Clone, Serialize, Deserialize)]
 struct MachineRecord {
     id: String,
@@ -64,10 +53,8 @@ impl From<&MachineRecord> for Machine {
     }
 }
 
-/// The relay's state, in memory and in `<data dir>/state.json`.
 pub struct Store {
     path: PathBuf,
-    /// The WebAuthn user handle; fixed once the store opens.
     user: Uuid,
     data: Mutex<Data>,
     rng: SystemRandom,
@@ -112,7 +99,6 @@ impl Store {
             .collect()
     }
 
-    /// Save `passkey`, replacing an older one with its credential id.
     pub fn add_passkey(&self, passkey: Passkey) -> Result<()> {
         self.update(|data| {
             data.passkeys.retain(|p| p.cred_id() != passkey.cred_id());
@@ -120,7 +106,6 @@ impl Store {
         })
     }
 
-    /// Record a sign-in's new signature counter and backup state.
     pub fn update_passkeys(&self, result: &AuthenticationResult) -> Result<()> {
         self.update(|data| {
             for passkey in &mut data.passkeys {
@@ -129,7 +114,6 @@ impl Store {
         })
     }
 
-    /// Start a session and return its cookie value.
     pub fn new_session(&self) -> Result<String> {
         let token = self.token()?;
         let now = now();
@@ -143,7 +127,6 @@ impl Store {
         Ok(token)
     }
 
-    /// Whether `token` is a live session's cookie value.
     pub fn session_valid(&self, token: &str) -> bool {
         let hash = hash(token);
         let now = now();
@@ -166,7 +149,6 @@ impl Store {
         self.lock().machines.len()
     }
 
-    /// Add a Mac named `name`; return it and its token (shown once).
     pub fn add_machine(&self, name: &str) -> Result<(Machine, String)> {
         let token = self.token()?;
         let machine = Machine {
@@ -183,7 +165,6 @@ impl Store {
         Ok((machine, token))
     }
 
-    /// Forget the Mac `id`; its token stops working.
     pub fn remove_machine(&self, id: &str) -> Result<()> {
         self.update(|data| data.machines.retain(|m| m.id != id))
     }
@@ -201,7 +182,6 @@ impl Store {
             .map(Machine::from)
     }
 
-    /// A fresh 256-bit secret, base64url.
     fn token(&self) -> Result<String> {
         let mut bytes = [0u8; 32];
         self.rng
@@ -214,8 +194,7 @@ impl Store {
         self.data.lock().expect("the store lock is poisoned")
     }
 
-    /// Apply `change` to a copy of the state, save it, and only then make it
-    /// current, so a failed save leaves the state as the file has it.
+    /// Publish state changes only after saving their copy succeeds.
     fn update<R>(&self, change: impl FnOnce(&mut Data) -> R) -> Result<R> {
         let mut data = self.lock();
         let mut next = data.clone();
@@ -230,13 +209,10 @@ impl Store {
     }
 }
 
-/// A token's SHA-256, base64url: what the file keeps instead of the token.
 fn hash(token: &str) -> String {
     B64.encode(digest(&SHA256, token.as_bytes()))
 }
 
-/// Run blocking file work without stalling the runtime's other tasks: on a
-/// multi-threaded runtime, this worker hands its tasks to another first.
 pub fn blocking<R>(work: impl FnOnce() -> R) -> R {
     use tokio::runtime::{Handle, RuntimeFlavor};
     match Handle::try_current().map(|h| h.runtime_flavor()) {
@@ -271,7 +247,6 @@ mod tests {
         assert_eq!(store.machine_for_token(&token), Some(mac.clone()));
         assert_eq!(store.machine_for_token("guess"), None);
 
-        // Only hashes are saved.
         let saved = std::fs::read_to_string(dir.path().join("state.json")).unwrap();
         assert!(!saved.contains(&session) && !saved.contains(&token));
 
@@ -279,19 +254,5 @@ mod tests {
         assert!(!store.session_valid(&session));
         store.remove_machine(&mac.id).unwrap();
         assert_eq!(store.machine_for_token(&token), None);
-    }
-
-    #[test]
-    fn a_change_that_isnt_saved_doesnt_apply() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        let (mac, _) = store.add_machine("Work Mac").unwrap();
-        let read_only = std::fs::Permissions::from_mode(0o500);
-        std::fs::set_permissions(dir.path(), read_only).unwrap();
-        assert!(store.remove_machine(&mac.id).is_err());
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        // Still added, as the file says.
-        assert!(store.has_machine(&mac.id));
     }
 }

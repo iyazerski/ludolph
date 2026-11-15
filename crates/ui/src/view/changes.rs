@@ -1,6 +1,3 @@
-//! What a chat's run changed: the button in its work header, and the page
-//! with its unified diff that opens in place of the chat.
-
 use rune::{El, Span, TextStyle, col, icon, rich, row, text};
 use rune_kit::diff::DiffView;
 use rune_kit::{IconButton, IconButtonVariant, Kit};
@@ -10,7 +7,6 @@ use super::widgets::{busy, head, head_titles, hide_button};
 use crate::app::{ChangeTarget, Changes, Existing, State, Window};
 use crate::data::TurnChanges;
 
-/// Show compact file counts in the work header, pressed to open the diff.
 pub fn button(k: &Kit, counts: &TurnChanges) -> El {
     let small = TextStyle {
         size: 12.0,
@@ -63,9 +59,7 @@ pub fn button(k: &Kit, counts: &TurnChanges) -> El {
         .on_press(move |s: &mut State| s.open_changes(&turn))
 }
 
-/// The diff page: the back button returns to the chat.
 pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
-    // The prompt that started the run names it; the chat's title if it's not shown.
     let prompt = chat
         .messages()
         .find(|m| matches!(&chat.changes_of, ChangeTarget::Turn(turn) if m.created_at.to_string() == *turn))

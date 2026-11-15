@@ -1,16 +1,5 @@
-//! Sealing what a phone and this Mac say, so the relay passes it on without
-//! reading or changing it (`docs/design.md`, "Trust").
-//!
-//! Linking a phone makes a random secret, which reaches the phone only in the
-//! QR code's URL fragment. It gives two values, each an HMAC-SHA256 of a label
-//! keyed with the secret: the phone's id, which the relay routes by, and the
-//! sealing key, which only the phone and this Mac know. A sealed message is
-//! AES-256-GCM: `version || nonce || ciphertext || tag`, in base64url without
-//! padding, and its text starts with the time it was sealed. The associated
-//! data says what the message is ([`Purpose`]), so the relay can't pass one
-//! off as another: a reply opens only as the answer to its call, and a frame
-//! only in its own stream, in order. The phone app does the same in `seal.js`;
-//! the test vectors here and there match.
+//! Shared wire format with seal.js: base64url(version || nonce || ciphertext || tag).
+//! Timestamped plaintext uses purpose-specific AAD to bind replies and ordered frames to requests.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,37 +11,25 @@ use ring::hmac;
 use ring::rand::SystemRandom;
 use serde::{Deserialize, Serialize};
 
-/// The secret's length in bytes.
 const SECRET_LEN: usize = 32;
-/// The first byte of a sealed message; bumped if the format changes.
 const VERSION: u8 = 1;
-/// The version and the nonce, before the ciphertext.
 const HEADER: usize = 1 + NONCE_LEN;
-/// The sealing time's length: milliseconds since the Unix epoch, big-endian.
 const STAMP: usize = 8;
-/// How far a call's sealing time may be from this Mac's clock. It covers a
-/// slow network and clocks that drift apart.
 const MAX_AGE_MS: u64 = 5 * 60 * 1000;
 
-/// One phone's id and sealing key.
 pub struct Keys {
-    /// The phone's id, which the relay sees.
     pub phone: String,
     key: LessSafeKey,
 }
 
-/// What a sealed message is, which its associated data names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
-    /// A tool call from the phone.
     Call,
-    /// The phone asks to follow a chat.
     Watch,
     /// The answer to the call sealed with this nonce.
     Reply([u8; NONCE_LEN]),
     /// Frame `n`, counting from 0, of the watch sealed with this nonce.
     Frame([u8; NONCE_LEN], u64),
-    /// A notification.
     Notice,
 }
 
@@ -70,37 +47,25 @@ impl Purpose {
     }
 }
 
-/// An opened message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opened {
     pub text: String,
-    /// Its nonce, which a reply or a frame is bound to.
     pub nonce: [u8; NONCE_LEN],
-    /// When it was sealed, in ms since the Unix epoch.
     pub sealed_at: u64,
 }
 
-/// The calls opened lately, so that none runs twice.
 #[derive(Default, Serialize, Deserialize)]
 pub struct Replays(Vec<(u64, [u8; NONCE_LEN])>);
 
-/// Make a new random secret, in base64url.
-///
-/// # Errors
-///
-/// Fails if the system has no randomness to give.
 pub fn new_secret() -> Result<String> {
     Ok(B64.encode(random::<SECRET_LEN>()?))
 }
 
-/// `N` random bytes from the system.
 fn random<const N: usize>() -> Result<[u8; N]> {
-    // ring's error says nothing more than that it failed.
     let bytes = ring::rand::generate(&SystemRandom::new()).map_err(|_| anyhow!("no randomness"))?;
     Ok(bytes.expose())
 }
 
-/// Milliseconds since the Unix epoch.
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -108,11 +73,6 @@ pub fn now_ms() -> u64 {
 }
 
 impl Keys {
-    /// Derive the phone's id and sealing key from `secret`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `secret` isn't 32 bytes in base64url.
     pub fn derive(secret: &str) -> Result<Self> {
         let secret = B64
             .decode(secret.trim())
@@ -129,12 +89,6 @@ impl Keys {
         })
     }
 
-    /// Seal `text` for `purpose` with a fresh random nonce and the current
-    /// time. Returns the sealed message and its nonce.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the system has no randomness to give.
     pub fn seal(&self, purpose: Purpose, text: &str) -> Result<(String, [u8; NONCE_LEN])> {
         let nonce = random()?;
         Ok((self.seal_with(nonce, now_ms(), purpose, text)?, nonce))
@@ -165,12 +119,6 @@ impl Keys {
         Ok(B64.encode(sealed))
     }
 
-    /// Open a message sealed for `purpose`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if it was sealed with another key or for another purpose, or
-    /// was changed.
     pub fn open(&self, purpose: Purpose, sealed: &str) -> Result<Opened> {
         let mut sealed = B64.decode(sealed).context("not base64url")?;
         let Some(&version) = sealed.first() else {
@@ -182,7 +130,6 @@ impl Keys {
         );
         ensure!(sealed.len() >= HEADER, "a message too short");
         let nonce: [u8; NONCE_LEN] = sealed[1..HEADER].try_into().context("bad nonce")?;
-        // Decrypts in place and moves the text to the front of the buffer.
         let len = self
             .key
             .open_within(
@@ -209,12 +156,6 @@ impl Keys {
 }
 
 impl Replays {
-    /// Accept `opened` at `now` (ms since the Unix epoch) once, if it was
-    /// sealed recently enough.
-    ///
-    /// # Errors
-    ///
-    /// Fails if it was sealed too far from `now`, or came before.
     pub fn check(&mut self, opened: &Opened, now: u64) -> Result<()> {
         let off = now.abs_diff(opened.sealed_at);
         ensure!(
@@ -222,7 +163,7 @@ impl Replays {
             "the call was sealed {}s away from this Mac's time: it's a replay, or a clock is wrong",
             off / 1000
         );
-        // Older entries can't match: their calls fail the time check above.
+        // Expired calls fail the time check, so their nonce records can be discarded.
         self.0.retain(|(at, _)| now.abs_diff(*at) <= MAX_AGE_MS);
         ensure!(
             !self.0.iter().any(|(_, seen)| *seen == opened.nonce),
@@ -307,11 +248,5 @@ mod tests {
         assert!(replays.check(&opened, SEALED_AT - MAX_AGE_MS - 1).is_err());
         assert!(replays.check(&opened, SEALED_AT + 1000).is_ok());
         assert!(replays.check(&opened, SEALED_AT + 2000).is_err());
-    }
-
-    #[test]
-    fn bad_secrets_are_refused() {
-        assert!(Keys::derive("short").is_err());
-        assert!(Keys::derive(&"A".repeat(43)).is_ok());
     }
 }

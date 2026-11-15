@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Build Ludolph.app from a binary: scripts/bundle.sh <binary> <version> <out-dir>
-# Signs with the identity in LUDOLPH_SIGN_IDENTITY (from LUDOLPH_SIGN_KEYCHAIN if
-# set), or ad hoc without one. macOS keeps the microphone and speech grants
-# across updates only for a stable identity: an ad-hoc signature changes with
-# every build.
+# Keep a stable signing identity across builds or macOS resets microphone and speech grants.
 set -euo pipefail
 
 binary=$1

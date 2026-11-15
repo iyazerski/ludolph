@@ -1,10 +1,3 @@
-//! The settings page: the shortcut and login item, the sidecar model, and
-//! the phone's link and notifications.
-//!
-//! Settings sit in rounded groups. A wide control (picker, field) fills the
-//! column on the right of its label, and a compact one (switch, button)
-//! sits at the right edge, so every row lines up.
-
 use std::sync::OnceLock;
 
 use rune::{El, SurfaceFit, col, el, row, text};
@@ -17,12 +10,9 @@ use super::widgets::{busy, dot, model_options};
 use crate::app::{QR_SIZE, SettingsPage, State, Update};
 use crate::data::{LinkStatus, Notify, Pairing, RelayLink, SendBehavior};
 
-/// The page's widest, so rows stay readable in a wide window.
 const MAX_WIDTH: f32 = 640.0;
-/// The space inside a group, around its rows.
 const PAD: f32 = 12.0;
 const LABEL: f32 = 170.0;
-/// A wide control's width.
 const CONTROL: f32 = 300.0;
 /// The sidecar picker's id for pi's default model, which follows pi's
 /// settings; a model's id has a `/`.
@@ -133,8 +123,6 @@ fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
     .collect()
 }
 
-/// A note when the saved shortcut isn't registered, as when another app
-/// took it first.
 fn unregistered(s: &State, page: &SettingsPage, k: &Kit) -> Option<El> {
     let saved = s.prefs.borrow().shortcut.is_some();
     if !saved || s.hotkey.get().is_some() || page.shortcut.is_recording() {
@@ -150,7 +138,6 @@ fn unregistered(s: &State, page: &SettingsPage, k: &Kit) -> Option<El> {
     )
 }
 
-/// The model for titles and dictation cleanup, searchable: pi lists dozens.
 fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let current = page
         .settings
@@ -249,8 +236,6 @@ fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
     out
 }
 
-/// The link's relay and whether it's connected, with buttons to link
-/// another phone (unless one is linking) and to unlink.
 fn linked(link: &RelayLink, can_link: bool, k: &Kit) -> El {
     let (color, status) = match link.status {
         LinkStatus::Connected => (
@@ -297,7 +282,6 @@ fn linked(link: &RelayLink, can_link: bool, k: &Kit) -> El {
     status_row(info, buttons)
 }
 
-/// Unlink's second step, in the link's place: what it does, and whether to.
 fn confirm_unlink(k: &Kit) -> El {
     let info = col()
         .grow(1.0)
@@ -327,7 +311,6 @@ fn confirm_unlink(k: &Kit) -> El {
     status_row(info, buttons)
 }
 
-/// The phone link's row: what it says, then its buttons.
 fn status_row(info: El, buttons: El) -> El {
     row()
         .w_full()
@@ -340,12 +323,10 @@ fn status_row(info: El, buttons: El) -> El {
         .child(buttons)
 }
 
-/// `relay` without its scheme, as people write an address.
 fn host(relay: &str) -> &str {
     relay.split_once("://").map_or(relay, |(_, host)| host)
 }
 
-/// The relay to link through, which only a Mac that isn't linked yet picks.
 fn relay_field(page: &SettingsPage, editable: bool, k: &Kit) -> El {
     let input = TextInput::new(&page.phone.relay)
         .label("Relay")
@@ -368,7 +349,6 @@ fn relay_field(page: &SettingsPage, editable: bool, k: &Kit) -> El {
     )
 }
 
-/// The button that starts linking, for a Mac that isn't linked.
 fn link_row(k: &Kit, rejected: bool) -> El {
     let hint = if rejected {
         "The relay forgot this Mac. Link your phone again."
@@ -386,7 +366,6 @@ fn link_row(k: &Kit, rejected: bool) -> El {
     )
 }
 
-/// A phone linking: getting a code, its QR code, or why it failed.
 fn pairing_block(page: &SettingsPage, pairing: &Pairing, k: &Kit) -> El {
     let cancel = Button::new("Cancel")
         .variant(ButtonVariant::Outline)
@@ -446,8 +425,6 @@ fn pairing_block(page: &SettingsPage, pairing: &Pairing, k: &Kit) -> El {
     row().w_full().px(PAD).py(16.0).justify_center().child(body)
 }
 
-/// The version and where updating stands, with the update and Quit buttons.
-/// Quit stops the windows but not the engine.
 fn about(page: &SettingsPage, k: &Kit) -> El {
     let (status, failed) = match &page.update {
         Update::Checking => ("Checking for updates…".to_owned(), false),
@@ -514,7 +491,6 @@ fn about(page: &SettingsPage, k: &Kit) -> El {
         )
 }
 
-/// A group's title, above it.
 fn section(k: &Kit, title: &str) -> El {
     col().w_full().pt(8.0).pl(4.0).child(
         text(title.to_owned())
@@ -523,7 +499,6 @@ fn section(k: &Kit, title: &str) -> El {
     )
 }
 
-/// `rows` in a rounded box, with a line between each two.
 fn group(k: &Kit, rows: Vec<El>) -> El {
     let mut card = col()
         .w_full()
@@ -539,9 +514,6 @@ fn group(k: &Kit, rows: Vec<El>) -> El {
     card
 }
 
-/// `k` with the fields, pickers and segmented controls on the chat
-/// composer's surface, so they read as fields on the groups' cards rather
-/// than holes in them.
 fn controls_kit(k: &'static Kit) -> &'static Kit {
     static LIGHT: OnceLock<Kit> = OnceLock::new();
     static DARK: OnceLock<Kit> = OnceLock::new();
@@ -553,7 +525,6 @@ fn controls_kit(k: &'static Kit) -> &'static Kit {
     })
 }
 
-/// A row with `label` on the left and a wide `control` on its right.
 fn wide(k: &Kit, label: &str, control: El) -> El {
     row()
         .w_full()
@@ -572,7 +543,6 @@ fn wide(k: &Kit, label: &str, control: El) -> El {
         .child(row().grow(1.0).justify_end().child(control))
 }
 
-/// `line` with `hint` under it, across the row.
 fn with_hint(line: El, k: &Kit, hint: &str) -> El {
     col().w_full().child(line).child(
         text(hint.to_owned())
@@ -584,8 +554,6 @@ fn with_hint(line: El, k: &Kit, hint: &str) -> El {
     )
 }
 
-/// A row with `label`, and `hint` under it, on the left, and a compact
-/// `control` at the right edge.
 fn compact(k: &Kit, label: &str, hint: Option<&str>, control: El) -> El {
     let hint = hint.map(|h| {
         text(h.to_owned())

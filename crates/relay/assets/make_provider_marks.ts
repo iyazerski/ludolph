@@ -1,7 +1,4 @@
-// Writes provider-marks.js: the model providers' marks the desktop shows by
-// each chat and model, for the providers agents use most. They come from
-// rune-theme-opencode's provider icons (the ones the Companion draws), so both
-// look the same. Run: bun make_provider_marks.ts <rune checkout>/themes/opencode/src/provider_icons.rs
+// Run: bun make_provider_marks.ts <rune checkout>/themes/opencode/src/provider_icons.rs
 
 const PROVIDERS = [
   "anthropic", "openai", "google", "xai", "mistral", "deepseek", "groq", "openrouter", "amazon-bedrock",

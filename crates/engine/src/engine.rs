@@ -1,10 +1,3 @@
-//! The engine's chats: which have a pi process, what they're doing, and the
-//! commands that start, steer and stop their runs.
-//!
-//! A chat is a pi session, named by its session id. Its pi starts when the
-//! chat first needs one and stops after a few idle minutes (`docs/design.md`,
-//! "pi processes").
-
 mod queue;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -38,59 +31,37 @@ use crate::turns::{Counts, Diff, Snapshot, Turns};
 use crate::watch::{Changes, Watcher};
 pub use queue::Queued;
 
-/// How long FSEvents waits for more changes to merge with one. pi writes a
-/// line per message, so this only merges bursts, like a compaction's.
 const WATCH_LATENCY: Duration = Duration::from_millis(100);
 
-/// How long a prompt the chat's own pi may have written waits for pi to
-/// report it, before it counts as another pi's. pi writes the file and
-/// reports the message in either order.
+/// Allow file writes and pi's prompt events to arrive in either order.
 const REPORT_WAIT: Duration = Duration::from_secs(1);
 
-/// How many of its own prompts a chat remembers. Only the newest in the file
-/// is ever looked up.
 const SENT_KEPT: usize = 64;
-/// Alerts waiting for a slow listener. Each is a moment that's passed, so
-/// losing old ones is fine.
 const ALERTS: usize = 64;
 
-/// Where the engine keeps its files and finds pi's, and how it runs pi.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// The `pi` executable.
     pub pi: PathBuf,
-    /// pi's sessions folder, usually `~/.pi/agent/sessions`.
     pub sessions_dir: PathBuf,
-    /// The engine's own folder, usually `~/Library/Application Support/Ludolph`.
     pub state_dir: PathBuf,
-    /// How long a settled chat keeps its pi.
     pub idle: Duration,
-    /// How long pi gets to exit before it's killed.
     pub grace: Duration,
-    /// The user's home folder. Chats there have no project.
     pub home: PathBuf,
-    /// The Ludolph.app the engine runs from, which the login item opens.
-    /// `None` outside one, as for a development engine, which leaves the
-    /// login item alone.
+    /// `None` outside Ludolph.app; development engines must not change its login item.
     pub app: Option<PathBuf>,
-    /// Where the relay token and the phones' secrets are kept.
     pub secrets: SecretStore,
 }
 
 impl Config {
-    /// Where chats started without a project get their folders.
     pub fn scratch_dir(&self) -> PathBuf {
         self.state_dir.join("scratch")
     }
 
-    /// Whether chats in `cwd` belong to a project, rather than to "No
-    /// project" with the home and scratch folders.
     pub fn is_project(&self, cwd: &Path) -> bool {
         cwd != self.home && !cwd.starts_with(self.scratch_dir())
     }
 }
 
-/// The engine. Clones share it.
 #[derive(Debug, Clone)]
 pub struct Engine(Arc<Inner>);
 
@@ -98,26 +69,18 @@ pub struct Engine(Arc<Inner>);
 struct Inner {
     config: Config,
     state: Mutex<State>,
-    /// Bumped whenever the chat list changes.
     list: watch::Sender<u64>,
     alerts: broadcast::Sender<Alert>,
-    /// Its own lock, since reading a transcript can take a while.
     transcripts: Arc<Mutex<Transcripts>>,
-    /// The task that follows the sessions folder.
     watching: AbortHandle,
-    /// Shared with titling tasks, which don't keep the engine alive.
     titler: Arc<Titler>,
-    /// The saved settings. Writes hold the lock until the file is saved, so
-    /// they land in order.
+    /// Hold through persistence so concurrent settings writes land in order.
     settings: Mutex<Settings>,
     turns: Arc<Turns>,
     catalog: Catalog,
-    /// The task that keeps the relay link, if this Mac has one.
     relay: Mutex<Option<AbortHandle>>,
-    /// The linked phones' keys, which the relay link uses.
     phones: Arc<Phones>,
     phone: watch::Sender<Option<Phone>>,
-    /// The task that waits for a phone to link, while Settings shows a code.
     pairing_task: Mutex<Option<AbortHandle>>,
     pairing: watch::Sender<Option<Pairing>>,
 }
@@ -139,42 +102,28 @@ struct State {
     index: Index,
     runtime: Runtime,
     chats: HashMap<String, Chat>,
-    /// The engine is shutting down, so the runs it stops aren't news to
-    /// tell anyone about.
     stopping: bool,
 }
 
-/// What the engine knows about a chat beyond its session file.
 #[derive(Debug)]
 struct Chat {
     /// Held by commands that start or stop the chat's pi, so they don't overlap.
     ops: Arc<tokio::sync::Mutex<()>>,
-    /// A new chat whose session file pi hasn't written yet.
     draft: Option<Draft>,
     process: Option<Running>,
-    /// Bumped by every stop, so a send that started before one doesn't go
-    /// out after it.
+    /// Stop generation: reject sends that began before the latest Stop.
     stops: u64,
-    /// The `timestamp`s of the user messages the chat's own pi reported.
     sent: VecDeque<i64>,
-    /// Unsent prompts that wait for the current run to finish.
     waiting: VecDeque<queue::Waiting>,
     /// Another pi wrote a prompt to the session, so sending waits for a
     /// take-over.
     elsewhere: bool,
-    /// The title the engine or you gave the chat, which is newer than the
-    /// file's until pi writes it there.
+    /// Newer than the session file until pi records the rename.
     named: Option<String>,
-    /// A title is being asked for.
     titling: bool,
-    /// The run Ludolph started, from its snapshot until its changes are
-    /// saved.
     run: Option<Run>,
-    /// The latest run boundary, including while its snapshot is being saved.
     latest_turn: Option<i64>,
-    /// Bumped when a run starts or its changes finish saving.
     turns_revision: u64,
-    /// Bumped whenever the chat's view changes.
     changes: watch::Sender<u64>,
 }
 
@@ -203,7 +152,6 @@ impl Chat {
         self.changes.send_modify(|revision| *revision += 1);
     }
 
-    /// Remember a user message the chat's own pi reported.
     fn sent(&mut self, message: &Value) {
         let Some(at) = message["timestamp"]
             .as_i64()
@@ -220,12 +168,10 @@ impl Chat {
     }
 }
 
-/// A run whose changes will be saved once it settles.
 #[derive(Debug)]
 struct Run {
     before: Snapshot,
-    /// The timestamp of the user message that started it, once pi reports
-    /// it. Views find the run by it.
+    /// User-message timestamp; views use it to identify this run.
     key: Option<i64>,
     settled: bool,
 }
@@ -233,7 +179,6 @@ struct Run {
 #[derive(Debug, Clone)]
 struct Draft {
     cwd: PathBuf,
-    /// The file pi will write, from `get_state`.
     path: Option<PathBuf>,
     created: DateTime<Utc>,
 }
@@ -241,153 +186,102 @@ struct Draft {
 #[derive(Debug)]
 struct Running {
     pi: Arc<Pi>,
-    /// The credentials and models this pi loaded at startup.
     sources: Sources,
     live: Live,
-    /// Its extensions' open dialogs, oldest first. They end with the process.
     questions: Vec<Question>,
 }
 
-/// An extension's dialog, waiting for an answer (`docs/rpc-extension-ui.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
-    /// pi's request id, which the answer names.
     pub id: String,
     pub dialog: Dialog,
     pub title: String,
-    /// What a `confirm` asks about.
     pub message: Option<String>,
-    /// A `select`'s choices.
     pub options: Vec<String>,
-    /// An `editor`'s starting text.
     pub prefill: Option<String>,
 }
 
-/// What kind of answer a [`Question`] takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialog {
-    /// One of its options.
     Select,
-    /// Yes or no.
     Confirm,
-    /// One line of text.
     Input,
-    /// Text of any length.
     Editor,
 }
 
-/// An answer to a [`Question`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
-    /// The picked option or typed text, for every dialog but `confirm`.
     Value(String),
-    /// A `confirm`'s answer.
     Confirmed(bool),
 }
 
-/// A chat as the list shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatInfo {
-    /// pi's session id.
     pub id: String,
     pub cwd: PathBuf,
     pub created: DateTime<Utc>,
-    /// The session's summary; `None` for a draft.
     pub summary: Option<Summary>,
-    /// The session's name, or the title the engine just gave it.
     pub title: Option<String>,
     pub status: Status,
-    /// Another pi wrote to the session, so sending is off until a take-over.
     pub elsewhere: bool,
 }
 
-/// A chat and the latest messages of its transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub struct View {
     pub chat: ChatInfo,
     pub page: Page,
-    /// Changes whenever the page would, while the chat is working.
     pub revision: u64,
-    /// The latest run boundary, before its diff has necessarily been saved.
     pub latest_turn: Option<i64>,
-    /// Changes when run boundaries or saved diffs change, not on streamed text.
+    /// Changes on run boundaries and saved diffs, not streamed text.
     pub turns_revision: u64,
-    /// The oldest dialog the chat's pi waits on.
     pub question: Option<Question>,
-    /// What the chat's run waits on, while one is going.
     pub run: Option<live::Run>,
-    /// A failure that may have no assistant message, such as a failed compaction.
     pub failure: Option<String>,
     pub queued: Vec<Queued>,
 }
 
-/// What a chat is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Idle,
     Working,
-    /// An extension's dialog waits for an answer.
     AwaitingInput,
-    /// The last run ended on an error.
     Failed,
-    /// pi or the engine stopped during the last run.
     Interrupted,
 }
 
-/// A moment in a chat worth telling you about while you're away.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alert {
     pub chat: String,
     pub kind: AlertKind,
 }
 
-/// What happened in the chat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertKind {
-    /// A run ended well. One you stopped yourself doesn't count.
     Finished,
-    /// A run ended on an error.
+    /// A failed run; explicitly stopped runs don't alert.
     Failed,
-    /// pi exited during a run.
     Interrupted,
-    /// An extension's dialog waits for an answer.
     Input,
 }
 
-/// What pi did with a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivery {
-    /// It started a run.
     Started,
-    /// It held the message for a new turn, or gave it to pi to steer the current one.
     Queued,
-    /// An extension command or input handler took it, and no run started.
+    /// An extension consumed the input without starting a run.
     Handled,
 }
 
-/// The model settings, context use and spend a chat's composer shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Composer {
-    /// `provider/model`; `None` before pi has picked one.
     pub model: Option<String>,
     pub thinking: Option<String>,
-    /// The tokens in the context; `None` right after a compaction.
     pub context_tokens: Option<u64>,
     pub context_window: Option<u64>,
     pub spent: Spent,
 }
 
 impl Engine {
-    /// Start the engine: stop the pi processes a previous engine left
-    /// running, bring the index up to date, and keep it so as pi writes.
-    ///
-    /// The sessions folder is created if it doesn't exist, so it can be
-    /// watched.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the engine's folder or the sessions folder can't be read or
-    /// written.
     pub async fn start(config: Config) -> Result<Self> {
         std::fs::create_dir_all(&config.state_dir)
             .with_context(|| format!("creating {}", config.state_dir.display()))?;
@@ -404,8 +298,7 @@ impl Engine {
         let index_path = config.state_dir.join("index.json");
         let sessions_dir = config.sessions_dir.clone();
         let index = tokio::task::spawn_blocking(move || -> Result<Index> {
-            // The index is rebuilt from the session files, so a broken one
-            // only costs time.
+            // The index is disposable; session files remain the source of truth.
             let mut index = Index::load(&index_path).unwrap_or_else(|e| {
                 eprintln!("rebuilding the index: {e:#}");
                 Index::default()
@@ -425,7 +318,6 @@ impl Engine {
             stopping: false,
         };
         let settings = Settings::load(&config.state_dir)?;
-        // A moved app moves its login item.
         if let Err(e) = login::apply(&config.home, config.app.as_deref(), settings.open_at_login) {
             eprintln!("login item: {e:#}");
         }
@@ -459,7 +351,6 @@ impl Engine {
         Ok(engine)
     }
 
-    /// Every chat, most recently active first.
     pub fn chats(&self) -> Vec<ChatInfo> {
         let state = self.state();
         let mut chats: Vec<ChatInfo> = state
@@ -479,23 +370,14 @@ impl Engine {
         chats
     }
 
-    /// A counter that changes whenever [`Engine::chats`] would.
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.0.list.subscribe()
     }
 
-    /// The chats' alerts from now on. A receiver that falls far behind
-    /// loses the oldest ones.
     pub fn alerts(&self) -> broadcast::Receiver<Alert> {
         self.0.alerts.subscribe()
     }
 
-    /// The details of tool call `call` in chat `id`: what it printed so far
-    /// while it runs, then its whole result.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat or call, or the file can't be read.
     pub async fn tool_output(&self, id: &str, call: &str) -> Result<ToolOutput> {
         let path = {
             let state = self.state();
@@ -519,11 +401,6 @@ impl Engine {
         found.with_context(|| format!("no tool call {call} in chat {id}"))
     }
 
-    /// The `index`th image of message `message` in chat `id`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat or image, or the file can't be read.
     pub async fn image(&self, id: &str, message: &str, index: usize) -> Result<Image> {
         let path = {
             let state = self.state();
@@ -543,11 +420,6 @@ impl Engine {
         found.with_context(|| format!("no image {index} in message {message}"))
     }
 
-    /// A chat with the `window` of its transcript.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat, or its session file can't be read.
     pub async fn view(&self, id: &str, window: Window) -> Result<View> {
         let (
             chat,
@@ -626,11 +498,6 @@ impl Engine {
         })
     }
 
-    /// A counter that changes whenever [`Engine::view`] would for chat `id`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat.
     pub fn subscribe_chat(&self, id: &str) -> Result<watch::Receiver<u64>> {
         let mut state = self.state();
         known(&state, id)?;
@@ -642,17 +509,11 @@ impl Engine {
             .subscribe())
     }
 
-    /// The engine's settings.
     pub fn config(&self) -> &Config {
         &self.0.config
     }
 
-    /// Start a chat in `cwd`, and return its id. It's a draft until its first
-    /// message, since pi writes the session file only then.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `cwd` isn't a folder, or pi can't be started.
+    /// Keep a new chat as a draft until pi writes its first message.
     pub async fn create(&self, cwd: &Path) -> Result<String> {
         if !cwd.is_dir() {
             bail!("{} isn't a folder", cwd.display());
@@ -688,12 +549,6 @@ impl Engine {
         Ok(id)
     }
 
-    /// Send `text` to a chat, with images. While working, queue or steer as Settings chooses.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat, its folder is gone, or pi refuses the
-    /// message.
     pub async fn send(&self, id: &str, text: &str, images: Vec<Image>) -> Result<Delivery> {
         let ops = self.ops(id)?;
         let stops = self.stops(id);
@@ -721,7 +576,6 @@ impl Engine {
         stops: u64,
     ) -> Result<Delivery> {
         let pi = self.current_process(id).await?;
-        // The last run's changes are taken before anything can change more.
         self.finish_run(id).await;
         let (working, cwd) = {
             let state = self.state();
@@ -729,7 +583,6 @@ impl Engine {
             let working = chat.process.as_ref().is_some_and(|r| r.live.working());
             (working, cwd_of(&state, id))
         };
-        // A message to an idle chat starts a run, so the tree is taken first.
         let before = match cwd.filter(|_| !working) {
             Some(cwd) => self.0.turns.before(&cwd).await.unwrap_or_else(|e| {
                 eprintln!("chat {id}: skipping this run's changes: {e:#}");
@@ -775,14 +628,12 @@ impl Engine {
         Ok(delivery)
     }
 
-    /// Run `f` on the live tail of chat `id`, if `pi` is still its process.
     fn live_of<T>(&self, id: &str, pi: &Arc<Pi>, f: impl FnOnce(&mut Live) -> T) -> Option<T> {
         let mut state = self.state();
         let running = state.chats.get_mut(id)?.process.as_mut()?;
         Arc::ptr_eq(&running.pi, pi).then(|| f(&mut running.live))
     }
 
-    /// Send `text` to `pi` as a prompt, and return what pi did with it.
     async fn prompt(
         &self,
         id: &str,
@@ -828,8 +679,7 @@ impl Engine {
         }
     }
 
-    /// Save the changes of the chat's run if it settled. Callers hold the
-    /// chat's `ops`, so a new run can't start before its snapshot.
+    /// Callers hold `ops` so the next run cannot start before this snapshot.
     async fn finish_run(&self, id: &str) {
         let run = {
             let mut state = self.state();
@@ -860,11 +710,6 @@ impl Engine {
         }
     }
 
-    /// Read the chat's session details and cumulative saved usage without starting pi.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the chat is gone or its session cannot be read.
     pub async fn details(&self, id: &str) -> Result<(transcript::Details, Spent)> {
         let (path, spent) = {
             let state = self.state();
@@ -889,11 +734,6 @@ impl Engine {
         Ok((details, spent))
     }
 
-    /// Read the current uncommitted diff of the chat's whole repository.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the chat is gone, or the diff exceeds the snapshot limits.
     pub async fn working_changes(&self, id: &str) -> Result<Option<Diff>> {
         let cwd = {
             let state = self.state();
@@ -906,29 +746,16 @@ impl Engine {
         }
     }
 
-    /// The sizes of chat `id`'s saved runs, by the timestamp of the user
-    /// message that started each.
-    ///
-    /// # Errors
-    ///
-    /// Fails if they can't be read.
     pub async fn run_counts(&self, id: &str) -> Result<BTreeMap<i64, Counts>> {
         let (turns, id) = (self.0.turns.clone(), id.to_owned());
         tokio::task::spawn_blocking(move || turns.counts(&id)).await?
     }
 
-    /// What chat `id`'s run `key` changed, if it was saved.
-    ///
-    /// # Errors
-    ///
-    /// Fails if it can't be read.
     pub async fn run_changes(&self, id: &str, key: i64) -> Result<Option<Diff>> {
         let (turns, id) = (self.0.turns.clone(), id.to_owned());
         tokio::task::spawn_blocking(move || turns.load(&id, key)).await?
     }
 
-    /// Ask for a title in the background if the chat has none, from its
-    /// first prompt or else from `text`, the message just sent.
     fn title_soon(&self, id: &str, text: &str) {
         let prompt = {
             let mut state = self.state();
@@ -973,8 +800,6 @@ impl Engine {
         });
     }
 
-    /// Give chat `id` the title `title` through its pi, unless it got one
-    /// meanwhile. A chat whose pi has stopped is left for its next message.
     async fn name(&self, id: &str, title: &str) -> Result<()> {
         let ops = self.ops(id)?;
         let _ops = ops.lock().await;
@@ -1005,13 +830,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Rename chat `id` to `title` through its pi, which it starts if it has
-    /// to, since pi owns the session file.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the title is empty, there's no such chat, another pi has it
-    /// open, or pi refuses.
     pub async fn rename(&self, id: &str, title: &str) -> Result<()> {
         let title = title.trim();
         if title.is_empty() {
@@ -1033,12 +851,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Move an idle chat to `cwd`, keeping its session id and history.
-    ///
-    /// # Errors
-    ///
-    /// Fail if the destination isn't a folder, the chat is busy or open elsewhere,
-    /// or its session files can't be moved.
     pub async fn move_chat(&self, id: &str, cwd: &Path) -> Result<()> {
         if !cwd.is_absolute() {
             bail!("the project path must be absolute");
@@ -1102,13 +914,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Delete chat `id`: stop its pi, then remove every copy of its
-    /// session file and its saved turn changes.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat, another pi has it open, its pi can't
-    /// be stopped, or a file can't be removed.
     pub async fn delete(&self, id: &str) -> Result<()> {
         let ops = self.ops(id)?;
         let _ops = ops.lock().await;
@@ -1152,12 +957,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Turn sending back on for a chat another pi wrote to. The next message
-    /// starts a fresh pi, which loads the file as it is then.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat.
+    /// Restart pi from the changed session file before allowing sends again.
     pub async fn take_over(&self, id: &str) -> Result<()> {
         let ops = self.ops(id)?;
         let _ops = ops.lock().await;
@@ -1169,17 +969,11 @@ impl Engine {
         Ok(())
     }
 
-    /// `heard` from dictation, cleaned up by the sidecar model.
-    ///
-    /// # Errors
-    ///
-    /// Fails if it's blank, or the model fails.
     pub async fn polish(&self, heard: &str) -> Result<String> {
         let model = self.settings().sidecar_model;
         self.0.titler.polish(heard, model.as_deref()).await
     }
 
-    /// The current settings.
     pub fn settings(&self) -> Settings {
         self.0
             .settings
@@ -1188,12 +982,6 @@ impl Engine {
             .clone()
     }
 
-    /// Save `settings` and use them from now on.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the sidecar model isn't one pi lists, or the file can't be
-    /// written.
     pub async fn set_settings(&self, settings: Settings) -> Result<Settings> {
         if let Some(model) = &settings.sidecar_model
             && self.0.catalog.find(model).await?.is_none()
@@ -1212,30 +1000,19 @@ impl Engine {
         Ok(settings)
     }
 
-    /// How this Mac's link to the relay stands, if it has one.
     pub fn phone(&self) -> Option<Phone> {
         self.0.phone.borrow().clone()
     }
 
-    /// A phone linking through this Mac, if one is or just did.
     pub fn pairing(&self) -> Option<Pairing> {
         self.0.pairing.borrow().clone()
     }
 
-    /// The relay this Mac links through: its link's, or the default.
     pub fn relay(&self) -> String {
         self.phone()
             .map_or_else(|| DEFAULT_RELAY.to_owned(), |phone| phone.relay)
     }
 
-    /// Start waiting for a phone to link through `relay`, or through the
-    /// relay this Mac is linked to, in place of any wait under way. A Mac new
-    /// to the relay keeps the link the relay gives it.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the address isn't a relay's, or names another relay than
-    /// the one this Mac is linked to.
     pub fn link_phone(&self, relay: Option<&str>) -> Result<()> {
         let saved = Link::load(&self.0.config.state_dir, self.0.config.secrets)?;
         let relay = match (&saved, relay.map(|r| r.trim().trim_end_matches('/'))) {
@@ -1270,8 +1047,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Wait on `relay` for a phone to link, and keep its secret, and the link
-    /// a new Mac gets.
     async fn pair(&self, relay: &str, token: Option<String>) -> Result<()> {
         let secret = seal::new_secret()?;
         let shown = |url, expires_in: u64| {
@@ -1282,7 +1057,6 @@ impl Engine {
                 .send_replace(Some(Pairing::Waiting { url, expires_at }));
         };
         let token = match relay::pair(relay, token.as_deref(), &secret, shown).await {
-            // The relay forgot this Mac, so it links as a new one.
             Err(e) if token.is_some() && relay::is_rejected(&e) => {
                 relay::pair(relay, None, &secret, shown).await?
             }
@@ -1310,7 +1084,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Stop waiting for a phone to link, and drop how the last wait ended.
     pub fn stop_pairing(&self) {
         let task = self
             .0
@@ -1324,12 +1097,6 @@ impl Engine {
         self.0.pairing.send_replace(None);
     }
 
-    /// Disconnect from the relay, forget the link, and have the relay
-    /// forget this Mac in the background.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the saved link can't be read or removed.
     pub fn unlink_phone(&self) -> Result<()> {
         self.stop_pairing();
         let config = &self.0.config;
@@ -1348,10 +1115,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Connect the saved link, if there is one. macOS may ask the user before
-    /// it gives out the Keychain item, say after the app's signature changed,
-    /// so the engine serves the app meanwhile, and a refusal leaves it
-    /// unlinked.
+    /// Keychain access may prompt or fail, so it must not delay serving the app.
     async fn reconnect(self) {
         let (dir, store) = (self.0.config.state_dir.clone(), self.0.config.secrets);
         let loaded = tokio::task::spawn_blocking(move || Link::load(&dir, store)).await;
@@ -1366,7 +1130,6 @@ impl Engine {
         }
     }
 
-    /// Keep `link` to the relay from now on, in place of any other.
     fn connect(&self, link: Link) -> Result<()> {
         self.disconnect();
         self.0.phones.set(&link.phones)?;
@@ -1399,28 +1162,14 @@ impl Engine {
         self.0.phone.send_replace(None);
     }
 
-    /// The models pi can use.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi can't list them.
     pub async fn models(&self) -> Result<Available> {
         self.0.catalog.available().await
     }
 
-    /// Follow changes to the available models, including terminal sign-ins.
     pub fn subscribe_models(&self) -> watch::Receiver<u64> {
         self.0.catalog.subscribe()
     }
 
-    /// Switch chat `id` to `model` (`provider/model`) and the thinking level
-    /// `thinking` from its next answer, and return its settings then. pi
-    /// keeps the level within what the model supports, and records both in
-    /// the session file.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat, another pi has it open, or pi refuses.
     pub async fn set_model(
         &self,
         id: &str,
@@ -1457,13 +1206,7 @@ impl Engine {
         live_composer(&pi).await
     }
 
-    /// Chat `id`'s model, thinking level and context use: its pi's if it's
-    /// running, otherwise what its session file last recorded, so asking
-    /// doesn't start pi.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat.
+    /// Read composer state without starting pi for an idle chat.
     pub async fn composer(&self, id: &str) -> Result<Composer> {
         let (pi, saved) = {
             let state = self.state();
@@ -1481,7 +1224,6 @@ impl Engine {
         if let Some(pi) = pi {
             match live_composer(&pi).await {
                 Ok(composer) => return Ok(composer),
-                // It may be stopping for being idle; the file has the same.
                 Err(e) => eprintln!("chat {id}: asking pi for its model: {e:#}"),
             }
         }
@@ -1496,12 +1238,6 @@ impl Engine {
         Ok(composer)
     }
 
-    /// The skills chat `id` can run: its pi's if it's running, otherwise
-    /// those a pi in its folder would load.
-    ///
-    /// # Errors
-    ///
-    /// Fails if there's no such chat, or pi can't list them.
     pub async fn skills(&self, id: &str) -> Result<Vec<Skill>> {
         let (pi, cwd) = {
             let state = self.state();
@@ -1515,7 +1251,6 @@ impl Engine {
         if let Some(pi) = pi {
             match pi.call(json!({"type": "get_commands"})).await {
                 Ok(answer) => return Ok(skills::from_commands(&answer)),
-                // It may be stopping for being idle.
                 Err(e) => eprintln!("chat {id}: asking pi for its skills: {e:#}"),
             }
         }
@@ -1523,12 +1258,6 @@ impl Engine {
         self.skills_in(Some(&cwd)).await
     }
 
-    /// The skills a new chat in `cwd` could run, or in a scratch folder
-    /// without one.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `cwd` isn't a folder, or pi can't list them.
     pub async fn skills_in(&self, cwd: Option<&Path>) -> Result<Vec<Skill>> {
         // A scratch folder has no skills of its own, like the engine's.
         let cwd = cwd.unwrap_or(&self.0.config.state_dir);
@@ -1541,20 +1270,12 @@ impl Engine {
         Ok(skills::from_commands(&answer))
     }
 
-    /// The oldest dialog chat `id`'s pi waits on.
     pub fn question(&self, id: &str) -> Option<Question> {
         let state = self.state();
         let running = state.chats.get(id)?.process.as_ref()?;
         running.questions.first().cloned()
     }
 
-    /// Answer the open dialog `question` in chat `id`. A question is answered
-    /// once.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the chat's pi has no such open question, the reply doesn't
-    /// fit its dialog, or pi can't be written to.
     pub async fn respond(&self, id: &str, question: &str, reply: Reply) -> Result<()> {
         let pi = {
             let mut state = self.state();
@@ -1584,12 +1305,6 @@ impl Engine {
         pi.send(&answer).await
     }
 
-    /// Stop a chat's run: dismiss its open dialogs, drop its queued
-    /// messages, then abort.
-    ///
-    /// # Errors
-    ///
-    /// Fails if pi refuses.
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let (pi, questions) = {
             let mut state = self.state();
@@ -1618,12 +1333,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Stop every pi, giving each the grace period to finish, and save the
-    /// index.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the index can't be saved.
     pub async fn shutdown(&self) -> Result<()> {
         self.0.watching.abort();
         self.stop_pairing();
@@ -1678,20 +1387,17 @@ impl Engine {
         Ok(())
     }
 
-    /// The lock that serializes a chat's commands.
     fn ops(&self, id: &str) -> Result<Arc<tokio::sync::Mutex<()>>> {
         let mut state = self.state();
         known(&state, id)?;
         Ok(state.chats.entry(id.to_owned()).or_default().ops.clone())
     }
 
-    /// How many times chat `id` was stopped.
     fn stops(&self, id: &str) -> u64 {
         self.state().chats.get(id).map_or(0, |chat| chat.stops)
     }
 
-    /// Replace an idle pi whose credentials changed, without interrupting a run or dialog.
-    /// Callers hold the chat's `ops`.
+    /// Callers hold `ops`; never replace a process during a run or dialog.
     async fn current_process(&self, id: &str) -> Result<Arc<Pi>> {
         let sources = self.0.catalog.sources()?;
         let stale = {
@@ -1714,7 +1420,7 @@ impl Engine {
         self.process(id)
     }
 
-    /// The chat's pi, started if it has none. Callers hold the chat's `ops`.
+    /// Callers hold the chat's `ops` lock.
     fn process(&self, id: &str) -> Result<Arc<Pi>> {
         let mut state = self.state();
         let State {
@@ -1763,8 +1469,6 @@ impl Engine {
         Ok(pi)
     }
 
-    /// Follow one pi process until it exits: fold its events in, and stop it
-    /// once it has been idle for the configured time.
     async fn watch(self, id: String, pi: Arc<Pi>, mut events: mpsc::Receiver<Event>) {
         let idle = self.0.config.idle;
         let mut deadline = Some(Instant::now() + idle);
@@ -1799,7 +1503,6 @@ impl Engine {
         }
     }
 
-    /// Fold one of `pi`'s events into its chat.
     fn apply(&self, id: &str, pi: &Arc<Pi>, event: &Event) -> Result<()> {
         let mut state = self.state();
         let State {
@@ -1858,7 +1561,6 @@ impl Engine {
                 if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
                     index.refresh_file(&path)?;
                 }
-                // The file has the run's messages now.
                 if let Some(running) = chat.process.as_mut() {
                     running.live.clear_messages();
                 }
@@ -1880,7 +1582,6 @@ impl Engine {
                     "confirm" => Dialog::Confirm,
                     "input" => Dialog::Input,
                     "editor" => Dialog::Editor,
-                    // `notify` and the like expect no answer.
                     _ => return Ok(()),
                 };
                 if running.questions.is_empty() {
@@ -1943,8 +1644,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Stop `pi` if its chat is still idle, and return whether it did. A
-    /// command that's starting a run, or a run that's going, keeps it.
     async fn stop_idle(&self, id: &str, pi: &Arc<Pi>) -> Result<bool> {
         let Some(ops): Option<OwnedMutexGuard<()>> = self.state().chats.get(id).and_then(|chat| {
             let ops = chat.ops.clone();
@@ -1968,15 +1667,12 @@ impl Engine {
         Ok(true)
     }
 
-    /// Clean up after `pi` exited, by itself or because it was stopped.
     fn exited(&self, id: &str, pi: &Arc<Pi>) -> Result<()> {
         self.detach(id, pi)?;
         self.changed();
         Ok(())
     }
 
-    /// Forget `pi` as its chat's process, if it still is, and tell about a
-    /// run it cut short.
     fn detach(&self, id: &str, pi: &Arc<Pi>) -> Result<()> {
         let mut state = self.state();
         let State {
@@ -2000,13 +1696,9 @@ impl Engine {
         if running.live.working() {
             index.set_interrupted(id);
         }
-        // A draft pi never wrote, whose pi stopped idle, has nothing to show
-        // or resume. One cut off mid-run stays, so its message can be sent
-        // again.
+        // Keep interrupted drafts for retry; empty idle drafts have no history to resume.
         let unwritten = |draft: &Draft| draft.path.as_deref().and_then(|p| index.get(p)).is_none();
         let dropped = !running.live.working() && chat.draft.take_if(|d| unwritten(d)).is_some();
-        // An idle pi leaves nothing a viewer sees but its questions; a
-        // working one leaves the chat interrupted.
         if dropped || running.live.working() || !running.questions.is_empty() {
             chat.changed();
         }
@@ -2023,12 +1715,9 @@ impl Engine {
             chat: id.to_owned(),
             kind,
         };
-        // With nobody listening, there's no one to tell.
         drop(self.0.alerts.send(alert));
     }
 
-    /// Bring the index up to date with what the sessions folder reported,
-    /// and tell the list and the open chats what changed.
     fn sync(&self, changes: Changes) {
         let sessions_dir = &self.0.config.sessions_dir;
         let mut state = self.state();
@@ -2112,9 +1801,7 @@ impl Engine {
         }
     }
 
-    /// Wait for the chat's own pi to report the prompt sent at `at`. If it
-    /// doesn't, another pi wrote it: the chat's pi has a stale view of the
-    /// file now, so it's stopped, and sending waits for a take-over.
+    /// Stop a stale session writer if pi never acknowledges the prompt found in its file.
     async fn unless_reported(self, id: String, at: i64) {
         tokio::time::sleep(REPORT_WAIT).await;
         let pi = {
@@ -2142,8 +1829,7 @@ impl Engine {
         }
     }
 
-    /// Drop `pi`'s question when its dialog's own timeout ends it, since pi
-    /// doesn't say so.
+    /// pi does not report when an extension dialog times out.
     async fn expire(self, id: String, pi: Arc<Pi>, question: String, wait: Duration) {
         tokio::time::sleep(wait).await;
         let removed = {
@@ -2164,7 +1850,6 @@ impl Engine {
         }
     }
 
-    /// Tell the chat's and the list's viewers that its questions changed.
     fn asked(&self, id: &str) {
         if let Some(chat) = self.state().chats.get(id) {
             chat.changed();
@@ -2182,8 +1867,6 @@ impl Engine {
     }
 }
 
-/// Apply the sessions folder's changes to the engine until it's gone. The
-/// task holds the engine weakly, so dropping the engine ends it.
 async fn follow(engine: Weak<Inner>, watcher: Watcher) {
     loop {
         let changes = watcher.changes().await;
@@ -2206,7 +1889,6 @@ async fn follow(engine: Weak<Inner>, watcher: Watcher) {
     }
 }
 
-/// What a running pi says about its model and context.
 async fn live_composer(pi: &Pi) -> Result<Composer> {
     let (state, stats) = tokio::try_join!(
         pi.call(json!({"type": "get_state"})),
@@ -2228,7 +1910,6 @@ async fn live_composer(pi: &Pi) -> Result<Composer> {
     })
 }
 
-/// Fail unless `id` is a chat in the index or a draft.
 fn known(state: &State, id: &str) -> Result<()> {
     if !state.chats.contains_key(id) && state.index.find(id).is_none() {
         bail!("no chat {id}");
@@ -2236,14 +1917,12 @@ fn known(state: &State, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The chat's folder: the session's, or the draft's.
 fn cwd_of(state: &State, id: &str) -> Option<PathBuf> {
     let draft = state.chats.get(id).and_then(|chat| chat.draft.as_ref());
     let session = state.index.find(id).map(|(_, s)| s.cwd.clone());
     session.or_else(|| draft.map(|draft| draft.cwd.clone()))
 }
 
-/// The chat's session file: the index's, or the one pi named for a draft.
 fn file_of(index: &Index, id: &str, draft: Option<&Draft>) -> Option<PathBuf> {
     index
         .find(id)
@@ -2251,7 +1930,6 @@ fn file_of(index: &Index, id: &str, draft: Option<&Draft>) -> Option<PathBuf> {
         .or_else(|| draft?.path.clone())
 }
 
-/// A chat in the index, as the list shows it.
 fn info(state: &State, summary: &Summary) -> ChatInfo {
     let chat = state.chats.get(&summary.id);
     ChatInfo {
@@ -2267,7 +1945,6 @@ fn info(state: &State, summary: &Summary) -> ChatInfo {
     }
 }
 
-/// A draft pi hasn't written yet, as the list shows it.
 fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
     let draft = chat.draft.as_ref()?;
     let written = draft.path.as_deref().and_then(|path| state.index.get(path));
@@ -2282,9 +1959,6 @@ fn draft_info(state: &State, id: &str, chat: &Chat) -> Option<ChatInfo> {
     })
 }
 
-/// What a chat is doing, from its process if it has one, else from whether
-/// the engine cut its run short, else from how its last run ended in the
-/// file.
 fn status(chat: Option<&Chat>, summary: Option<&Summary>, interrupted: bool) -> Status {
     if let Some(running) = chat.and_then(|chat| chat.process.as_ref()) {
         let live = &running.live;

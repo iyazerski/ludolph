@@ -1,6 +1,3 @@
-//! The main window's sidebar: a new chat and the search, then the chats by
-//! project, each under its folder.
-
 use chrono::Utc;
 use rune::{El, col, el, row, text};
 use rune_kit::shell::{ROW_HEIGHT, RowStatus, Sidebar, SidebarRow};
@@ -13,8 +10,6 @@ use crate::app::{GROUP_CHATS, State, project_drop_key};
 use crate::data::{Chat, Status};
 use crate::labels::ago;
 
-/// How far a chat's title sits in from its project's folder: past the
-/// folder icon and its gap, so the titles line up with the project's name.
 const NAME_X: f32 = 16.0 + 6.0;
 
 pub fn view(s: &State, k: &Kit) -> El {
@@ -37,7 +32,6 @@ pub fn view(s: &State, k: &Kit) -> El {
                 .detail("⌘N")
                 .selected(on_new)
                 .on_select(|s: &mut State, _| {
-                    // Arrows pass over the row too; a draft already shown keeps its text.
                     if s.chat().and_then(|p| p.draft()).is_none() {
                         s.new_chat();
                     }
@@ -97,8 +91,6 @@ pub fn view(s: &State, k: &Kit) -> El {
     bar.build(k)
 }
 
-/// A project's folder, which opens and closes it, and its chats, the first
-/// [`GROUP_CHATS`] of them until "Show more".
 fn project(s: &State, k: &Kit, key: String, items: &[&Chat]) -> El {
     let project = items[0].project.as_ref();
     let name = project.map_or("No project", |p| p.name.as_str());
@@ -124,7 +116,6 @@ fn project(s: &State, k: &Kit, key: String, items: &[&Chat]) -> El {
                 .help(format!("New chat in {name}"))
                 .on_press(move |s: &mut State| s.new_chat_in(id.clone()))
                 .build(k)
-                // Pointer only, and only under it, as the row's other hover controls.
                 .focusable(false)
                 .group_opacity(0.0, 1.0),
         );
@@ -175,8 +166,6 @@ fn project(s: &State, k: &Kit, key: String, items: &[&Chat]) -> El {
     out
 }
 
-/// A chat's row: its title under its project's name, and its status at the
-/// end. In search results it names the project under the title instead.
 fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
     let t = tones(k);
     let unseen = list::is_done(s, c);
@@ -191,7 +180,6 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
     };
     let id = c.id.clone();
     let mut r = SidebarRow::new(c.title());
-    // A working chat's time is always "now", so the dots say it alone.
     if c.status != Status::Working {
         r = r.detail(ago(c.active_at(), Utc::now()));
     }
@@ -211,7 +199,6 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
     if with_project {
         r = r.subtitle(c.project.as_ref().map_or("No project", |p| p.name.as_str()));
     } else {
-        // An empty lead the folder icon's size, so the title lines up with the project's name.
         r = r.avatar(el());
     }
     let id = c.id.clone();

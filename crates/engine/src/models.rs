@@ -1,10 +1,3 @@
-//! The models pi can use, for the composer's picker.
-//!
-//! pi lists them only over RPC (`get_available_models`), so the catalog asks
-//! a short-lived pi without a session, and keeps the answer for a while: the
-//! list changes only when someone edits pi's settings or logs in. The same pi
-//! says which model it starts on (`get_state`): its default.
-
 mod sources;
 
 pub(crate) use sources::Sources;
@@ -20,26 +13,20 @@ use tokio::time::Instant;
 
 use crate::pi::Pi;
 
-/// How long a fetched list is used before pi is asked again.
 const FRESH: Duration = Duration::from_mins(10);
 
 /// pi's thinking levels, in order (`getSupportedThinkingLevels` in pi-ai).
 const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-/// One model pi can use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Model {
-    /// `provider/model`, which [`crate::engine::Engine::set_model`] takes.
     pub id: String,
     pub name: String,
     pub context_window: Option<u64>,
-    /// The thinking levels it supports, just `off` if it doesn't reason.
     pub levels: Vec<String>,
 }
 
 impl Model {
-    /// Read one of pi's model objects (`docs/rpc-commands.md`), if it has
-    /// an id and a provider.
     pub fn from_pi(model: &Value) -> Option<Self> {
         let provider = model["provider"].as_str()?;
         let id = model["id"].as_str()?;
@@ -52,9 +39,7 @@ impl Model {
     }
 }
 
-/// The thinking levels `model` supports, as pi works them out: none past
-/// `off` without reasoning, and `xhigh` and `max` only when its level map
-/// names them.
+/// Match pi's level map: reasoning alone does not imply `xhigh` or `max` support.
 fn levels(model: &Value) -> Vec<String> {
     if model["reasoning"].as_bool() != Some(true) {
         return vec!["off".to_owned()];
@@ -71,15 +56,13 @@ fn levels(model: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The models pi can use, fetched when first needed and again once stale.
 #[derive(Debug)]
 pub struct Catalog {
     program: PathBuf,
-    /// Where the fetching pi runs: pi reads project settings from its folder,
-    /// so this is one without any.
+    /// Use a folder without project settings when discovering global models.
     cwd: PathBuf,
     grace: Duration,
-    /// Held while fetching, so callers at the same time share one pi.
+    /// Concurrent catalog requests share one pi process.
     cached: Mutex<Option<(Instant, Sources, Available)>>,
     files: [PathBuf; 3],
     observed: StdMutex<Sources>,
@@ -87,7 +70,6 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Track pi's configuration in `agent` and ask `program` in `cwd` for its models.
     pub fn new(program: PathBuf, cwd: PathBuf, agent: &Path, grace: Duration) -> Result<Self> {
         let files = ["auth.json", "models.json", "settings.json"].map(|name| agent.join(name));
         let observed = Sources::read(&files)?;
@@ -102,12 +84,10 @@ impl Catalog {
         })
     }
 
-    /// Follow changes to pi's credentials and model configuration.
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.changes.subscribe()
     }
 
-    /// Read the configuration revision without reading any credentials.
     pub(crate) fn sources(&self) -> Result<Sources> {
         let sources = Sources::read(&self.files)?;
         let mut observed = self.observed.lock().expect("lock poisoned");
@@ -118,16 +98,10 @@ impl Catalog {
         Ok(sources)
     }
 
-    /// Whether a reported filesystem path can change the model list.
     pub(crate) fn watches(&self, path: &Path) -> bool {
         self.files.iter().any(|file| file == path)
     }
 
-    /// Read the model list and defaults from one pi snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Fail if pi cannot start or list its models.
     pub async fn available(&self) -> Result<Available> {
         let mut cached = self.cached.lock().await;
         let sources = self.sources()?;
@@ -142,11 +116,6 @@ impl Catalog {
         Ok(fetched)
     }
 
-    /// The model `id`, if pi lists it.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the models can't be fetched.
     pub async fn find(&self, id: &str) -> Result<Option<Model>> {
         let available = self.available().await?;
         Ok(available
@@ -156,7 +125,6 @@ impl Catalog {
             .cloned())
     }
 
-    /// Ask a new pi for its models and the one it starts on.
     async fn fetch(&self) -> Result<Available> {
         let commands = vec![
             json!({"type": "get_available_models"}),
@@ -185,13 +153,10 @@ impl Catalog {
     }
 }
 
-/// What one pi said: its models, and the one it starts on.
 #[derive(Debug, Clone)]
 pub struct Available {
-    /// The default thinking level, Medium if pi omitted it.
+    /// pi omits this for its Medium default.
     pub reasoning: String,
-    /// The models available to this sign-in.
     pub models: Arc<Vec<Model>>,
-    /// The model pi starts on.
     pub default: Option<String>,
 }

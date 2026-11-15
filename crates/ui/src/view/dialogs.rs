@@ -1,11 +1,8 @@
-//! Dialogs for renaming and deleting chats.
-
 use rune::{El, Tx, row, text};
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, TextInput};
 
 use crate::app::{ChatDialog, State};
 
-/// The open chat dialog, if any, onto `layer`.
 pub fn chat_dialog(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let Some(dialog) = &s.chat_dialog else {
         return;
@@ -62,8 +59,6 @@ pub fn chat_dialog(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
-/// A chat's title cut to a sentence's length, on one line: an untitled
-/// chat's is its whole first message.
 fn short(title: &str) -> String {
     const MAX: usize = 80;
     let line = title.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -73,7 +68,6 @@ fn short(title: &str) -> String {
     }
 }
 
-/// Cancel, then the dialog's action, at its bottom right.
 fn buttons(k: &Kit, action: El) -> El {
     row()
         .w_full()

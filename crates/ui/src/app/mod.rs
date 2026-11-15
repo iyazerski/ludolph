@@ -1,7 +1,3 @@
-//! A window's state and what changes it: navigation, the engine's feeds
-//! and the windows' hand-offs here, a chat's actions in [`actions`], a new chat's picks in
-//! [`draft`], images in [`attach`], and the settings page in [`settings`].
-
 mod actions;
 mod attach;
 mod chats;
@@ -36,68 +32,47 @@ pub use self::page::{
 };
 pub use self::settings::{QR_SIZE, SettingsPage, Update};
 
-/// The most chats the list loads, for its search.
 const LIST_LIMIT: usize = 200;
-/// Chats a project shows at first, and how many more "Show more" adds.
 pub const GROUP_CHATS: usize = 5;
 const TOAST_FOR: Duration = Duration::from_millis(3800);
 
-/// Which of the app's two windows a state belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Window {
-    /// The floating window on the global shortcut, which pages between the
-    /// list and a chat.
     Quick,
-    /// The regular window, with the list in a sidebar beside the chat.
     Main,
 }
 
 pub struct State {
     pub api: Api,
     pub window: Window,
-    /// Whether the app is connected to the engine.
     pub engine_up: bool,
-    /// Shared by both windows, which run on the same thread.
     pub prefs: Rc<RefCell<Prefs>>,
-    /// The quick window's global shortcut while it's registered, shared too:
-    /// the main window's settings change it.
     pub hotkey: Rc<Cell<Option<ShortcutId>>>,
-    /// The engine's `expandTools` setting, shared too, so both windows
-    /// draw tool calls alike.
     pub expand_tools: Rc<Cell<bool>>,
-    /// The native window, once it first opens, to read where it is.
     handle: Rc<OnceCell<WindowHandle>>,
     pub page: Page,
-    /// The main window's sidebar: its width, and whether it's open.
     pub sidebar: PaneState,
     pub list: ListState,
     pub toast: Option<Toast>,
-    /// The rename or delete dialog a chat's menu opened.
     pub chat_dialog: Option<ChatDialog>,
     /// Edits aimed at the rename field once its dialog is gone land here.
     scratch_title: TextEdit,
-    /// pi's models and their thinking levels, loaded once.
     pub catalog: Catalog,
-    /// Decodes images off the UI thread; set once the app starts.
     pub images: Option<ImageCache>,
     /// Unsent text per chat (`new` for a new chat), kept while moving between chats.
     drafts: HashMap<String, String>,
-    /// Counts page changes, so a late answer for a page that's gone is dropped.
+    /// Page generation: discard replies for pages the user has left.
     nav: u64,
     /// What the diff view reads and changes once its page is gone.
     scratch_diff: DiffState,
-    /// The chat list's notices, while the window shows.
     list_feed: Option<Subscription>,
-    /// Model changes are followed only while this window is visible.
     models_feed: Option<Subscription>,
-    /// Whether the window is on screen.
     shown: bool,
 }
 
 pub enum Page {
     List,
     Chat(Box<ChatPage>),
-    /// Only the main window shows the settings.
     Settings(Box<SettingsPage>),
 }
 
@@ -107,24 +82,19 @@ pub struct ListState {
     pub query: TextEdit,
     pub filter: ListFilter,
     pub error: Option<String>,
-    /// How many chats each expanded project shows, by its key.
     pub more: HashMap<String, usize>,
     pub drag_chat: Option<String>,
     pub drop_project: Option<String>,
     loading: bool,
-    /// The list changed while it loaded, so it loads again after.
     stale: bool,
 }
 
-/// Which chats the list shows, by status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ListFilter {
     #[default]
     All,
     Working,
-    /// Finished since they were last opened: the ones marked Done.
     Done,
-    /// Active in the last `RECENT`.
     Recent,
 }
 
@@ -148,7 +118,6 @@ pub struct Toast {
     time: ToastTime,
 }
 
-/// A toast's time left on screen, held while the window is hidden.
 #[derive(Clone, Copy)]
 enum ToastTime {
     Until(Instant),
@@ -172,7 +141,6 @@ impl State {
     ) -> Self {
         let page = match window {
             Window::Quick => Page::List,
-            // The main window opens on a new chat, as there's always a page beside the list.
             Window::Main => Page::Chat(Box::new(ChatPage::new(
                 0,
                 Target::New(Draft::new(prefs.borrow().new_chat.clone())),
@@ -272,8 +240,6 @@ impl State {
         self.api.save_prefs(&self.prefs.borrow());
     }
 
-    /// Whether the window shows the chat list now: the main window's
-    /// sidebar always does, the quick window only in place of a chat.
     pub fn list_shown(&self) -> bool {
         self.window == Window::Main || self.chat().is_none()
     }
@@ -300,8 +266,6 @@ impl State {
         self.sync_tick();
     }
 
-    /// Follow the engine while the window shows, and let it rest while it's
-    /// hidden: a hidden window has nothing to redraw.
     pub fn visibility_changed(&mut self, shown: bool) {
         self.shown = shown;
         if let Some(toast) = &mut self.toast {
@@ -317,7 +281,6 @@ impl State {
         if shown {
             self.follow();
             self.load_details();
-            // A phone may have linked, or a code expired, while nothing ticked.
             if self.settings_page().is_some() {
                 self.load_phone();
             }
@@ -331,7 +294,6 @@ impl State {
         self.sync_tick();
     }
 
-    /// Subscribe to what the shown page needs, if it isn't yet.
     fn follow(&mut self) {
         if !self.shown {
             return;
@@ -347,7 +309,6 @@ impl State {
                 if s.list_shown() {
                     s.load_chats();
                 } else {
-                    // The list loads again once it shows.
                     s.list.stale = true;
                 }
             }));
@@ -369,9 +330,6 @@ impl State {
         }
     }
 
-    /// Tick each second while something on screen counts: a toast's time,
-    /// the working clock, a copy's check, a retry's countdown, a phone link
-    /// connecting.
     pub(super) fn sync_tick(&mut self) {
         let toast = self
             .toast
@@ -388,7 +346,6 @@ impl State {
             .tick(self.shown && (toast || chat || linking || details));
     }
 
-    /// Show or hide the window; it opens where it was left.
     pub fn toggle_window(&mut self) {
         if self.api.app().is_visible() {
             return self.hide();
@@ -396,7 +353,6 @@ impl State {
         self.open();
     }
 
-    /// Bring the window forward.
     pub fn open(&mut self) {
         self.api.app().open();
         // Rune reports visibility changes only after the first frame, so the
@@ -407,8 +363,6 @@ impl State {
         }
     }
 
-    /// Put the window away: the quick window hides, and the main window
-    /// closes as its close button would, keeping its state.
     pub fn hide(&mut self) {
         match self.window {
             Window::Quick => {
@@ -420,20 +374,15 @@ impl State {
         }
     }
 
-    /// The main window closed: it rests, and the app leaves the Dock, as
-    /// the quick window and the shortcut stay.
     pub fn closed(&mut self, _: &mut Tx) {
         self.keep_frame();
         self.stop_dictating();
         self.visibility_changed(false);
         self.api.app().set_dock_icon(false);
-        // Its transcript is most of its memory, and the app may stay hidden for
-        // days. It opens again on a new chat, keeping any unsent text.
+        // A hidden app can stay alive for days; drop its transcript but preserve unsent drafts.
         self.new_chat();
     }
 
-    /// Remember where the main window is, to open it there next run. A
-    /// minimized or full-screen window keeps the place it had before.
     pub fn keep_frame(&mut self) {
         if self.window != Window::Main {
             return;
@@ -451,8 +400,6 @@ impl State {
         self.save_prefs();
     }
 
-    /// Show chat `id` in the other window. Expanding the quick window into
-    /// the main one puts it away; the main window stays behind the quick one.
     pub fn open_in_peer(&mut self, id: String) {
         self.api.peer().update(move |s, _| s.present(&id));
         if self.window == Window::Quick {
@@ -460,13 +407,11 @@ impl State {
         }
     }
 
-    /// Bring the main window forward from the quick window's list, which hides.
     pub fn open_main(&mut self) {
         self.api.peer().update(|s, _| s.open());
         self.hide();
     }
 
-    /// Bring the window forward on chat `id`, keeping its page if it shows it.
     pub fn present(&mut self, id: &str) {
         if !self.shows_chat(id) {
             self.open_chat(id.to_owned());
@@ -474,8 +419,6 @@ impl State {
         self.open();
     }
 
-    /// The engine came or went. Feeds follow again on their own; what was
-    /// loaded once loads again.
     pub fn engine_changed(&mut self, up: bool) {
         let came = up && !self.engine_up;
         self.engine_up = up;
@@ -487,8 +430,6 @@ impl State {
             self.refresh_catalog();
             self.load_chats();
         }
-        // The first new chat is made before the engine answers, and a load that
-        // failed tries again.
         if let Some(Target::New(draft)) = self.chat().map(|p| &p.target)
             && draft.load != Load::Ready
         {
@@ -496,7 +437,6 @@ impl State {
         }
     }
 
-    /// Start what's due and expire timed state; true when the view must redraw.
     pub fn tick(&mut self, _: &mut Tx) -> bool {
         let mut changed = false;
         if self
@@ -512,7 +452,6 @@ impl State {
         }
         if let Some(chat) = self.chat_mut().and_then(|p| p.existing_mut()) {
             changed |= chat.expire_copied();
-            // The working clock and a retry's countdown count seconds.
             changed |= chat.shows_clock() || chat.run.as_ref().is_some_and(|r| r.retry.is_some());
         }
         self.load_details();
@@ -566,14 +505,12 @@ impl State {
         self.sync_tick();
     }
 
-    /// Whether the window shows chat `id`'s page.
     pub fn shows_chat(&self, id: &str) -> bool {
         self.chat()
             .and_then(ChatPage::existing)
             .is_some_and(|c| c.id == id)
     }
 
-    /// Start a new chat in project `id`, with the last new chat's model.
     pub fn new_chat_in(&mut self, id: String) {
         let mut saved = self.prefs.borrow().new_chat.clone();
         saved.project = ProjectPick::Project(id);
@@ -587,7 +524,6 @@ impl State {
         self.load_draft();
     }
 
-    /// Return from changes to details or chat, then to the quick-window list.
     pub fn back(&mut self) {
         if let Some(chat) = self.chat_mut().and_then(ChatPage::existing_mut)
             && chat.changes.take().is_some()
@@ -608,8 +544,6 @@ impl State {
         }
     }
 
-    /// Leave the chat: for the list in the quick window, for a new chat in
-    /// the main one.
     pub fn leave_chat(&mut self) {
         match self.window {
             Window::Quick => {
@@ -622,7 +556,6 @@ impl State {
         }
     }
 
-    /// Show `target`'s page, with the text left unsent there before.
     fn show(&mut self, target: Target) {
         self.leave_page();
         self.nav += 1;

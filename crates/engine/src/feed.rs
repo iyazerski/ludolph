@@ -1,7 +1,3 @@
-//! A chat's live feed for one subscriber: its latest messages once, then
-//! only the ones that changed, so a window shows a reply as it streams
-//! without reading the page again.
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -13,10 +9,6 @@ use crate::engine::{Engine, Status};
 use crate::tools::{pending_input, summary, turn_changes_of};
 use crate::transcript::{LATEST, Message, Part, Window};
 
-/// Push `feed`'s frames with `send`: one now, then one whenever `changes`
-/// says the chat changed, at most one per `every`, until `send` returns
-/// `false`. A chat that can't be read any more gets a last frame,
-/// `{"error": …}`. Changes that come in between merge into the next frame.
 pub async fn follow<F: Future<Output = bool>>(
     mut changes: watch::Receiver<u64>,
     mut feed: Feed,
@@ -42,23 +34,18 @@ pub async fn follow<F: Future<Output = bool>>(
     }
 }
 
-/// Follows one chat, keeping what its subscriber was last sent.
 pub struct Feed {
     engine: Engine,
     chat: String,
     thinking: bool,
-    /// Nothing sent yet.
     first: bool,
-    /// The page's first message, once pi has written it. The page runs from
-    /// it, so new messages don't push out ones the subscriber has.
+    /// Anchor on a persisted message so new messages do not evict the visible page.
     anchor: Option<String>,
     sent: HashMap<String, Message>,
-    /// The run changes, invalidated by message ids, status or saved diffs.
     changes: Option<(Vec<String>, Status, u64, Vec<Value>)>,
 }
 
 impl Feed {
-    /// Follow chat `chat`, with the model's thinking if `thinking`.
     pub fn new(engine: Engine, chat: String, thinking: bool) -> Self {
         Self {
             engine,
@@ -71,15 +58,7 @@ impl Feed {
         }
     }
 
-    /// The next frame. `ids` is the page's messages in order, and
-    /// `messages` those that are new or changed since the last frame. With
-    /// `reset`, the subscriber drops what it has first: on the first frame,
-    /// and when the page it had is gone, as after `/tree`. The chat, its
-    /// run, the question it asks and its run changes come whole.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the chat is gone, or its session file can't be read.
+    /// Send ordered `ids` with changed messages only; `reset` discards the client's old page.
     pub async fn frame(&mut self) -> Result<Value> {
         let window = self
             .anchor
@@ -144,8 +123,6 @@ impl Feed {
         Ok(frame)
     }
 
-    /// The saved runs among `messages` that changed files, read again only
-    /// when the messages, status, run boundary or saved diffs changed.
     async fn turn_changes(
         &mut self,
         messages: &[Message],
@@ -163,7 +140,6 @@ impl Feed {
         }
         let changes = match self.engine.run_counts(&self.chat).await {
             Ok(runs) => turn_changes_of(messages, &runs, latest_turn),
-            // The chat still shows; it only loses its changes buttons.
             Err(e) => {
                 eprintln!("reading chat {}'s run changes: {e:#}", self.chat);
                 Vec::new()

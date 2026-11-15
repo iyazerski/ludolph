@@ -1,12 +1,8 @@
-//! Find inline `$skill` mentions without changing the user's wording or order.
-
-/// Whether `c` can be in a skill's name after the `$`.
 fn name_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | ':' | '-')
 }
 
-/// The `$` word the caret at byte `caret` ends: where its `$` is, and the
-/// lowercased text after it.
+/// Return the byte offset of `$` and the lowercased query ending at the caret.
 pub fn skill_query(text: &str, caret: usize) -> Option<(usize, String)> {
     let before = text.get(..caret)?;
     let start = before.rfind('$')?;
@@ -16,8 +12,7 @@ pub fn skill_query(text: &str, caret: usize) -> Option<(usize, String)> {
     ok.then(|| (start, word.to_lowercase()))
 }
 
-/// `text` cut at its `$name` words, as the engine shows a skill that ran:
-/// `(piece, is_skill)`. A name starts with a letter, so prices stay text.
+/// Return (piece, is_skill) pairs without moving text; prices such as $5 are not skills.
 pub fn skill_words(text: &str) -> Vec<(&str, bool)> {
     let mut out = Vec::new();
     let (mut plain, mut at) = (0, 0);

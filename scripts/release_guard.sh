@@ -17,7 +17,6 @@ Requires NAMESPACE and a configured kubectl.
 EOF
 }
 
-# Save the deployment revision or the cronjob container images that run before this deploy.
 record() {
   : >"${STATE_FILE}"
   local ref value
@@ -63,7 +62,6 @@ smoke() {
   return "${failed}"
 }
 
-# Roll workloads back to the recorded release, skipping those that were new or unchanged.
 restore() {
   if [ ! -s "${STATE_FILE}" ]; then
     echo "No recorded release, nothing to restore."

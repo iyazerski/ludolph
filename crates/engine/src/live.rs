@@ -1,9 +1,5 @@
-//! A working chat's live tail, built from pi's events.
-//!
-//! pi's events carry no entry ids, and pi sends `message_end` before it
-//! appends the entry to the session file. So the transcript shows the tail's
-//! messages until the file has them, matched by role and timestamp
-//! (`docs/design.md`, "Live view and the file").
+//! pi emits no entry ids and may report messages before their file writes.
+//! Match the live tail to persisted messages by role and timestamp.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -15,66 +11,46 @@ use crate::pi::Event;
 use crate::skills;
 use crate::transcript::{self, NestedCall, ToolState};
 
-/// What pi has done since the run started, and whether it's still going.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Live {
-    /// Bumped by every change a viewer would see.
     revision: u64,
     working: bool,
-    /// Runs that settled, so a caller can tell whether one ended since it
-    /// looked.
     #[serde(skip)]
     settled: u64,
-    /// Messages pi finished in this run, from `message_end`.
     messages: Vec<Value>,
-    /// The assistant message pi is streaming, rebuilt from its deltas.
     streaming: Option<Value>,
-    /// Tools that are running, by tool call id: their name, arguments and
-    /// latest partial result.
     tools: BTreeMap<String, Value>,
-    /// Small child rows retained until the parent result is written.
     calls: HashMap<String, Vec<NestedCall>>,
     steering: Vec<String>,
     follow_up: Vec<String>,
-    /// The automatic retry pi is waiting on, if any.
     retry: Option<Retry>,
-    /// Why pi is compacting the context, while it does.
     compacting: Option<String>,
-    /// Why the run failed, when pi gave up retrying.
     failure: Option<String>,
 }
 
-/// An automatic retry after a provider error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Retry {
     pub attempt: u32,
     pub max_attempts: u32,
     pub error: Option<String>,
-    /// When the attempt starts.
     pub at: Option<DateTime<Utc>>,
 }
 
-/// What a working chat's run is waiting on, besides the model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
-    /// Messages pi gives the agent after its current step.
     pub steering: Vec<String>,
-    /// Messages pi sends once the agent is done.
     pub follow_up: Vec<String>,
     pub retry: Option<Retry>,
-    /// Why pi is compacting the context: `manual`, `threshold` or `overflow`.
     pub compacting: Option<String>,
 }
 
 impl Live {
-    /// An empty tail, for a chat that isn't working.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Fold one event in, and return whether anything a viewer sees changed.
     pub fn apply(&mut self, event: &Event) -> bool {
         let changed = self.fold(event);
         if changed {
@@ -83,7 +59,6 @@ impl Live {
         changed
     }
 
-    /// Drop the finished messages, once the session file has them.
     pub fn clear_messages(&mut self) {
         if !self.messages.is_empty() {
             self.messages.clear();
@@ -91,30 +66,24 @@ impl Live {
         }
     }
 
-    /// The counter that every visible change bumps.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// Include compaction before pi accepts a prompt or emits `agent_start`.
+    /// Compaction can begin before prompt acceptance or `agent_start`.
     pub fn working(&self) -> bool {
         self.working || self.compacting.is_some()
     }
 
-    /// Whether pi is generating a context summary.
     pub fn compacting(&self) -> bool {
         self.compacting.is_some()
     }
 
-    /// How many runs have settled.
     pub fn settled(&self) -> u64 {
         self.settled
     }
 
-    /// Count a run as going from when pi answered that it started, ahead of
-    /// its `agent_start`, which comes through the event queue. Nothing
-    /// changes if a run settled since `settled` was read: that was this
-    /// one, already over. Returns whether it changed anything.
+    /// Do not resurrect a run that settled before its prompt acknowledgement arrived.
     pub fn started(&mut self, settled: u64) -> bool {
         if self.working || self.settled != settled {
             return false;
@@ -125,27 +94,22 @@ impl Live {
         true
     }
 
-    /// The messages pi finished in this run.
     pub fn messages(&self) -> &[Value] {
         &self.messages
     }
 
-    /// The assistant message pi is streaming.
     pub fn streaming(&self) -> Option<&Value> {
         self.streaming.as_ref()
     }
 
-    /// Tools that are running, by tool call id.
     pub fn tools(&self) -> &BTreeMap<String, Value> {
         &self.tools
     }
 
-    /// The nested calls of running tools, without their output.
     pub fn calls(&self) -> &HashMap<String, Vec<NestedCall>> {
         &self.calls
     }
 
-    /// What the run is waiting on, while one is going.
     pub fn run(&self) -> Option<Run> {
         self.working().then(|| Run {
             steering: self
@@ -163,7 +127,6 @@ impl Live {
         })
     }
 
-    /// Why the last run failed, when pi gave up retrying.
     pub fn failure(&self) -> Option<&str> {
         self.failure.as_deref()
     }
@@ -346,9 +309,7 @@ impl Live {
     }
 }
 
-/// Apply one `message_update` to the streaming message's content blocks
-/// (pi's `docs/json.md`, "Reconstruct streaming messages"). Deltas build a
-/// block up, and each block's end replaces it with its final content.
+/// Block-end events replace the content accumulated from deltas.
 fn update_block(message: &mut Value, update: &Value) -> bool {
     let Some(index) = update["contentIndex"]
         .as_u64()
@@ -381,8 +342,7 @@ fn update_block(message: &mut Value, update: &Value) -> bool {
     true
 }
 
-/// Append an update's `delta` to a block's text field, in place, so a long
-/// reply isn't copied on every token.
+/// Append deltas in place to avoid copying the reply on every token.
 fn append(block: &mut Value, field: &str, update: &Value) {
     let delta = update["delta"].as_str().unwrap_or_default();
     match block.get_mut(field) {
@@ -391,8 +351,7 @@ fn append(block: &mut Value, field: &str, update: &Value) {
     }
 }
 
-/// A finished message without what no view shows: a tool's output and an
-/// image's data, which can be megabytes and stay until the run settles.
+/// Keep bulky output and image bytes in the session file, not the live tail.
 fn slim(message: &Value) -> Value {
     let mut message = message.clone();
     if message["role"] == "toolResult" {

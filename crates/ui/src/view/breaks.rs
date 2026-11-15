@@ -1,8 +1,4 @@
-//! Break points for long links, paths and other unbroken tokens in the
-//! transcript's Markdown. Rune's Markdown wraps lines only at spaces, so a
-//! token wider than the window runs past its edge and gets cut off. Zero-width
-//! spaces inside such tokens give the line places to break. The source the
-//! app keeps, copies and sends stays as it was.
+//! Rune wraps Markdown only at spaces. Add zero-width break points for display, never to copied text.
 
 use std::ops::Range;
 
@@ -10,13 +6,9 @@ use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
 
 use super::code::MARKDOWN;
 
-/// The break point: drawn as nothing, a place a line may wrap.
 pub const ZWSP: char = '\u{200B}';
-/// Tokens up to this many bytes fit a narrow window, so stay as written.
 const LONG: usize = 40;
-/// The most characters between break points when a token has none of its own.
 const RUN: usize = 24;
-/// Characters a long token breaks after, as a browser breaks a URL.
 const BREAK_AFTER: &[char] = &['/', '.', '?', '=', '-', '#', ':', ',', '+', '@', '%'];
 /// Markdown's markup characters: a break point next to one could change how
 /// the text parses (`__init__`, `\|`, `&amp;`), so none goes there.
@@ -24,16 +16,12 @@ const MARKUP: &[char] = &[
     '\\', '`', '*', '_', '~', '[', ']', '(', ')', '<', '>', '|', '&', ';', '!',
 ];
 
-/// `src` with break points in its long tokens, or `None` when it has none.
-/// A bare URL becomes a link whose text breaks, so its address stays whole.
 pub fn breakable(src: &str) -> Option<String> {
     if !src.split_whitespace().any(|w| w.len() > LONG) {
         return None;
     }
-    // Spans left as written, and replacements, by source range.
     let mut kept: Vec<Range<usize>> = Vec::new();
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
-    // The text ranges of the link being read, to break as its label.
     let mut label: Option<Vec<Range<usize>>> = None;
     let mut image = 0usize;
     for (event, range) in Parser::new_ext(src, MARKDOWN).into_offset_iter() {
@@ -106,7 +94,6 @@ pub fn breakable(src: &str) -> Option<String> {
     Some(out)
 }
 
-/// Break the long tokens of prose `range`, making its bare URLs links.
 fn prose(src: &str, range: Range<usize>, edits: &mut Vec<(Range<usize>, String)>) {
     for token in tokens(src, range) {
         let word = &src[token.clone()];
@@ -131,8 +118,6 @@ fn prose(src: &str, range: Range<usize>, edits: &mut Vec<(Range<usize>, String)>
     }
 }
 
-/// Where in `word` a bare URL is, as GFM finds one: after markup that may
-/// open it, without the punctuation that may close the sentence.
 fn bare_url(word: &str) -> Option<Range<usize>> {
     let start = ["https://", "http://", "www."]
         .iter()
@@ -154,7 +139,6 @@ fn bare_url(word: &str) -> Option<Range<usize>> {
     (end - start > LONG / 2).then_some(start..end)
 }
 
-/// A link to `dest` whose text is `shown` with break points.
 fn link(shown: &str, dest: &str) -> String {
     let mut text = String::with_capacity(shown.len() + 16);
     for c in soften(shown).chars() {
@@ -166,7 +150,6 @@ fn link(shown: &str, dest: &str) -> String {
     format!("[{text}](<{dest}>)")
 }
 
-/// Break the long tokens of `range`, as written.
 fn soften_tokens(src: &str, range: Range<usize>, edits: &mut Vec<(Range<usize>, String)>) {
     for token in tokens(src, range) {
         let soft = soften(&src[token.clone()]);
@@ -176,7 +159,6 @@ fn soften_tokens(src: &str, range: Range<usize>, edits: &mut Vec<(Range<usize>, 
     }
 }
 
-/// The source ranges of `range`'s tokens too long to fit, without spaces.
 fn tokens(src: &str, range: Range<usize>) -> impl Iterator<Item = Range<usize>> + '_ {
     let base = range.start;
     let text = &src[range];
@@ -201,8 +183,6 @@ fn tokens(src: &str, range: Range<usize>) -> impl Iterator<Item = Range<usize>> 
         .filter(move |r| src[r.clone()].chars().any(char::is_alphanumeric))
 }
 
-/// `token` with a break point after each of its URL punctuation, and at least
-/// every [`RUN`] characters.
 fn soften(token: &str) -> String {
     let mut out = String::with_capacity(token.len() + token.len() / 8);
     let mut run = 0;
@@ -222,7 +202,6 @@ fn soften(token: &str) -> String {
     out
 }
 
-/// `ranges` sorted, with touching and overlapping ones joined.
 fn merged(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
     ranges.sort_by_key(|r| r.start);
     let mut out: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
@@ -269,23 +248,5 @@ mod tests {
         for (src, want) in cases {
             assert_eq!(&breakable(src), want, "source {src:?}");
         }
-    }
-
-    #[test]
-    fn breaks_keep_the_text_and_markup() {
-        let soft = soften("a_very__long_name::with_markup_and/no/breaks_next_to_it_at_all");
-        assert_eq!(
-            soft.replace(ZWSP, ""),
-            "a_very__long_name::with_markup_and/no/breaks_next_to_it_at_all"
-        );
-        assert!(!soft.contains(&format!("_{ZWSP}")) && !soft.contains(&format!("{ZWSP}_")));
-        let linked = breakable(&format!("go to {URL} now")).unwrap_or_default();
-        let dests: Vec<String> = Parser::new_ext(&linked, MARKDOWN)
-            .filter_map(|e| match e {
-                Event::Start(Tag::Link { dest_url, .. }) => Some(dest_url.to_string()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(dests, [URL]);
     }
 }

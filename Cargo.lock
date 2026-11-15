@@ -2847,7 +2847,6 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -2887,7 +2886,6 @@ name = "ludolph-relay-proto"
 version = "0.1.0"
 dependencies = [
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2916,7 +2914,6 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "unicode-segmentation",
 ]

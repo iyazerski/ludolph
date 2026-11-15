@@ -1,5 +1,3 @@
-//! Compact nested-call rows from pi's recorded calls and codemode summaries.
-
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -7,7 +5,6 @@ use serde_json::Value;
 use super::{Arguments, TOOL_CHARS, ToolState, tool_subject};
 use crate::text::one_line;
 
-/// A tool invoked inside another tool, without its potentially large output.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NestedCall {
@@ -20,7 +17,6 @@ pub struct NestedCall {
 }
 
 impl NestedCall {
-    /// Describe a running call from its execution event.
     pub(crate) fn running(id: &str, name: &str, args: &Value) -> Self {
         Self {
             id: id.to_owned(),
@@ -33,7 +29,6 @@ impl NestedCall {
     }
 }
 
-/// Only the small call metadata, skipping all other tool details.
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct Calls {
     #[serde(default)]
@@ -53,7 +48,6 @@ struct Call {
     error: Option<String>,
 }
 
-/// Combine recorded arguments with codemode's summaries, including model calls.
 pub(super) fn recorded(record: Option<&Calls>, details: Option<&Calls>) -> Vec<NestedCall> {
     let mut records = record.map_or_else(Vec::new, |record| convert(record, false));
     let mut calls = details.map_or_else(Vec::new, |details| convert(details, false));
@@ -69,7 +63,6 @@ pub(super) fn recorded(record: Option<&Calls>, details: Option<&Calls>) -> Vec<N
     calls
 }
 
-/// Read codemode's live summaries without retaining its output.
 pub(crate) fn progress(details: &Value) -> Vec<NestedCall> {
     Calls::deserialize(details)
         .map(|calls| convert(&calls, true))

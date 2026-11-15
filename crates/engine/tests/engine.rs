@@ -20,7 +20,6 @@ use tokio_tungstenite::tungstenite::handshake::server::{
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
-/// An engine in `dir` that runs the fake pi, which logs to `dir/pi.log`.
 async fn engine(dir: &Path, idle: Duration) -> Engine {
     let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake-pi.py");
     let sessions = dir.join("sessions");
@@ -48,7 +47,6 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         .unwrap_or_else(|e| panic!("{e:?}"))
 }
 
-/// Wait until the chat list passes `check`.
 async fn until(engine: &Engine, check: impl Fn(&[ChatInfo]) -> bool) -> Vec<ChatInfo> {
     let mut changes = engine.subscribe();
     let wait = async {
@@ -65,7 +63,6 @@ async fn until(engine: &Engine, check: impl Fn(&[ChatInfo]) -> bool) -> Vec<Chat
         .expect("the chat list never got there")
 }
 
-/// Wait for a chat's view, including changes that do not update the list.
 async fn view_until(engine: &Engine, id: &str, check: impl Fn(&View) -> bool) -> View {
     let mut changes = engine.subscribe_chat(id).unwrap();
     let wait = async {
@@ -82,7 +79,6 @@ async fn view_until(engine: &Engine, id: &str, check: impl Fn(&View) -> bool) ->
         .expect("the chat view never got there")
 }
 
-/// Wait until pi's log has `lines`.
 async fn log_until(dir: &Path, lines: usize) -> Vec<String> {
     for _ in 0..250 {
         let log = std::fs::read_to_string(dir.join("pi.log")).unwrap_or_default();
@@ -95,7 +91,6 @@ async fn log_until(dir: &Path, lines: usize) -> Vec<String> {
     panic!("pi's log never got {lines} lines");
 }
 
-/// Wait until every pi that started has exited.
 async fn all_exited(dir: &Path) {
     for _ in 0..250 {
         let log = std::fs::read_to_string(dir.join("pi.log")).unwrap_or_default();
@@ -170,7 +165,6 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
         ("a.txt", Some("ls"))
     );
 
-    // The idle pi stops, and the next message resumes the session in a new one.
     let log = log_until(dir.path(), 2).await;
     assert_eq!(log[0], format!("start --mode rpc --session-id {id}"));
     assert_eq!(log[1], "exit");
@@ -183,15 +177,13 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
         log[2]
     );
 
-    // A draft left empty is gone once its idle pi stops.
     let empty = engine.create(&project).await.unwrap();
     assert!(engine.chats().iter().any(|c| c.id == empty));
     until(&engine, |c| !c.iter().any(|c| c.id == empty)).await;
     engine.shutdown().await.unwrap();
 }
 
-/// Append `entry` to `path` the way pi does: open, write, close. macOS
-/// reports a write when the file is closed.
+// Close the append before waiting: FSEvents reports a write when the file closes.
 fn append(path: &Path, entry: &Value) {
     let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
     std::io::Write::write_all(&mut file, format!("{entry}\n").as_bytes()).unwrap();
@@ -235,8 +227,6 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
         2
     );
 
-    // Sending waits for a take-over, and the chat's own prompts don't count
-    // as another pi's.
     let refused = engine.send("s1", "mine", Vec::new()).await.unwrap_err();
     assert!(refused.to_string().contains("another pi"), "{refused:#}");
     let refused = tool(
@@ -257,7 +247,6 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(!engine.chats()[0].elsewhere);
 
-    // Another pi's prompt while the chat's pi is open stops that pi.
     let leaf = engine.chats()[0].summary.as_ref().unwrap().leaf.clone();
     append(&path, &user("c", leaf.as_deref(), "theirs", 3));
     until(&engine, |c| c[0].elsewhere).await;
@@ -292,12 +281,10 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     engine.shutdown().await.unwrap();
 }
 
-/// Call `tool` as the phone does.
 async fn tool(engine: &Engine, tool: &str, args: Value) -> anyhow::Result<Value> {
     ludolph_engine::tools::call(engine, tool.parse().unwrap(), args).await
 }
 
-/// The text of the chat's last message, once it's settled.
 async fn last_reply(engine: &Engine, id: &str) -> String {
     until(engine, |c| c[0].status == Status::Idle).await;
     let view = engine.view(id, Window::Latest(40)).await.unwrap();
@@ -339,13 +326,11 @@ async fn an_extensions_dialog_waits_for_an_answer() {
         "{again:#}"
     );
 
-    // Interrupting dismisses the dialog.
     engine.send(&id, "ask", Vec::new()).await.unwrap();
     until(&engine, |c| c[0].status == Status::AwaitingInput).await;
     engine.interrupt(&id).await.unwrap();
     assert_eq!(last_reply(&engine, &id).await, "You picked cancelled.");
 
-    // A dialog's own timeout ends the question.
     engine.send(&id, "ask-briefly", Vec::new()).await.unwrap();
     until(&engine, |c| c[0].status == Status::AwaitingInput).await;
     assert_eq!(last_reply(&engine, &id).await, "You picked nothing.");
@@ -610,7 +595,6 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
     engine.shutdown().await.unwrap();
 }
 
-/// The ids `list_chats` returns with `args`, newest first.
 async fn listed(engine: &Engine, args: Value) -> Vec<String> {
     let chats = tool(engine, "list_chats", args).await.unwrap();
     ids(&chats["chats"])
@@ -623,8 +607,6 @@ fn ids(chats: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Each group `list_chat_groups` returns with `args`: its project's id,
-/// total, and chat ids.
 async fn groups(engine: &Engine, args: Value) -> Vec<(Value, u64, Vec<String>)> {
     let groups = tool(engine, "list_chat_groups", args).await.unwrap();
     let groups = groups["groups"].as_array().unwrap().iter();
@@ -662,8 +644,6 @@ async fn chats_list_by_project_until_deleted() {
         )
         .unwrap();
     }
-    // A tool that moves chats between folders can leave a copy; deleting
-    // removes every one.
     let copy = dir.path().join("sessions/--elsewhere--");
     std::fs::create_dir_all(&copy).unwrap();
     std::fs::copy(folder.join("b.jsonl"), copy.join("b.jsonl")).unwrap();
@@ -812,7 +792,6 @@ async fn moving_a_chat_preserves_its_session_and_resumes_in_the_destination() {
     restarted.shutdown().await.unwrap();
 }
 
-/// Run git in `repo`, and return what it printed.
 fn git(repo: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -828,11 +807,9 @@ fn git(repo: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// The `turnChanges` of the chat's view, once it has `runs` saved runs.
 async fn turn_changes(engine: &Engine, id: &str, runs: usize) -> (Vec<Value>, Vec<Value>) {
     for _ in 0..250 {
-        // A run's store goes before its diff is saved, so both are waited for,
-        // before the view: one taken earlier may miss a run saved since.
+        // Wait for both the removed snapshot and saved diff before reading the view.
         let saved = engine.run_counts(id).await.unwrap().len() == runs;
         let stored = saved && std::fs::read_dir(state_runs(engine)).map_or(0, Iterator::count) == 0;
         let view = tool(engine, "chat_view", json!({"chat": id}))
@@ -851,7 +828,6 @@ async fn turn_changes(engine: &Engine, id: &str, runs: usize) -> (Vec<Value>, Ve
     panic!("the run's changes never showed");
 }
 
-/// Where runs keep their snapshots until their changes are saved.
 fn state_runs(engine: &Engine) -> PathBuf {
     engine.config().state_dir.join("turns/runs")
 }
@@ -927,7 +903,6 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
     std::fs::write(repo.join(".gitignore"), "secret.env\n").unwrap();
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "start"]);
-    // A change you staged yourself, which must stay staged.
     std::fs::write(repo.join("b.txt"), "two\n").unwrap();
     git(&repo, &["add", "b.txt"]);
     let status = git(&repo, &["status", "--porcelain"]);
@@ -977,7 +952,6 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         "{patch}"
     );
 
-    // The previous diff stays on its reply while the next run is still working.
     let mut feed = ludolph_engine::feed::Feed::new(engine.clone(), id.clone(), true);
     let first = feed.frame().await.unwrap();
     assert_eq!(first["turnChanges"][0]["after"], run["after"]);
@@ -993,7 +967,6 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
     let frame = feed.frame().await.unwrap();
     assert_eq!(frame["turnChanges"][0]["after"], run["after"]);
 
-    // A run that changes nothing gets no button, and ends the one before.
     tool(
         &engine,
         "respond_to_input",
@@ -1010,7 +983,6 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         .unwrap();
     assert_eq!(changes[0]["after"], reply["id"]);
 
-    // The working-tree diff includes your staged edit, not just agent changes.
     let details = tool(&engine, "chat_details", json!({"chat": id}))
         .await
         .unwrap();
@@ -1065,7 +1037,6 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let chats = until(&engine, |c| c.iter().any(|c| title(c).is_some())).await;
     let chat = chats.iter().find(|c| c.id == id).unwrap();
     assert_eq!(title(chat).as_deref(), Some("Fix The Build"));
-    // pi wrote it to the session, so pi's own `/resume` shows it too.
     until(&engine, |c| {
         c.iter()
             .any(|c| saved(c).as_deref() == Some("Fix The Build"))
@@ -1073,7 +1044,6 @@ async fn chats_are_titled_as_soon_as_they_start() {
     .await;
     engine.send(&id, "and the tests", Vec::new()).await.unwrap();
 
-    // An old chat without a title gets one from its first prompt.
     engine.send("old", "more", Vec::new()).await.unwrap();
     let old = |c: &[ChatInfo]| c.iter().any(|c| c.id == "old" && saved(c).is_some());
     let chats = until(&engine, old).await;
@@ -1082,7 +1052,6 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let asked = std::fs::read_to_string(dir.path().join("pi.log-titles")).unwrap();
     assert_eq!(asked, "fix the build\nrename the old\n");
 
-    // Dictation uses the same sidecar model and reasoning level as titles.
     let heard = json!({"text": " uh fix the um build "});
     let polished = tool(&engine, "polish_dictation", heard.clone())
         .await
@@ -1091,7 +1060,6 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let blank = tool(&engine, "polish_dictation", json!({"text": " "})).await;
     assert!(blank.is_err());
 
-    // Picking a sidecar model takes effect at once, and lasts.
     let unknown = json!({"sidecarModel": "fake/none"});
     let refused = tool(&engine, "set_settings", unknown).await.unwrap_err();
     assert!(
@@ -1116,7 +1084,6 @@ async fn chats_are_titled_as_soon_as_they_start() {
         (Some("fake/quick"), Notify::Always)
     );
 
-    // Nothing opens at login until it's turned on, and turning it off undoes it.
     let item = ludolph_engine::login::path(&engine.config().home);
     assert!(!item.exists());
     let on = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": true, "expandTools": true});
@@ -1156,8 +1123,6 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
     let composer = |engine| tool(engine, "composer_info", json!({"chat": id}));
     assert_eq!(composer(&first).await.unwrap(), info, "as its pi says");
     first.shutdown().await.unwrap();
-    // Without a pi, the session file says the same, and asking doesn't
-    // start one.
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
     assert_eq!(composer(&engine).await.unwrap(), info, "as its file says");
     let details = tool(&engine, "chat_details", json!({"chat": id}))
@@ -1202,7 +1167,6 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
         .unwrap();
     assert_eq!(draft, json!({"checkout": null, "branch": null}));
 
-    // A rename shows at once, and pi writes it to the file.
     let rename = json!({"chat": id, "title": " Fix the build "});
     tool(&engine, "rename_chat", rename).await.unwrap();
     assert_eq!(engine.chats()[0].title.as_deref(), Some("Fix the build"));
@@ -1254,7 +1218,6 @@ async fn terminal_model_changes_refresh_the_catalog_and_an_existing_pi() {
     assert_eq!(refreshed["models"].as_array().unwrap().len(), 1);
     assert_eq!(refreshed["models"][0]["id"], "openai/gpt");
 
-    // A new picker alone isn't enough: the old pi must also accept the new provider.
     let picked = tool(
         &engine,
         "set_chat_model",
@@ -1285,7 +1248,6 @@ async fn terminal_model_changes_refresh_the_catalog_and_an_existing_pi() {
     let defaults = tool(&engine, "list_models", json!({})).await.unwrap();
     assert_eq!(defaults["defaultReasoning"], "high");
 
-    // An atomic replacement, sign-out and settings change each invalidate immediately.
     for file in ["auth.json", "settings.json"] {
         let mut changes = engine.subscribe_models();
         let temporary = dir.path().join("replacement.json");
@@ -1418,7 +1380,6 @@ async fn a_message_can_carry_images() {
     );
     let image = json!({"chat": id, "message": first["id"], "index": 0});
     assert_eq!(tool(&engine, "chat_image", image).await.unwrap(), png);
-    // An image alone gives a title nothing to go on.
     assert_eq!(engine.chats()[0].title, None);
 
     let tiff = json!({"chat": id, "text": "and this", "images": [{"mimeType": "image/tiff", "data": "AA=="}]});
@@ -1596,8 +1557,6 @@ async fn a_pi_that_dies_mid_run_leaves_the_chat_interrupted() {
     })
     .await;
 
-    // A run cut short by a restart shows so after it, with no notice, since
-    // the engine was stopped on purpose.
     engine.send(&id, "ask", Vec::new()).await.unwrap();
     until(&engine, |c| c[0].status == Status::AwaitingInput).await;
     let mut alerts = engine.alerts();
@@ -1611,7 +1570,6 @@ async fn a_pi_that_dies_mid_run_leaves_the_chat_interrupted() {
     restarted.shutdown().await.unwrap();
 }
 
-/// Read records from the socket until those read so far pass `check`.
 async fn read_until(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     check: impl Fn(&[Value]) -> bool,
@@ -1660,7 +1618,6 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
             .await
             .unwrap();
     }
-    // Calls run at the same time, so their answers come in any order.
     let seen = read_until(&mut reader, |seen| {
         let has = |key: &str, value: Value| seen.iter().any(|r| r[key] == value);
         has("id", json!(2)) && has("id", json!(3)) && has("event", json!("chats"))
@@ -1671,7 +1628,6 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     assert_eq!(notice["subscription"], 1, "{notice}");
     assert!(seen.contains(&json!({"id": 3, "error": "no tool nope"})));
 
-    // A line past the limit is refused, and the connection ends.
     let (huge_read, mut huge_write) = UnixStream::connect(&socket).await.unwrap().into_split();
     let huge = vec![b'x'; usize::try_from(server::MAX_LINE).unwrap() + 1];
     let writing = tokio::spawn(async move { huge_write.write_all(&huge).await });
@@ -1698,7 +1654,6 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     assert_eq!(listed["total"], 1);
     assert_eq!(listed["chats"][0]["id"], created["ok"]["chatId"]);
 
-    // A chat's subscriber gets its page, then what changes as it runs.
     let chat = &created["ok"]["chatId"];
     let requests = [
         json!({"id": 6, "subscribe": "chat", "args": {"chat": chat}}),
@@ -1718,7 +1673,6 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     let mut frames: Vec<Value> = seen.into_iter().filter(|r| r["event"] == "chat").collect();
     assert_eq!(frames[0]["reset"], true, "{}", frames[0]);
     assert_eq!(frames[0]["subscription"], 6, "{}", frames[0]);
-    // Once pi is gone after the run, nothing changes the view.
     until(&engine, |c| last_prompt(&c[0]) == Some("more")).await;
     all_exited(dir.path()).await;
     let request = json!({"id": 8, "call": "chat_view", "args": {"chat": chat, "limit": 3}});
@@ -1749,8 +1703,6 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     assert_eq!(unchanged["ok"]["read"], Value::Null, "{unchanged}");
     frames.extend(seen.into_iter().filter(|r| r["event"] == "chat"));
 
-    // Played back, the frames show what chat_view reads, though most of them
-    // left out the messages that hadn't changed.
     let page = tool(&engine, "chat_view", json!({"chat": chat}))
         .await
         .unwrap();
@@ -1777,7 +1729,6 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
         "{last}"
     );
 
-    // A client that closes its side after sending still gets the answer.
     let (read, mut write) = UnixStream::connect(&socket).await.unwrap().into_split();
     let request = json!({"id": 5, "call": "list_projects"});
     write
@@ -1790,7 +1741,6 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     engine.shutdown().await.unwrap();
 }
 
-/// The messages a subscriber to a chat's feed shows after `frames`.
 fn replay<'a>(frames: impl IntoIterator<Item = &'a Value>) -> Vec<Value> {
     let mut have = std::collections::HashMap::new();
     let mut ids = Vec::new();
@@ -1808,7 +1758,6 @@ fn replay<'a>(frames: impl IntoIterator<Item = &'a Value>) -> Vec<Value> {
         .collect()
 }
 
-/// Keeps the path and `Authorization` header of the Mac's handshake.
 struct Handshake<'a>(&'a mut (String, Option<String>));
 
 impl Callback for Handshake<'_> {
@@ -1826,8 +1775,6 @@ impl Callback for Handshake<'_> {
 
 type MacSocket = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
 
-/// Accept the Mac's next WebSocket, with the path and `Authorization`
-/// header it asked with.
 async fn accept_mac(listener: &TcpListener) -> (MacSocket, String, Option<String>) {
     let (tcp, _) = listener.accept().await.unwrap();
     let mut handshake = (String::new(), None);
@@ -1837,7 +1784,6 @@ async fn accept_mac(listener: &TcpListener) -> (MacSocket, String, Option<String
     (socket, handshake.0, handshake.1)
 }
 
-/// The phone link once `wanted` picks it.
 async fn phone_link_until(engine: &Engine, wanted: impl Fn(&Value) -> bool) -> Value {
     let wait = async {
         loop {
@@ -1858,7 +1804,6 @@ async fn to_mac(socket: &mut MacSocket, message: Value) {
     socket.send(Message::Text(text.into())).await.unwrap();
 }
 
-/// The next message the Mac sent the relay.
 async fn from_mac(socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>) -> Value {
     loop {
         if let Message::Text(body) = socket.next().await.unwrap().unwrap() {
@@ -1867,26 +1812,22 @@ async fn from_mac(socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::Tc
     }
 }
 
-/// A phone's sealed call to the relay link, and the nonce its reply is bound to.
 fn sealed_call(phone: &Keys, id: u64, tool: &str, args: Value) -> (Value, [u8; 12]) {
     sealed(phone, id, &json!({"tool": tool, "args": args}))
 }
 
-/// A phone's sealed call, as `{"tool", "args", "op"}`, and its reply's nonce.
 fn sealed(phone: &Keys, id: u64, call: &Value) -> (Value, [u8; 12]) {
     let (data, nonce) = phone.seal(Purpose::Call, &call.to_string()).unwrap();
     let message = json!({"type": "call", "id": id, "sealed": {"phone": phone.phone, "data": data}});
     (message, nonce)
 }
 
-/// What a reply from the Mac says, opened as the phone opens it.
 fn opened_reply(phone: &Keys, nonce: [u8; 12], reply: &Value) -> Value {
     let data = reply["result"]["Ok"].as_str().unwrap();
     let opened = phone.open(Purpose::Reply(nonce), data).unwrap();
     serde_json::from_str(&opened.text).unwrap()
 }
 
-/// What a notice from the Mac says, opened by `phone`.
 fn opened_notice(phone: &Keys, notify: &Value) -> Value {
     let notices = notify["notices"].as_array().unwrap();
     let mine = notices
@@ -1899,7 +1840,6 @@ fn opened_notice(phone: &Keys, notify: &Value) -> Value {
     serde_json::from_str(&opened.text).unwrap()
 }
 
-/// The first message from the Mac that `wanted` picks; it skips the rest.
 async fn until_from_mac(
     socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     wanted: impl Fn(&Value) -> bool,
@@ -1926,19 +1866,16 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         tool(&engine, "get_phone_link", json!({})).await.unwrap(),
         json!({"link": null, "pairing": null, "relay": "https://ludolph.iyazerski.dev"})
     );
-    // Without TLS, a token only goes to a relay on this Mac.
     let plain = json!({"relay": "http://relay.example.com"});
     let plain = tool(&engine, "link_phone", plain).await.unwrap_err();
     assert!(format!("{plain:#}").contains("https://"), "{plain:#}");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = format!("http://{}", listener.local_addr().unwrap());
-    // Whether or not someone uses the Mac running the test.
     tool(&engine, "set_settings", json!({"notify": "always"}))
         .await
         .unwrap();
     let pairing = |state: &'static str| move |link: &Value| link["pairing"]["state"] == state;
-    // A code that expires before a phone claims it.
     let started = tool(&engine, "link_phone", json!({"relay": relay})).await;
     assert_eq!(started.unwrap()["pairing"], json!({"state": "starting"}));
     let (mut waiting, path, bearer) = accept_mac(&listener).await;
@@ -1954,7 +1891,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     let failed = phone_link_until(&engine, pairing("failed")).await;
     assert_eq!(failed["pairing"]["error"], "the code expired");
 
-    // A phone claims the next code, and the relay gives the new Mac its token.
     tool(&engine, "link_phone", json!({"relay": relay}))
         .await
         .unwrap();
@@ -1983,7 +1919,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
                "pairing": {"state": "linked"}, "relay": relay})
     );
     assert!(dir.path().join("state/relay.json").exists());
-    // A Mac without a battery, like a CI machine, reports none.
     let power = from_mac(&mut socket).await;
     let battery = &power["battery"];
     assert_eq!(power["type"], "power");
@@ -1992,12 +1927,10 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         "{power}"
     );
 
-    // Calls are sealed by the phone, and each reply opens only as its call's.
     let (list, list_nonce) = sealed_call(&phone, 7, "list_chats", json!({}));
     let (open, open_nonce) = sealed_call(&phone, 8, "open_terminal", json!({}));
     let (settings, settings_nonce) =
         sealed_call(&phone, 6, "set_settings", json!({"sidecarModel": null}));
-    // A call the relay made up, and one it replays.
     let forged = json!({"type": "call", "id": 5, "sealed": {"phone": phone.phone, "data": "AQID"}});
     let mut replayed = list.clone();
     replayed["id"] = json!(4);
@@ -2037,7 +1970,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     let replay = replies[&4]["result"]["Err"].as_str().unwrap();
     assert!(replay.contains("replay"), "{replay}");
 
-    // Each moment worth telling reaches the phone as a notice.
     let project = json!({"project": dir.path(), "prompt": "ask"});
     let create = json!({"tool": "create_chat", "args": project, "op": "op-1"});
     let (create, create_nonce) = sealed(&phone, 9, &create);
@@ -2067,8 +1999,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         (&finished["kind"], &finished["body"]),
         (&json!("finished"), &json!("You picked red."))
     );
-    // The phone asks again for a call it tagged, say after the relay gave up
-    // on it: it gets the first answer, and no second chat.
     let again = json!({"tool": "create_chat", "args": project, "op": "op-1"});
     let (again, again_nonce) = sealed(&phone, 19, &again);
     socket
@@ -2077,7 +2007,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         .unwrap();
     let again = until_from_mac(&mut socket, |m| m["id"] == 19).await;
     assert_eq!(opened_reply(&phone, again_nonce, &again), made);
-    // The phone follows a chat as numbered frames of its feed, until it stops.
     let mut nonces = std::collections::BTreeMap::new();
     for (id, chat) in [(20, chat.as_str()), (21, "nope")] {
         let request = json!({"chat": chat}).to_string();
@@ -2090,7 +2019,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
             .await
             .unwrap();
     }
-    // In any order: the missing chat's answer needs no reading.
     let mut frames = std::collections::BTreeMap::new();
     while frames.len() < 2 {
         let frame = until_from_mac(&mut socket, |m| m["type"] == "frame").await;
@@ -2131,7 +2059,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         (&json!("interrupted"), &json!("The run stopped: pi exited."))
     );
 
-    // Another phone links through the Mac the relay knows, on the same relay only.
     let other = json!({"relay": "https://relay.example.com"});
     let other = tool(&engine, "link_phone", other).await.unwrap_err();
     assert!(
@@ -2156,7 +2083,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     assert_ne!(second.phone, phone.phone);
     to_mac(&mut waiting, json!({"type": "linked", "token": null})).await;
     phone_link_until(&engine, pairing("linked")).await;
-    // The second phone's calls work on the open connection, and the first's still do.
     for (id, keys) in [(12, &second), (13, &phone)] {
         let (call, nonce) = sealed_call(keys, id, "list_chats", json!({}));
         socket
@@ -2167,7 +2093,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         assert_eq!(opened_reply(keys, nonce, &reply)["ok"]["total"], 1);
     }
 
-    // A restarted engine connects its saved link again.
     engine.shutdown().await.unwrap();
     drop(socket);
     let engine = self::engine(dir.path(), Duration::from_secs(60)).await;
@@ -2209,8 +2134,6 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     std::fs::remove_dir(&replay_path).unwrap();
     std::fs::write(&replay_path, saved_replays).unwrap();
 
-    // Unlinking drops the connection, forgets the link, and has the relay
-    // forget the Mac.
     let unlinked = tool(&engine, "unlink_phone", json!({})).await.unwrap();
     assert_eq!(unlinked["link"], Value::Null);
     let closed = async {

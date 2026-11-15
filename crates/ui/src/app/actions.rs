@@ -1,7 +1,3 @@
-//! What a chat's page does with the engine: follow the chat's feed, load
-//! earlier messages, send, answer pi's dialogs, stop, dictate, and
-//! load what the composer shows.
-
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
@@ -15,36 +11,29 @@ use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
 use crate::data::{ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Polished, Skills};
 use crate::dictation::{self, Heard, Listening};
 
-/// How many more messages "Load earlier messages" adds.
 const EARLIER: usize = 40;
 
-/// A call on the open chat; the feed shows what it changes.
 enum ChatAction {
     Stop,
     Respond(Answer),
 }
 
-/// An answer to pi's dialog.
 pub enum Answer {
-    /// A select's option, or the typed text.
     Value(String),
     Confirmed(bool),
 }
 
-/// `send_message`'s answer.
 #[derive(Deserialize)]
 struct Sent {
     delivery: String,
 }
 
 impl State {
-    /// Show one frame of chat `nav`'s feed: its page, run and dialog.
     pub(super) fn frame(&mut self, nav: u64, record: Value, tx: &mut Tx) {
         let Some(chat) = self.existing_at(nav) else {
             return;
         };
         if let Some(why) = record.get("error") {
-            // The engine ended the feed: the chat can't be read.
             chat.error = Some(why.as_str().unwrap_or("the chat can't be read").to_owned());
             chat.feed = None;
             return;
@@ -57,8 +46,7 @@ impl State {
             }
         };
         chat.error = frame.failure;
-        // A streaming reply grows every frame, and springing the page to each new
-        // size keeps the window drawing at the display's rate for the whole reply.
+        // Springs would relayout each streaming update at the display refresh rate.
         if !frame.reset
             && frame
                 .messages
@@ -106,8 +94,6 @@ impl State {
         chat.queued = frame.queued;
         chat.page = Some(page);
         chat.file_links.borrow_mut().clear();
-        // A run's every step grows the context, and its end may also have changed the
-        // model or the branch.
         let moved = chat
             .chat
             .as_ref()
@@ -140,7 +126,6 @@ impl State {
         self.sync_tick();
     }
 
-    /// Resume writing here after a terminal pi changed the session.
     pub fn take_over(&mut self) {
         let Some(chat) = self.chat().and_then(|page| page.existing()) else {
             return;
@@ -156,12 +141,10 @@ impl State {
         );
     }
 
-    /// Open the diff of the chat's run `turn` in place of its transcript.
     pub fn open_changes(&mut self, turn: &str) {
         self.load_changes(ChangeTarget::Turn(turn.to_owned()));
     }
 
-    /// Show the current uncommitted diff, independent of any agent turn.
     pub fn open_working_changes(&mut self) {
         self.load_changes(ChangeTarget::WorkingTree);
     }
@@ -189,7 +172,6 @@ impl State {
                 chat.changes = Some(match result {
                     Ok(got) => {
                         let mut diff = Box::new(DiffState::new(diff::parse(&got.patch)));
-                        // The window is too narrow to scroll lines sideways.
                         diff.set_wrap(true);
                         Changes::Ready {
                             diff,
@@ -201,8 +183,6 @@ impl State {
             });
     }
 
-    /// Load the messages before the first one shown. They stay until the
-    /// feed resets.
     pub fn load_earlier(&mut self) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
@@ -227,7 +207,6 @@ impl State {
                     Ok(ChatView { read: None }) => return,
                     Err(e) => return s.fail("Couldn't load earlier messages", e),
                 };
-                // The first one shown may have gone, as after a /tree.
                 let Some(at) = read.messages.iter().position(|m| m.id == first) else {
                     return;
                 };
@@ -245,7 +224,6 @@ impl State {
         );
     }
 
-    /// Open a wrapper tool's details, or drop its output when closing it.
     pub fn toggle_tool_output(&mut self, call: &str) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
@@ -271,7 +249,6 @@ impl State {
         );
     }
 
-    /// Copy message `id`'s answer as Markdown, and mark its button copied.
     pub fn copy_answer(&mut self, id: &str, tx: &mut Tx) {
         let Some(chat) = self.chat_mut().and_then(|p| p.existing_mut()) else {
             return;
@@ -288,7 +265,6 @@ impl State {
         self.sync_tick();
     }
 
-    /// The composer's branch, context and model: the chat's, or a new chat's in its project.
     pub fn load_info(&mut self) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
@@ -310,7 +286,6 @@ impl State {
             args,
             move |s, result: Result<ComposerInfo, String>, _| {
                 let Some(page) = s.page_at(nav) else { return };
-                // A new chat's project may have changed while this loaded.
                 if let Some(project) = &project
                     && page.draft().is_none_or(|d| &d.project != project)
                 {
@@ -327,8 +302,6 @@ impl State {
         );
     }
 
-    /// Send the composer's text and images: to the chat, or as a new chat's
-    /// first message.
     pub fn send(&mut self, tx: &mut Tx) {
         if self.chat().is_some_and(|page| page.queue_edit.is_some()) {
             self.save_queued(tx);
@@ -345,7 +318,7 @@ impl State {
             Err(why) => return self.fail(why, ""),
         };
         let nav = page.nav;
-        let payloads: Vec<attach::Payload> = images.iter().map(|(p, _)| p.clone()).collect();
+        let (payloads, thumbs): (Vec<_>, Vec<_>) = images.into_iter().unzip();
         let Target::Existing(chat) = &mut page.target else {
             self.create(typed, payloads);
             return;
@@ -353,7 +326,7 @@ impl State {
         let id = chat.id.clone();
         chat.pending.push(Pending {
             text: typed.clone(),
-            images: images.iter().map(|(_, thumb)| thumb.clone()).collect(),
+            images: thumbs.clone(),
             at: chrono::Utc::now().timestamp_millis(),
         });
         if matches!(page.voice, Voice::Listening(_)) {
@@ -377,20 +350,19 @@ impl State {
                     }
                     return;
                 };
-                let failed = result.as_ref().err().cloned();
                 // A command pi handled itself never shows as a message.
-                let gone = failed.is_some()
+                let gone = result.is_err()
                     || result
                         .as_ref()
                         .is_ok_and(|sent| matches!(sent.delivery.as_str(), "handled" | "queued"));
                 if gone && let Some(chat) = page.existing_mut() {
                     chat.pending.retain(|p| p.text != typed);
                 }
-                let Some(e) = failed else { return };
+                let Err(e) = result else { return };
                 if page.composer.text.trim().is_empty() && page.attached.is_empty() {
                     page.composer = TextEdit::new(typed);
                     page.composer.set_caret(page.composer.text.len());
-                    s.reattach(nav, images);
+                    s.reattach(nav, payloads.into_iter().zip(thumbs).collect());
                 }
                 s.fail("Not sent", e);
             },
@@ -459,7 +431,6 @@ impl State {
         });
     }
 
-    /// Stop listening; what was heard goes on to be cleaned up.
     pub fn stop_dictating(&mut self) {
         if let Some(d) = self.chat_mut().and_then(|p| p.voice.listening()) {
             d.session.stop();
@@ -494,7 +465,6 @@ impl State {
         }
     }
 
-    /// Keep what dictation `id` heard, out of sight until it's cleaned up.
     fn heard(&mut self, nav: u64, id: u64, heard: Heard) {
         let Some(page) = self.page_at(nav) else {
             return;
@@ -521,7 +491,6 @@ impl State {
                     self.polish(nav, d.heard);
                 }
             }
-            // What was heard before the failure goes in as heard, rather than being lost.
             Heard::Failed(why) => {
                 let Voice::Listening(d) = std::mem::replace(&mut page.voice, Voice::Idle) else {
                     return;
@@ -534,8 +503,6 @@ impl State {
         }
     }
 
-    /// Have the model turn what dictation heard into a clean message, put
-    /// after the composer's text. A failed cleanup puts the words as heard.
     fn polish(&mut self, nav: u64, heard: String) {
         let Some(page) = self.page_at(nav) else {
             return;
@@ -563,7 +530,6 @@ impl State {
         );
     }
 
-    /// Put dictated `words` after the composer's text on page `nav`.
     fn add_dictated(&mut self, nav: u64, words: &str) {
         let Some(page) = self.page_at(nav) else {
             return;
@@ -573,7 +539,6 @@ impl State {
         page.composer.focused = true;
     }
 
-    /// Answer pi's dialog.
     pub fn respond(&mut self, answer: Answer) {
         let Some(form) = self
             .chat_mut()
@@ -587,7 +552,6 @@ impl State {
         self.chat_action(ChatAction::Respond(answer));
     }
 
-    /// Answer an input or editor dialog with what's typed.
     pub fn respond_typed(&mut self) {
         let typed = self
             .chat()
@@ -599,8 +563,6 @@ impl State {
         }
     }
 
-    /// Open a file or folder the transcript names in its default app.
-    /// Open a link from a message: a path with its app, else a web page.
     pub fn open_link(&mut self, url: &str, tx: &mut Tx) {
         // Code links and pasted images are paths; Rune opens web links only.
         if url.starts_with('/') {
@@ -629,7 +591,6 @@ impl State {
         );
     }
 
-    /// Load the skills for the `$` menu: the chat's, or a new chat's in its project.
     pub fn load_skills(&mut self) {
         let Some(page) = self.chat_mut() else { return };
         let args = match &page.target {
@@ -657,7 +618,6 @@ impl State {
                 skills.list = match result {
                     Ok(got) => SkillList::Ready(got.skills),
                     Err(e) => {
-                        // Forget the scope, so the next `$` tries again.
                         skills.key.clear();
                         SkillList::Failed(e)
                     }
@@ -666,7 +626,6 @@ impl State {
         );
     }
 
-    /// Drop the skills of a new chat's old project, and load its new ones.
     pub(super) fn reload_skills(&mut self) {
         if let Some(page) = self.chat_mut() {
             page.skills = SkillMenu::default();

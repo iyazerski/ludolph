@@ -1,14 +1,3 @@
-//! Watching a folder tree with FSEvents.
-//!
-//! FSEvents can merge and drop events, so they're hints of what changed, not
-//! a log: when it says it dropped some, the watcher asks for a rescan
-//! (`docs/design.md`, "Chat index"). Changes pile up in a set until the
-//! engine takes them, so a burst of writes costs one pass, and memory stays
-//! bounded by the number of files.
-//!
-//! macOS reports a write to a file when the file is closed. pi opens, appends
-//! to and closes its session file for every line, so each line is seen.
-
 use std::collections::HashSet;
 use std::ffi::{CStr, c_char, c_void};
 use std::os::unix::ffi::OsStrExt;
@@ -30,16 +19,13 @@ use objc2_core_services::{
 };
 use tokio::sync::Notify;
 
-/// What changed since the engine last looked.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Changes {
-    /// Paths that changed, under the folder as it was given.
     pub paths: HashSet<PathBuf>,
     /// FSEvents dropped events, so anything may have changed.
     pub rescan: bool,
 }
 
-/// A running watch; dropping it stops it.
 #[derive(Debug)]
 pub struct Watcher {
     stream: FSEventStreamRef,
@@ -65,13 +51,6 @@ struct Shared {
 }
 
 impl Watcher {
-    /// Watch the tree at `dir`, which must exist. FSEvents waits `latency`
-    /// after a change for more to merge with it, except the first after a
-    /// quiet spell, which comes at once.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `dir` doesn't exist, or FSEvents refuses to watch it.
     pub fn start(dir: &Path, latency: Duration) -> Result<Self> {
         let reported = dir
             .canonicalize()
@@ -123,7 +102,6 @@ impl Watcher {
         Ok(watcher)
     }
 
-    /// Wait until something changed, and take what did.
     pub async fn changes(&self) -> Changes {
         loop {
             let notified = self.shared.notify.notified();

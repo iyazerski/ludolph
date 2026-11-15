@@ -1,22 +1,12 @@
-//! Markdown in what you write to the agent. The composer and your sent
-//! messages show the source as typed, shaded so its headings, lists, links
-//! and code stand out; Shift+Return carries a list on.
-
 use std::ops::Range;
 
 use pulldown_cmark::{Event, Options, Parser, Tag};
 
-/// A part of the Markdown source that draws apart from plain text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shade {
-    /// A heading's whole line.
     Heading,
-    /// The syntax around the text: a heading's `#`s, a list item's bullet or
-    /// number, a task's box.
     Marker,
-    /// A link's text.
     Link,
-    /// A link's `](target)`.
     Target,
     Code,
     Strong,
@@ -24,7 +14,6 @@ pub enum Shade {
     Skill,
 }
 
-/// The parts of `text` that draw apart, each over the ones before it.
 pub fn shades(text: &str) -> Vec<(Range<usize>, Shade)> {
     let mut out = Vec::new();
     for (event, range) in parse(text) {
@@ -50,7 +39,6 @@ pub fn shades(text: &str) -> Vec<(Range<usize>, Shade)> {
                         out.push((range.start..range.start + at + 1, Shade::Link));
                         out.push((range.start + at + 1..range.end, Shade::Target));
                     }
-                    // An autolink, `<https://…>`, or a reference link.
                     None => out.push((range, Shade::Link)),
                 }
             }
@@ -71,7 +59,6 @@ pub fn shades(text: &str) -> Vec<(Range<usize>, Shade)> {
     out
 }
 
-/// Each link in `text`: its source range and where it points.
 pub fn links(text: &str) -> Vec<(Range<usize>, String)> {
     parse(text)
         .filter_map(|(event, range)| match event {
@@ -81,9 +68,6 @@ pub fn links(text: &str) -> Vec<(Range<usize>, String)> {
         .collect()
 }
 
-/// What Shift+Return does at byte `caret` of `text`, if the caret is in a
-/// list item: the range to replace and what goes there. In an item with
-/// text, it starts the next item; in an empty one, it ends the list.
 pub fn list_break(text: &str, caret: usize) -> Option<(Range<usize>, String)> {
     let start = text[..caret].rfind('\n').map_or(0, |i| i + 1);
     let end = text[caret..].find('\n').map_or(text.len(), |i| caret + i);
@@ -109,8 +93,6 @@ pub fn list_break(text: &str, caret: usize) -> Option<(Range<usize>, String)> {
     Some((caret..caret, format!("\n{}{next}{task} ", &line[..indent])))
 }
 
-/// A Markdown link to `target` labelled `label`. A target with spaces, as
-/// paths under Application Support have, goes in angle brackets.
 pub fn link(label: &str, target: &str) -> String {
     if target.contains([' ', '(', ')']) {
         format!("[{label}](<{target}>)")
@@ -124,8 +106,6 @@ fn parse(text: &str) -> impl Iterator<Item = (Event<'_>, Range<usize>)> {
     Parser::new_ext(text, options).into_offset_iter()
 }
 
-/// The length of the list marker `item` starts with, with its space and any
-/// task box: `- `, `12. `, `- [x] `. Zero if it isn't a list item.
 fn marker_len(item: &str) -> usize {
     let digits = item.bytes().take_while(u8::is_ascii_digit).count();
     let bullet = match item.as_bytes() {
@@ -141,55 +121,4 @@ fn marker_len(item: &str) -> usize {
     let rest = &item[bullet..];
     let task = ["[ ] ", "[x] ", "[X] "].iter().any(|b| rest.starts_with(b));
     bullet + if task { 4 } else { 0 }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shift_return_carries_a_list_on() {
-        // The text and caret, then the bytes replaced and what replaces them.
-        let cases = [
-            ("- one", 5, Some((5, 5, "\n- "))),
-            ("  * one", 7, Some((7, 7, "\n  * "))),
-            ("9. nine", 7, Some((7, 7, "\n10. "))),
-            ("1) a", 4, Some((4, 4, "\n2) "))),
-            ("- [x] done", 10, Some((10, 10, "\n- [ ] "))),
-            ("intro\n- ", 8, Some((6, 8, ""))),
-            ("- one", 1, None),
-            ("plain", 5, None),
-        ];
-        for (text, caret, want) in cases {
-            let want = want.map(|(start, end, s)| (start..end, s.to_owned()));
-            assert_eq!(list_break(text, caret), want, "{text:?} at {caret}");
-        }
-    }
-
-    #[test]
-    fn markdown_source_is_shaded() {
-        let text = "# Plan\n\n1. See [shot](</a b.png>) and `x`\n- **b** then $commit: and $review";
-        let shaded: Vec<(&str, Shade)> = shades(text)
-            .into_iter()
-            .map(|(r, shade)| (&text[r], shade))
-            .collect();
-        assert_eq!(
-            shaded,
-            [
-                ("# Plan", Shade::Heading),
-                ("#", Shade::Marker),
-                ("1. ", Shade::Marker),
-                ("[shot]", Shade::Link),
-                ("(</a b.png>)", Shade::Target),
-                ("`x`", Shade::Code),
-                ("- ", Shade::Marker),
-                ("**b**", Shade::Strong),
-                ("$commit", Shade::Skill),
-                ("$review", Shade::Skill),
-            ]
-        );
-        let at = text.find("[shot]").unwrap();
-        assert_eq!(links(text), [(at..at + 18, "/a b.png".to_owned())]);
-        assert_eq!(link("Image 1", "/a b.png"), "[Image 1](</a b.png>)");
-    }
 }

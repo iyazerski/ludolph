@@ -1,10 +1,3 @@
-//! The connected Macs: one WebSocket each, opened by the Mac's engine.
-//!
-//! The app's calls go to a Mac as [`Down::Call`]s and wait for the matching
-//! reply, and the chats it has open stream back as frames of a
-//! [`Down::Watch`]. They're sealed between the phone and the Mac, which
-//! decides which tools may run; the relay only routes.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -20,38 +13,26 @@ use tokio::time::{Duration, Instant};
 
 use crate::store::Machine;
 
-/// How long a call may take. Tool calls never wait on a turn, so this only
-/// trips when the Mac is unreachable.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Drop a Mac that sent nothing (it pings every 25 s) for this long.
 const SILENCE_LIMIT: Duration = Duration::from_secs(70);
-/// The Mac must say hello this soon after connecting.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
-/// Calls queued for one Mac before callers wait.
 const CALL_QUEUE: usize = 64;
-/// Frames of one followed chat waiting for the phone. A phone that falls
-/// this far behind loses the stream, and starts over when it reconnects.
+/// A lagging phone must reconnect: dropping individual frames corrupts its page.
 const WATCH_QUEUE: usize = 32;
 
-/// A Mac's answer: sealed for the phone, or why it couldn't open the call.
 pub type Answer = Result<String, String>;
-/// Calls waiting for a Mac's reply, by call id.
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Answer>>>>;
-/// Where the frames of each chat the phone follows go, by watch id.
 type Watches = Arc<Mutex<HashMap<u64, mpsc::Sender<Answer>>>>;
 
 struct Link {
-    /// Tells this connection apart from a newer one for the same Mac.
     conn: u64,
     calls: mpsc::Sender<Down>,
     pending: Pending,
     watches: Watches,
     version: String,
-    /// `None` until the Mac reports it, and on a Mac without a battery.
     battery: Option<Battery>,
 }
 
-/// A Mac's live state, for the app; the default is an offline Mac.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -66,7 +47,6 @@ pub struct Watch {
     pub frames: mpsc::Receiver<Answer>,
     id: u64,
     watches: Watches,
-    /// Weak, so a replaced connection still ends when its link is gone.
     calls: mpsc::WeakSender<Down>,
 }
 
@@ -81,7 +61,6 @@ impl Drop for Watch {
     }
 }
 
-/// The connected Macs, by machine id.
 #[derive(Default)]
 pub struct Hub {
     links: Mutex<HashMap<String, Link>>,
@@ -100,9 +79,7 @@ impl Hub {
         }
     }
 
-    /// Pass a phone's sealed call to `machine` and return its sealed reply.
-    /// The phone app retries a call that must run once on these errors' exact
-    /// wording (`RETRY` in `app.js`), since they leave its fate unknown.
+    /// The phone's retry policy depends on these exact error strings (app.js RETRY).
     pub async fn call(&self, machine: &str, sealed: Sealed) -> Answer {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (calls, pending) = {
@@ -112,12 +89,10 @@ impl Hub {
         };
         let (tx, rx) = oneshot::channel();
         lock(&pending).insert(id, tx);
-        // Forget the waiter however the call ends, also when the app hangs up.
         let _waiting = Waiting {
             pending: &pending,
             id,
         };
-        // The deadline covers queueing too, not just the Mac's answer.
         let exchange = async move {
             let sent = calls.send(Down::Call { id, sealed }).await;
             // Don't keep the link's call queue open: a replaced connection
@@ -126,7 +101,6 @@ impl Hub {
             if sent.is_err() {
                 return Err("this Mac went offline".into());
             }
-            // An error: the connection ended and dropped the waiting reply.
             rx.await
                 .unwrap_or_else(|_| Err("this Mac went offline".into()))
         };
@@ -135,7 +109,6 @@ impl Hub {
             .unwrap_or_else(|_| Err("this Mac didn't answer in time".into()))
     }
 
-    /// Follow the chat the phone asks for in `sealed` on `machine`.
     pub async fn watch(&self, machine: &str, sealed: Sealed) -> Result<Watch, String> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (calls, watches) = {
@@ -162,10 +135,7 @@ impl Hub {
         self.lock().remove(machine);
     }
 
-    /// Serve one Mac's connection until it ends, passing its notices to
-    /// `notify`, and calling `forget` if it unlinks. `known` says whether
-    /// the Mac is still added: it may be removed while it says hello, after
-    /// its token was checked.
+    /// Recheck known after hello: the Mac may be removed while its handshake is in flight.
     pub async fn serve(
         self: Arc<Self>,
         machine: Machine,
@@ -239,8 +209,6 @@ impl Hub {
                                         sink.send(Message::Text(serde_json::to_string(&down)?.into())).await?;
                                     }
                                 }
-                                // A frame this relay can't read: skip it, and
-                                // let a reply it held time out.
                                 Err(e) => eprintln!("{}: skipped a bad message: {e}", machine.name),
                             },
                             Some(Ok(Message::Close(_))) | None => return Ok(()),
@@ -250,7 +218,6 @@ impl Hub {
                     }
                     call = calls.recv() => match call {
                         Some(call) => sink.send(Message::Text(serde_json::to_string(&call)?.into())).await?,
-                        // A newer connection replaced this one, or the Mac was removed.
                         None => {
                             let _ = sink.send(close("replaced")).await;
                             return Ok(());
@@ -260,8 +227,7 @@ impl Hub {
             }
         }
         .await;
-        // Fail this connection's calls now rather than at their timeout:
-        // unlist it, refuse new calls, then drop the waiting replies.
+        // Unlist before failing waiters so new calls cannot enter the dead connection.
         {
             let mut links = self.lock();
             if links.get(&machine.id).is_some_and(|l| l.conn == conn) {
@@ -270,13 +236,11 @@ impl Hub {
         }
         calls.close();
         lock(&pending).clear();
-        // Ends the phone's streams, which reconnect to the Mac's next link.
         lock(&watches).clear();
         eprintln!("{} disconnected", machine.name);
         result
     }
 
-    /// Handle one message from the Mac, and return what to tell it back.
     fn receive(
         &self,
         machine: &Machine,
@@ -312,8 +276,7 @@ impl Hub {
         None
     }
 
-    /// Apply `update` to `machine`'s link if it's still connection `conn`,
-    /// so a replaced connection can't overwrite its successor's state.
+    /// Ignore updates from replaced connections.
     fn update_link(&self, machine: &Machine, conn: u64, update: impl FnOnce(&mut Link)) {
         if let Some(link) = self.lock().get_mut(&machine.id).filter(|l| l.conn == conn) {
             update(link);
@@ -325,8 +288,6 @@ impl Hub {
     }
 }
 
-/// Read the Mac's hello and return its Ludolph version. A Mac on
-/// another protocol is told why before it's turned away.
 async fn hello(
     sink: &mut SplitSink<WebSocket, Message>,
     stream: &mut SplitStream<WebSocket>,
@@ -349,7 +310,6 @@ async fn hello(
     }
 }
 
-/// Removes a call's waiter from its connection when the call ends.
 struct Waiting<'a> {
     pending: &'a Pending,
     id: u64,
@@ -365,7 +325,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().expect("the hub lock is poisoned")
 }
 
-/// A close frame that tells the Mac why it's turned away.
 pub fn close(reason: &str) -> Message {
     Message::Close(Some(CloseFrame {
         code: close_code::POLICY,
@@ -383,8 +342,6 @@ mod tests {
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >;
 
-    /// Serve Mac `m` on a local relay whose store says `known`, connect it,
-    /// and say hello.
     async fn connect(hub: &Arc<Hub>, known: bool) -> MacSocket {
         let mac = Machine {
             id: "m".into(),
@@ -453,7 +410,6 @@ mod tests {
         }
     }
 
-    /// The next message the Mac gets.
     async fn to_mac(socket: &mut MacSocket) -> Down {
         let Some(Ok(Frame::Text(body))) = socket.next().await else {
             panic!("the Mac got nothing");
@@ -487,7 +443,6 @@ mod tests {
 
         drop(watch);
         assert_eq!(to_mac(&mut socket).await, Down::Unwatch { id });
-        // A frame already on its way gets another unwatch.
         let late = Up::Frame {
             id,
             frame: Ok("late".into()),
@@ -498,7 +453,6 @@ mod tests {
             .unwrap();
         assert_eq!(to_mac(&mut socket).await, Down::Unwatch { id });
 
-        // The phone's stream ends with the Mac's link.
         let mut watch = hub.watch("m", sealed("c")).await.unwrap();
         drop(socket);
         let ended = tokio::time::timeout(Duration::from_secs(5), watch.frames.recv()).await;

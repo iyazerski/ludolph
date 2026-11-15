@@ -1,6 +1,3 @@
-//! The `ludolph` binary. `ludolph` runs the windows, as Ludolph.app does,
-//! and starts the engine in the background; `ludolph engine` is the engine.
-
 mod agent;
 mod shell;
 
@@ -13,9 +10,7 @@ use ludolph_engine::engine::{Config, Engine, SecretStore};
 use ludolph_engine::server;
 use tokio::signal::unix::{SignalKind, signal};
 
-/// How long a settled chat keeps its pi (`docs/design.md`).
 const IDLE: Duration = Duration::from_secs(5 * 60);
-/// How long pi gets to exit before it's killed.
 const GRACE: Duration = Duration::from_secs(10);
 
 fn main() -> ExitCode {
@@ -43,17 +38,14 @@ fn main() -> ExitCode {
     }
 }
 
-/// Run the engine until SIGTERM or SIGINT, then stop its pi processes.
 #[tokio::main]
 async fn engine() -> Result<()> {
     let home = home()?;
     let state_dir = state_dir(&home);
-    // The same rule as pi's own.
     let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".pi/agent"));
     let exe = std::env::current_exe().context("finding the ludolph binary")?;
-    // A development engine leaves the installed app's login item alone.
     let app = bundle_of(&exe)
         .filter(|_| std::env::var_os("LUDOLPH_DIR").is_none())
         .map(Path::to_owned);
@@ -84,8 +76,6 @@ async fn engine() -> Result<()> {
     engine.shutdown().await
 }
 
-/// Run the windows until the app quits. It opens the main window, unless
-/// `hidden` keeps it closed until the app is opened again, as at login.
 fn app(hidden: bool) -> Result<()> {
     let home = home()?;
     let state_dir = state_dir(&home);
@@ -103,8 +93,6 @@ fn app(hidden: bool) -> Result<()> {
     ludolph_ui::run(ludolph_ui::Opts { state_dir, hidden })
 }
 
-/// Stop the engine and remove the app's login item, before you delete
-/// Ludolph.app.
 fn uninstall() -> Result<()> {
     let stopped = agent::stop()?;
     let item = ludolph_engine::login::path(&home()?);
@@ -129,8 +117,6 @@ fn uninstall() -> Result<()> {
     Ok(())
 }
 
-/// The `.app` bundle `exe` runs from, if it runs from one, as in
-/// `Ludolph.app/Contents/MacOS/ludolph`.
 fn bundle_of(exe: &Path) -> Option<&Path> {
     exe.ancestors()
         .nth(3)
@@ -143,16 +129,13 @@ fn home() -> Result<PathBuf> {
     ))
 }
 
-/// The engine's folder. `LUDOLPH_DIR` keeps a development engine apart from
-/// the installed one.
 fn state_dir(home: &Path) -> PathBuf {
     std::env::var_os("LUDOLPH_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join("Library/Application Support/Ludolph"))
 }
 
-/// The `pi` executable: on `PATH`, or where pi's installers put it, since a
-/// launch agent's `PATH` is short.
+/// launchd has a short PATH; also check pi's installer locations.
 fn find_pi(home: &Path) -> Result<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let extra = [".local/bin", ".bun/bin", ".npm-global/bin"].map(|dir| home.join(dir));

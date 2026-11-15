@@ -1,12 +1,6 @@
-//! Images in the composer and the transcript. A pasted or copied image is
-//! read and, if it's large, shrunk off the UI thread as soon as it's
-//! attached, so sending only has to hand over the bytes. The transcript's
-//! images load from the engine the first time they show.
-
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -20,54 +14,40 @@ use super::{ChatPage, State};
 use crate::data::{ChatImage, Role};
 use crate::markup;
 
-/// Thumbnails shrink to this many pixels square: the largest they draw
-/// (72 points) on a Retina screen. Smaller draws use the mips.
+/// 72-point thumbnails need 144 pixels on Retina displays.
 const THUMB_PX: u32 = 144;
 const EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
-/// The longest edge sent, as the phone sends: models shrink larger images
-/// anyway, and the bytes go into the session file.
 const MAX_EDGE: u32 = 1600;
-/// An image this small in a type models take goes as it is.
 const KEEP_BYTES: usize = 1 << 20;
-/// The largest file read: a screenshot is a few MB.
 const MAX_FILE: u64 = 64 << 20;
 
-/// An image as `send_message` and `create_chat` take it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Payload {
     pub mime_type: String,
-    /// Base64.
     pub data: String,
 }
 
 pub struct Attached {
     pub id: u64,
-    /// Its label, `Image 2`, unique among the composer's images.
     pub number: usize,
     pub thumb: Option<Image>,
     pub image: Prep,
-    /// The link to it put in the text where it was pasted.
     pub link: Option<String>,
 }
 
-/// Where an attached image is on its way to being sendable.
 pub enum Prep {
     Reading,
     Ready(Payload),
     Failed(String),
 }
 
-/// What was pasted or dropped: an image's bytes, with where to save them so
-/// the text can link to them, or a file.
 enum Source {
     Pasted(Arc<[u8]>, PathBuf),
     File(PathBuf),
 }
 
 impl State {
-    /// Attach the images a paste carries, each with a link to it at the
-    /// caret; any other paste stays text.
     pub fn paste(&mut self, content: &ClipboardContent, _: &mut Tx) -> bool {
         if self.chat().is_some_and(|page| page.queue_edit.is_some()) {
             return false;
@@ -85,9 +65,7 @@ impl State {
         // Office apps put a picture of the copied text beside it.
         match content.image() {
             Some(image) if content.text().trim().is_empty() => {
-                let millis = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |d| d.as_millis());
+                let millis = chrono::Utc::now().timestamp_millis();
                 let number = self.chat().map_or(1, ChatPage::next_image_number);
                 let path = self
                     .api
@@ -145,7 +123,6 @@ impl State {
         );
     }
 
-    /// Put images that didn't send back in the composer of page `nav`.
     pub fn reattach(&mut self, nav: u64, images: Vec<(Payload, Option<Image>)>) {
         let Some(page) = self.page_at(nav) else {
             return;
@@ -163,7 +140,6 @@ impl State {
         }
     }
 
-    /// Remove an attached image, and its link from the text.
     pub fn detach(&mut self, id: u64) {
         let Some(page) = self.chat_mut() else { return };
         let Some(at) = page.attached.iter().position(|a| a.id == id) else {
@@ -183,8 +159,6 @@ impl State {
         }
     }
 
-    /// Load the shown messages' images the first time they show. A message
-    /// pi hasn't written yet waits, since its images have no address.
     pub fn load_thumbs(&mut self) {
         if self.images.is_none() {
             return;
@@ -234,7 +208,6 @@ impl State {
         }
     }
 
-    /// Open a transcript image in Preview, from a file in the temporary folder.
     pub fn open_image(&mut self, message: String, index: usize) {
         let Some(chat) = self.chat().and_then(ChatPage::existing) else {
             return;
@@ -261,9 +234,6 @@ impl State {
     }
 }
 
-/// Read an image and make it sendable: as it is when it's small and in a
-/// type models take, else no larger than [`MAX_EDGE`], as JPEG over white.
-/// Also return its thumbnail.
 fn prepare(source: &Source) -> Result<(Payload, RgbaImage), String> {
     let bytes: Arc<[u8]> = match source {
         Source::Pasted(bytes, save) => {
@@ -311,7 +281,6 @@ fn prepare(source: &Source) -> Result<(Payload, RgbaImage), String> {
         match decoded {
             Ok(image) if small(&image) => return Ok((keep, thumbnail(&image)?)),
             Ok(_) => {}
-            // A GIF or WebP can't make a thumbnail here, so it shows a blank tile.
             Err(_) => return Ok((keep, RgbaImage::new(1, 1))),
         }
     }
@@ -337,7 +306,6 @@ fn prepare(source: &Source) -> Result<(Payload, RgbaImage), String> {
     ))
 }
 
-/// Crop an image to a centered square, as the tiles show it.
 fn thumbnail(image: &DynamicImage) -> Result<RgbaImage, String> {
     Ok(image
         .resize_to_fill(THUMB_PX, THUMB_PX, FilterType::Triangle)
@@ -350,7 +318,6 @@ fn is_image(path: &Path) -> bool {
         .is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// Insert `s` at the caret, apart from the words on either side.
 fn insert_spaced(edit: &mut TextEdit, s: &str) {
     let (start, end) = edit.range();
     let before = edit.text[..start].chars().next_back();
@@ -369,7 +336,6 @@ fn insert_spaced(edit: &mut TextEdit, s: &str) {
 }
 
 impl ChatPage {
-    /// The next attached image's number: one past the highest shown.
     pub fn next_image_number(&self) -> usize {
         self.attached.iter().map(|a| a.number).max().unwrap_or(0) + 1
     }
@@ -381,7 +347,6 @@ impl ChatPage {
     }
 }
 
-/// The attached images with their thumbnails, or why the message can't go yet.
 pub fn ready(page: &ChatPage) -> Result<Vec<(Payload, Option<Image>)>, &'static str> {
     page.attached
         .iter()

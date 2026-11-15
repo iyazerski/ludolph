@@ -1,7 +1,3 @@
-//! The pi processes the engine runs, saved to a file so that an engine
-//! restarted after a crash can stop the ones left behind before it starts
-//! new ones on the same sessions.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -9,38 +5,24 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// How often [`Runtime::reap`] checks whether a leftover process exited.
 const POLL: Duration = Duration::from_millis(50);
 
-/// The engine's pi processes, by session id.
 #[derive(Debug)]
 pub struct Runtime {
     path: PathBuf,
     processes: BTreeMap<String, Process>,
 }
 
-/// One pi process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Process {
     pid: u32,
-    /// When the process started, in microseconds since the epoch, so a
-    /// reused pid is never mistaken for it.
+    /// Start time in epoch microseconds; a reused pid is not the same process.
     started: u64,
-    /// Whether a run was going.
     running: bool,
 }
 
 impl Runtime {
-    /// Stop the pi processes a previous engine left in the file at `path`,
-    /// and start an empty runtime there.
-    ///
-    /// Each leftover gets SIGTERM, which lets it finish writing its session,
-    /// and its process group gets SIGKILL if it's still running after
-    /// `grace`. Returns the sessions whose runs were cut short.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file can't be read or written.
+    /// Reap a crashed engine's processes before reopening their sessions.
     pub async fn reap(path: &Path, grace: Duration) -> Result<(Self, Vec<String>)> {
         let leftovers: BTreeMap<String, Process> =
             ludolph_json_file::load(path)?.unwrap_or_default();
@@ -77,11 +59,6 @@ impl Runtime {
         Ok((runtime, interrupted))
     }
 
-    /// Record that `pid` is the pi process for `session`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the process is gone already, or the file can't be written.
     pub fn add(&mut self, session: &str, pid: u32) -> Result<()> {
         let started = start_time(pid).ok_or_else(|| anyhow::anyhow!("pi {pid} exited"))?;
         let process = Process {
@@ -93,11 +70,6 @@ impl Runtime {
         self.save()
     }
 
-    /// Record whether `session`'s process has a run going.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file can't be written.
     pub fn set_running(&mut self, session: &str, running: bool) -> Result<()> {
         match self.processes.get_mut(session) {
             Some(process) if process.running != running => process.running = running,
@@ -106,12 +78,6 @@ impl Runtime {
         self.save()
     }
 
-    /// Forget `session`'s process `pid`, once it has exited. A newer process
-    /// for the same session stays.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file can't be written.
     pub fn remove(&mut self, session: &str, pid: u32) -> Result<()> {
         if self
             .processes
@@ -129,8 +95,6 @@ impl Runtime {
     }
 }
 
-/// When process `pid` started, in microseconds since the epoch; `None` if
-/// there's no such process.
 fn start_time(pid: u32) -> Option<u64> {
     let pid = libc::c_int::try_from(pid).ok()?;
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
@@ -154,7 +118,6 @@ fn start_time(pid: u32) -> Option<u64> {
     Some(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
 }
 
-/// Send `signal` to process `pid`. A process that's gone is fine.
 fn signal(pid: u32, signal: libc::c_int) {
     if let Ok(pid) = libc::pid_t::try_from(pid) {
         // SAFETY: kill only takes plain integers.
@@ -162,8 +125,6 @@ fn signal(pid: u32, signal: libc::c_int) {
     }
 }
 
-/// Kill the process group that process `pid` leads, with the tools it
-/// started. A group that's gone is fine.
 pub(crate) fn kill_group(pid: u32) {
     if let Ok(pid) = libc::pid_t::try_from(pid) {
         // SAFETY: killpg only takes plain integers.

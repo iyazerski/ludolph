@@ -1,6 +1,3 @@
-//! A chat's page: an existing chat, or a new one until its first message
-//! creates it, under the composer they share.
-
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -18,9 +15,7 @@ use crate::data::{
     TurnChanges,
 };
 use crate::dictation::Listening;
-/// The composer's branch and context change slowly; re-read them at most this often.
 const INFO_EVERY: Duration = Duration::from_secs(8);
-/// How long a reply's copy button shows a check after a copy.
 const COPIED_FOR: Duration = Duration::from_secs(2);
 /// How much earlier than its send a message's own timestamp may be.
 const CLOCK_SLACK_MS: i64 = 2000;
@@ -30,37 +25,28 @@ pub struct ChatPage {
     pub target: Target,
     pub composer: TextEdit,
     pub info: Option<ComposerInfo>,
-    /// Show compact context counts and chat cost in place of the ring.
     pub context_details: bool,
     pub overlay: Overlay,
-    /// Inline model and reasoning menus, shared by both windows.
     pub model_picker: ComboboxState,
     pub reasoning_picker: ComboboxState,
     pub skills: SkillMenu,
     pub queue_edit: Option<QueueEdit>,
-    /// Images in the composer, read as they're attached.
     pub attached: Vec<Attached>,
     pub far_from_bottom: bool,
     pub voice: Voice,
     /// Edits aimed at a field that's gone (an answered question) land here.
     pub(super) scratch: TextEdit,
-    /// The next attached image's id; ids are never reused, so a late upload
-    /// can't land on a newer image.
+    /// Never reuse ids: a late upload must not attach to a newer image.
     next_attached: u64,
-    /// The next dictation's id, so a session that ended can't write.
     pub(super) next_dictation: u64,
 }
 
-/// How many recent loudness readings the waveform shows.
 pub const LEVELS_KEPT: usize = 60;
 
-/// Where dictation into the composer is.
 pub enum Voice {
     Idle,
-    /// Asking for the microphone and speech recognition.
     Authorizing,
     Listening(Dictating),
-    /// What dictation heard is being cleaned up.
     Polishing,
 }
 
@@ -77,19 +63,15 @@ pub struct Dictating {
     pub id: u64,
     pub session: Listening,
     pub started: Instant,
-    /// What's heard so far, shown only once cleaned up.
     pub heard: String,
-    /// Recent loudness, 0 to 1, oldest first.
     pub levels: VecDeque<f32>,
 }
 
-/// What the page shows above the composer.
 #[expect(
     clippy::large_enum_variant,
     reason = "the page is boxed whole, and is either one for its life"
 )]
 pub enum Target {
-    /// A chat that the first message creates.
     New(Draft),
     Existing(Existing),
 }
@@ -97,40 +79,27 @@ pub enum Target {
 pub struct Existing {
     pub id: String,
     pub chat: Option<Chat>,
-    /// The chat's feed, while the window shows it.
     pub(super) feed: Option<Subscription>,
-    /// The feed's page, from its first frame on.
     pub page: Option<Vec<Message>>,
-    /// Earlier messages loaded before the page, until the feed resets.
     pub before: Vec<Message>,
-    /// How many messages come before the first one shown.
     pub older_remaining: usize,
     pub(super) loading_earlier: bool,
-    /// The shown runs that changed files: the page's, then the earlier ones'.
     pub turn_changes: Vec<TurnChanges>,
     pub before_changes: Vec<TurnChanges>,
     pub run: Option<Run>,
     pub queued: Vec<Queued>,
     pub error: Option<String>,
-    /// Sent messages not in the transcript yet.
     pub pending: Vec<Pending>,
     /// The folds the user opened (`true`) or closed, by key; the rest show
     /// as their kind does by default.
     pub open_groups: HashMap<String, bool>,
-    /// Opened wrapper outputs, kept only while their disclosure is open.
     pub tool_outputs: HashMap<String, Option<Result<crate::data::ToolOutput, String>>>,
     pub question: Option<QuestionForm>,
-    /// The shown messages' images, by message and index, decoded once.
     pub thumbs: HashMap<(String, usize), Option<Image>>,
     pub file_links: FileLinks,
-    /// When the composer's info was last read, so it's read again only
-    /// when a run may have changed it.
     pub(super) info_at: Option<Instant>,
-    /// The message whose answer was just copied, and when.
     pub(super) copied: Option<(String, Instant)>,
-    /// The latest turn's diff, shown in place of the transcript while open.
     pub changes: Option<Changes>,
-    /// The turn the changes page shows: the user message that started it.
     pub changes_of: ChangeTarget,
     pub details_open: bool,
     pub details: Option<Result<crate::data::ChatDetails, String>>,
@@ -138,8 +107,7 @@ pub struct Existing {
     pub(super) details_at: Option<Instant>,
 }
 
-/// The file each inline code names, by its text, looked up once per
-/// frame. The view fills it, as Rune's Markdown asks for links while it draws.
+/// Rune asks for inline-code links while drawing; cache filesystem lookups within the frame.
 pub type FileLinks = Rc<RefCell<HashMap<String, Option<String>>>>;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -152,7 +120,6 @@ pub enum Changes {
     Loading,
     Ready {
         diff: Box<DiffState>,
-        /// The engine capped the patch, so files or lines are missing.
         truncated: bool,
     },
     Failed(String),
@@ -168,13 +135,10 @@ pub enum Overlay {
 pub struct SkillMenu {
     pub list: SkillList,
     pub active: usize,
-    /// Escape closed the menu for the `$` word at this byte.
     pub dismissed: Option<usize>,
-    /// The scope the list was loaded for.
     pub(super) key: String,
 }
 
-/// The skills of the page's agent, for the `$` menu.
 #[derive(Default)]
 pub enum SkillList {
     #[default]
@@ -183,7 +147,6 @@ pub enum SkillList {
     Failed(String),
 }
 
-/// The waiting prompt's identity and the composer draft to restore after editing.
 pub struct QueueEdit {
     pub id: String,
     pub draft: TextEdit,
@@ -192,7 +155,6 @@ pub struct QueueEdit {
     pub saving: bool,
 }
 
-/// A message sent but not in the transcript yet.
 pub struct Pending {
     pub text: String,
     pub images: Vec<Option<Image>>,
@@ -201,7 +163,6 @@ pub struct Pending {
     pub(super) at: i64,
 }
 
-/// The dialog pi waits on, with what's typed into it.
 pub struct QuestionForm {
     pub dialog: Dialog,
     pub field: TextEdit,
@@ -264,7 +225,6 @@ impl ChatPage {
             .is_some_and(Chat::is_working)
     }
 
-    /// Whether this Mac can send to the chat: not while a terminal pi has it open.
     pub fn can_send(&self) -> bool {
         !self
             .existing()
@@ -272,7 +232,6 @@ impl ChatPage {
             .is_some_and(|c| c.open_elsewhere)
     }
 
-    /// Restore the unsent composer draft after saving or cancelling a queue edit.
     pub fn cancel_queue_edit(&mut self) {
         if let Some(edit) = self.queue_edit.take() {
             self.composer = edit.draft;
@@ -287,7 +246,6 @@ impl ChatPage {
 }
 
 impl Target {
-    /// Where the page's unsent text is kept: the chat's id, or `new`.
     pub(super) fn key(&self) -> &str {
         match self {
             Self::New(_) => "new",
@@ -297,14 +255,12 @@ impl Target {
 }
 
 impl Existing {
-    /// Whether message `id`'s answer was copied a moment ago.
     pub fn just_copied(&self, id: &str) -> bool {
         self.copied
             .as_ref()
             .is_some_and(|(m, at)| m == id && at.elapsed() < COPIED_FOR)
     }
 
-    /// Forget a copy shown long enough; true when one was.
     pub(super) fn expire_copied(&mut self) -> bool {
         let expired = self
             .copied
@@ -316,13 +272,10 @@ impl Existing {
         expired
     }
 
-    /// The shown messages, oldest first.
     pub fn messages(&self) -> impl Iterator<Item = &Message> {
         self.before.iter().chain(self.page.iter().flatten())
     }
 
-    /// Whether the agent works but shows nothing yet (no prose and no
-    /// running tool), so the transcript counts the seconds instead.
     pub fn shows_clock(&self) -> bool {
         let working = self.chat.as_ref().is_some_and(Chat::is_working);
         working
@@ -373,13 +326,10 @@ impl Existing {
         }
     }
 
-    /// Whether the composer's info is due again: a run may have changed the
-    /// model or the context, and it's read at most every [`INFO_EVERY`].
     pub(super) fn info_due(&self) -> bool {
         self.info_at.is_none_or(|t| t.elapsed() >= INFO_EVERY)
     }
 
-    /// Remove send previews once their messages reach the transcript or pi's queue.
     pub fn confirm_pending(&mut self, page: &[Message], run: Option<&Run>) {
         let queued: Vec<&str> = run
             .iter()
@@ -418,7 +368,7 @@ mod tests {
     use crate::data::MessageStatus;
 
     #[test]
-    fn skill_previews_clear_when_the_transcript_arrives() {
+    fn previews_clear_only_after_matching_delivery() {
         let typed = "[Image 1](</tmp/image.png>) - review this.\nPlease $commit the fix";
         let mut chat = Existing::new("chat".into(), None);
         chat.pending.push(Pending {
@@ -454,11 +404,7 @@ mod tests {
             chat.pending.is_empty(),
             "later frames keep the preview cleared"
         );
-    }
 
-    #[test]
-    fn steering_previews_keep_inline_skills() {
-        let mut chat = Existing::new("chat".into(), None);
         chat.pending.push(Pending {
             text: "please $commit".into(),
             images: Vec::new(),

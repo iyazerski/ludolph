@@ -1,7 +1,3 @@
-//! This Mac's battery, which the phone shows beside the Mac's name. IOKit
-//! reports it, and a Darwin notification says when it changes, so nothing
-//! polls.
-
 use std::ffi::{CStr, c_char, c_int};
 use std::os::fd::RawFd;
 
@@ -29,7 +25,6 @@ unsafe extern "C" {
     fn notify_cancel(token: c_int) -> u32;
 }
 
-/// The battery now; `None` on a Mac without one.
 pub fn battery() -> Option<Battery> {
     let info = IOPSCopyPowerSourcesInfo()?;
     // SAFETY: `info` is the blob `IOPSCopyPowerSourcesInfo` returned.
@@ -46,7 +41,6 @@ pub fn battery() -> Option<Battery> {
     })
 }
 
-/// The battery a power source describes, if it's the internal battery.
 fn from_description(description: &CFDictionary<CFString, CFType>) -> Option<Battery> {
     let value = |key: &CStr| description.get(&CFString::from_str(key.to_str().ok()?));
     let text = |key| {
@@ -71,29 +65,19 @@ fn from_description(description: &CFDictionary<CFString, CFType>) -> Option<Batt
     let state = match (plugged, charging) {
         (false, _) => BatteryState::Unplugged,
         (true, true) => BatteryState::Charging,
-        // Full, or macOS holds the charge.
         (true, false) => BatteryState::Plugged,
     };
     Some(Battery { percent, state })
 }
 
-/// Wakes when any power source changes: plugged in, unplugged, or a new
-/// charge level. It's the broad key, since `kIOPSNotifyPowerSource`
-/// stays quiet while the charge level changes. That's about once a minute
-/// while charging or on battery.
+/// Use the broad IOKit key: kIOPSNotifyPowerSource misses charge-level changes.
 #[derive(Debug)]
 pub struct Changes {
-    /// `None` only while dropping.
     fd: Option<AsyncFd<RawFd>>,
     token: c_int,
 }
 
 impl Changes {
-    /// Start listening.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the notification can't be registered.
     pub fn new() -> Result<Self> {
         let (mut fd, mut token) = (-1, -1);
         // SAFETY: the name is NUL-terminated, and both out pointers are
@@ -122,17 +106,11 @@ impl Changes {
         Ok(changes)
     }
 
-    /// Wait for the next change.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the descriptor can't be read.
     pub async fn next(&mut self) -> Result<()> {
         let fd = self.fd.as_ref().expect("set until dropped");
         loop {
             let mut ready = fd.readable().await?;
-            // Each notice is the token as 4 bytes. Reading them all makes a
-            // burst one change.
+            // Drain all four-byte tokens so a burst becomes one change.
             let mut drained = false;
             loop {
                 let mut buffer = [0u8; 64];
@@ -161,9 +139,7 @@ impl Changes {
 
 impl Drop for Changes {
     fn drop(&mut self) {
-        // Canceling the last registration on a descriptor closes it, so the
-        // `AsyncFd` deregisters first. It doesn't close it, since a `RawFd`
-        // doesn't own it.
+        // Cancel closes the fd; deregister AsyncFd first because RawFd does not own it.
         drop(self.fd.take());
         // SAFETY: `token` came from `notify_register_file_descriptor`.
         unsafe { notify_cancel(self.token) };

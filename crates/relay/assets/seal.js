@@ -1,12 +1,4 @@
-// Sealing what this phone and a Mac say, so the relay passes it on unread.
-// The engine does the same in crates/engine/src/seal.rs; the test vectors there
-// hold here too. Linking a phone gives it a secret in the QR code's URL
-// fragment, which the relay never sees. Two HMAC-SHA256s of it give the phone's
-// id, which the relay routes by, and an AES-256-GCM key, kept in IndexedDB as a
-// key that can't be exported. A sealed message is
-// `version || nonce || ciphertext || tag` in base64url, and its text starts
-// with the time it was sealed. The associated data says what it is, so the relay
-// can't pass one off as another. Shared by the app and its service worker.
+// Shared wire format and key derivation with crates/engine/src/seal.rs.
 "use strict";
 
 const Seal = (() => {
@@ -44,7 +36,6 @@ const Seal = (() => {
     notice: () => te.encode("ludolph/notice"),
   };
 
-  /** The phone id and sealing key that `secret` (base64url) gives. */
   async function derive(secret) {
     const bytes = b64.decode(secret);
     if (bytes.length !== 32) throw new Error("This link's code is damaged. Scan it again.");
@@ -55,7 +46,6 @@ const Seal = (() => {
     return { phone, key };
   }
 
-  /** Seal `text` with `key` for associated data `ad`; returns it and its nonce. */
   async function seal(key, ad, text) {
     const nonce = crypto.getRandomValues(new Uint8Array(12));
     const body = te.encode(text);
@@ -66,7 +56,6 @@ const Seal = (() => {
     return { data: b64.encode(join([VERSION], nonce, new Uint8Array(sealed))), nonce };
   }
 
-  /** Open `data`, sealed with `key` for associated data `ad`, and return its text. */
   async function open(key, ad, data) {
     const bytes = b64.decode(data);
     if (bytes[0] !== VERSION) throw new Error("The Mac runs another Ludolph version. Update it.");
@@ -78,8 +67,6 @@ const Seal = (() => {
     }
     return td.decode(new Uint8Array(plain).subarray(8));
   }
-
-  // ---- this phone's links, one per Mac, in IndexedDB ----
 
   let db = null;
   function store(mode) {
@@ -98,12 +85,10 @@ const Seal = (() => {
 
   return {
     aad, derive, seal, open,
-    /** Keep the link to `machine` that `secret` gives, in place of an older one. */
     async link(machine, secret) {
       const { phone, key } = await derive(secret);
       await request((await store("readwrite")).put({ machine, phone, key }));
     },
-    /** Every link this phone has: `{ machine, phone, key }`. */
     async links() { return request((await store("readonly")).getAll()); },
     async forget(machine) { await request((await store("readwrite")).delete(machine)); },
   };

@@ -1,5 +1,3 @@
-//! Reading pi's session files, which pi only appends to or rewrites whole.
-
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -9,7 +7,6 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-/// Open `path` with its size and modification time.
 pub(crate) fn open(path: &Path) -> Result<(BufReader<File>, u64, SystemTime)> {
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let meta = file
@@ -18,25 +15,19 @@ pub(crate) fn open(path: &Path) -> Result<(BufReader<File>, u64, SystemTime)> {
     Ok((BufReader::new(file), meta.len(), meta.modified()?))
 }
 
-/// How far a reader got through a session file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Mark<'a> {
-    /// The header's id and format version, which a rewrite may change.
     pub id: &'a str,
     pub version: u32,
     /// The end of the last complete line read.
     pub offset: u64,
-    /// The file's size and modification time at the last read.
     pub len: u64,
     pub modified: SystemTime,
 }
 
-/// What happened to a session file since a [`Mark`].
 pub(crate) enum Reopen {
     Unchanged,
-    /// pi rewrote it, so it has to be read from the start.
     Rewritten,
-    /// It grew; the reader is at the mark's offset.
     Appended {
         reader: BufReader<File>,
         len: u64,
@@ -44,7 +35,6 @@ pub(crate) enum Reopen {
     },
 }
 
-/// Open `path` again to read what was appended since `mark`.
 pub(crate) fn reopen(path: &Path, mark: &Mark) -> Result<Reopen> {
     let (mut reader, len, modified) = open(path)?;
     if len == mark.len && modified == mark.modified {
@@ -67,10 +57,7 @@ pub(crate) fn reopen(path: &Path, mark: &Mark) -> Result<Reopen> {
     })
 }
 
-/// Read one complete line into `buf` and return its length in bytes.
-///
-/// Returns `None` at the end of the file, and for a last line without its
-/// newline: pi may be writing it, so it's read once it's complete.
+/// Leave an unterminated final line for the next read; pi may still be writing it.
 pub(crate) fn read_line(
     reader: &mut BufReader<File>,
     buf: &mut Vec<u8>,
@@ -88,12 +75,7 @@ pub(crate) fn read_line(
     ))
 }
 
-/// Replace lone UTF-16 surrogate escapes in the JSON in `buf` with U+FFFD,
-/// in place, so it parses.
-///
-/// pi's `JSON.stringify` writes a lone surrogate, like half an emoji cut off
-/// a long text, as `\udXXX`. That's valid JSON, but not valid Unicode, so
-/// serde refuses the string. Both escapes are six bytes long.
+/// Replace lone JSON surrogate escapes in place; JSON.stringify emits them but serde rejects them.
 pub(crate) fn fix_surrogates(buf: &mut [u8]) {
     let hex = |buf: &[u8], at: usize| -> Option<u16> {
         let digits = std::str::from_utf8(buf.get(at..at + 4)?).ok()?;
@@ -126,17 +108,14 @@ pub(crate) fn fix_surrogates(buf: &mut [u8]) {
     }
 }
 
-/// A session file's first line.
 pub(crate) struct Header {
     pub id: String,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
     pub version: u32,
-    /// The header line's length in bytes.
     pub len: u64,
 }
 
-/// Read the first line as a session header; `None` if it isn't one.
 pub(crate) fn read_header(
     reader: &mut BufReader<File>,
     buf: &mut Vec<u8>,
