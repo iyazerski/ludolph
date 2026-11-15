@@ -12,6 +12,7 @@ use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
+use crate::attachments::{self, Attachment};
 use crate::index::{self, Index};
 use crate::live::{self, Live};
 use crate::login;
@@ -53,6 +54,10 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn attachments_dir(&self) -> PathBuf {
+        self.sessions_dir.with_file_name("attachments")
+    }
+
     pub fn scratch_dir(&self) -> PathBuf {
         self.state_dir.join("scratch")
     }
@@ -549,11 +554,17 @@ impl Engine {
         Ok(id)
     }
 
-    pub async fn send(&self, id: &str, text: &str, images: Vec<Image>) -> Result<Delivery> {
+    pub async fn send(
+        &self,
+        id: &str,
+        text: &str,
+        images: Vec<Attachment>,
+    ) -> Result<(Delivery, String)> {
         let ops = self.ops(id)?;
         let stops = self.stops(id);
         let _ops = ops.lock().await;
         self.refuse_elsewhere(id)?;
+        let text = attachments::resolve(&self.0.config.attachments_dir(), id, text, &images)?;
         let hold = self.settings().send_behavior == SendBehavior::Queue && {
             let state = self.state();
             state.chats.get(id).is_some_and(|chat| {
@@ -561,10 +572,11 @@ impl Engine {
             })
         };
         if hold {
-            self.enqueue(id, text, images, stops)?;
-            return Ok(Delivery::Queued);
+            self.enqueue(id, &text, images, stops)?;
+            return Ok((Delivery::Queued, text));
         }
-        self.send_locked(id, text, images, stops).await
+        let delivery = self.send_locked(id, &text, images, stops).await?;
+        Ok((delivery, text))
     }
 
     /// Send while holding the chat's command lock, bypassing the waiting queue.
@@ -572,7 +584,7 @@ impl Engine {
         &self,
         id: &str,
         text: &str,
-        images: Vec<Image>,
+        images: Vec<Attachment>,
         stops: u64,
     ) -> Result<Delivery> {
         let pi = self.current_process(id).await?;
@@ -639,7 +651,7 @@ impl Engine {
         id: &str,
         pi: &Pi,
         text: &str,
-        images: Vec<Image>,
+        images: Vec<Attachment>,
         stops: u64,
     ) -> Result<Delivery> {
         // pi ignores `steer` when no run is going, so the answer says which
@@ -658,6 +670,11 @@ impl Engine {
         let text = expanded.as_deref().unwrap_or(text);
         let mut command = json!({"type": "prompt", "message": text, "streamingBehavior": "steer"});
         if !images.is_empty() {
+            let root = self.0.config.attachments_dir();
+            let session = id.to_owned();
+            let images =
+                tokio::task::spawn_blocking(move || attachments::save(&root, &session, images))
+                    .await??;
             let images = images.into_iter().map(
                 |image| json!({"type": "image", "mimeType": image.mime_type, "data": image.data}),
             );
@@ -952,6 +969,17 @@ impl Engine {
             state.chats.remove(id);
         }
         self.0.turns.forget(id)?;
+        let root = self.0.config.attachments_dir();
+        let sessions = self.0.config.sessions_dir.clone();
+        let protected = self.state().chats.keys().cloned().collect();
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || attachments::cleanup(&root, &sessions, protected))
+                .await
+                .context("cleaning up attachments")
+                .and_then(|result| result)
+        {
+            eprintln!("chat {id}: attachment cleanup: {error:#}");
+        }
         self.save_index()?;
         self.changed();
         Ok(())

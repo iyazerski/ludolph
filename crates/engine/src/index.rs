@@ -188,7 +188,7 @@ pub fn is_session_file(sessions_dir: &Path, path: &Path) -> bool {
         && path.extension().is_some_and(|ext| ext == "jsonl")
 }
 
-fn session_files(sessions_dir: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn session_files(sessions_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let reading = || format!("reading {}", sessions_dir.display());
     let dirs = match std::fs::read_dir(sessions_dir) {

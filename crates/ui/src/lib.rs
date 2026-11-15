@@ -91,8 +91,7 @@ pub fn run(opts: Opts) -> Result<()> {
     let socket = opts.state_dir.join("engine.sock");
     let prefs_path = opts.state_dir.join("ui.json");
     let prefs = Rc::new(RefCell::new(Prefs::load(&prefs_path)));
-    let uploads = opts.state_dir.join("uploads");
-    let shared = Shared::start(rt.handle().clone(), socket, prefs_path, uploads);
+    let shared = Shared::start(rt.handle().clone(), socket, prefs_path);
     let hotkey = Rc::new(Cell::new(None));
     let expand_tools = Rc::new(Cell::new(false));
     let main_window = Rc::new(OnceCell::new());

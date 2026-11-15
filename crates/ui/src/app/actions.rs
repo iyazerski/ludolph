@@ -26,6 +26,7 @@ pub enum Answer {
 #[derive(Deserialize)]
 struct Sent {
     delivery: String,
+    text: String,
 }
 
 impl State {
@@ -326,14 +327,14 @@ impl State {
         let id = chat.id.clone();
         chat.pending.push(Pending {
             text: typed.clone(),
-            images: thumbs.clone(),
+            images: thumbs,
             at: chrono::Utc::now().timestamp_millis(),
         });
         if matches!(page.voice, Voice::Listening(_)) {
             page.voice = Voice::Idle;
         }
         page.composer.clear();
-        page.attached.clear();
+        let attached = std::mem::take(&mut page.attached);
         tx.scroll_to_bottom("transcript");
         let mut args = json!({ "chat": id, "text": typed });
         if !payloads.is_empty() {
@@ -355,14 +356,24 @@ impl State {
                     || result
                         .as_ref()
                         .is_ok_and(|sent| matches!(sent.delivery.as_str(), "handled" | "queued"));
-                if gone && let Some(chat) = page.existing_mut() {
-                    chat.pending.retain(|p| p.text != typed);
+                if let Some(chat) = page.existing_mut() {
+                    chat.pending.retain_mut(|p| {
+                        if p.text == typed {
+                            if gone {
+                                return false;
+                            }
+                            if let Ok(sent) = &result {
+                                p.text.clone_from(&sent.text);
+                            }
+                        }
+                        !p.written(chat.page.as_deref().unwrap_or_default())
+                    });
                 }
                 let Err(e) = result else { return };
                 if page.composer.text.trim().is_empty() && page.attached.is_empty() {
                     page.composer = TextEdit::new(typed);
                     page.composer.set_caret(page.composer.text.len());
-                    s.reattach(nav, payloads.into_iter().zip(thumbs).collect());
+                    page.attached = attached;
                 }
                 s.fail("Not sent", e);
             },
