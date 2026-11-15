@@ -13,6 +13,14 @@ jobs:
       - name: Test release notes
         run: bash scripts/tests/release_notes.sh
 
+  phone:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: Test phone requests
+        run: bun test crates/relay/tests
+
   rust:
     runs-on: macos-26
 

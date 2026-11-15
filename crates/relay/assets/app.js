@@ -232,8 +232,9 @@ const ONCE = new Set(["send_message", "create_chat", "respond_to_input", "edit_q
 const ONCE_PATIENCE = 3 * 60_000;
 /** What the relay says when a Mac isn't connected, so nothing reached it. */
 const NOT_CONNECTED = "this Mac is offline";
+const BUSY = "this Mac is busy; try again";
 /** The relay's answers that leave a call's fate unknown, or that a retry may fix. */
-const RETRY = new Set([NOT_CONNECTED, "this Mac went offline", "this Mac didn't answer in time", "this Mac is busy; try again"]);
+const RETRY = new Set([NOT_CONNECTED, "this Mac went offline", "this Mac didn't answer in time", BUSY]);
 
 /** Run an engine tool on one Mac: sealed for it, and its answer opened. */
 async function call(machine, tool, args = {}) {
@@ -253,6 +254,7 @@ async function call(machine, tool, args = {}) {
       // Retry only what may have reached the Mac, or might once it's back.
       const never = !reached && e.message === NOT_CONNECTED;
       if (!(e instanceof LostError) || never || Date.now() > until) throw e;
+      if (e.message !== BUSY) reached = true;
     }
     if (Date.now() > until) throw new ApiError("The Mac is still on it. Check the chat in a moment.");
     await new Promise(r => setTimeout(r, Math.min(500 * 2 ** tries, 8000)));
