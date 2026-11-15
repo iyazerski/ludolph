@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM ghcr.io/rust-cross/cargo-zigbuild:0.24 AS build
+FROM --platform=$BUILDPLATFORM ghcr.io/rust-cross/cargo-zigbuild:0.24.1 AS build
 ARG TARGETARCH
 WORKDIR /src
 COPY . .
