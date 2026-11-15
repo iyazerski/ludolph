@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -91,6 +91,7 @@ pub struct Existing {
     /// The folds the user opened (`true`) or closed, by key; the rest show
     /// as their kind does by default.
     pub open_groups: HashMap<String, bool>,
+    pub wrapped_code: HashSet<String>,
     pub tool_outputs: HashMap<String, Option<Result<crate::data::ToolOutput, String>>>,
     pub question: Option<QuestionForm>,
     pub thumbs: HashMap<(String, usize), Option<Image>>,
@@ -247,10 +248,15 @@ impl Target {
 }
 
 impl Existing {
-    pub fn just_copied(&self, id: &str) -> bool {
+    pub fn copied_key(&self) -> Option<&str> {
         self.copied
             .as_ref()
-            .is_some_and(|(m, at)| m == id && at.elapsed() < COPIED_FOR)
+            .filter(|(_, at)| at.elapsed() < COPIED_FOR)
+            .map(|(key, _)| key.as_str())
+    }
+
+    pub fn just_copied(&self, id: &str) -> bool {
+        self.copied_key() == Some(id)
     }
 
     pub(super) fn expire_copied(&mut self) -> bool {
@@ -303,6 +309,7 @@ impl Existing {
             error: None,
             pending: Vec::new(),
             open_groups: HashMap::new(),
+            wrapped_code: HashSet::new(),
             tool_outputs: HashMap::new(),
             question: None,
             thumbs: HashMap::new(),

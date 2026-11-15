@@ -15,8 +15,8 @@ mod sidebar;
 mod theme;
 mod widgets;
 
-use rune::{Color, Cx, El, Key, KeyEvent, SystemMaterial, Tx, col};
-use rune_kit::{Toast, ToastRegion};
+use rune::{Color, Cx, Edge, El, Key, KeyEvent, SystemMaterial, Transition, Tx, col};
+use rune_kit::Toast;
 
 use rune_kit::Kit;
 
@@ -43,9 +43,9 @@ fn quick(s: &State, cx: &mut Cx<State>) -> El {
     layer.extend(toast(s, k));
     let (tint, edge) = if k.dark {
         // macOS draws dark windows' rims itself; a light line on top reads as a seam.
-        (k.c.bg_base.alpha(0.72), Color::TRANSPARENT)
+        (k.c.bg_base.alpha(0.65), Color::TRANSPARENT)
     } else {
-        (Color::WHITE.alpha(0.8), k.c.border_base.alpha(0.6))
+        (Color::WHITE.alpha(0.75), k.c.border_base.alpha(0.6))
     };
     // Rune drops the fill of an element that hosts a native material, so the tint goes on a child.
     let body = col()
@@ -76,14 +76,21 @@ fn toast(s: &State, k: &Kit) -> Option<El> {
         toast = toast.icon(k, &icons::ALERT);
     }
     Some(
-        ToastRegion::new()
-            .toast(
+        col()
+            .key("toast-region")
+            .role("region")
+            .label("Notifications")
+            .pin(Some(16.0), Some(16.0), Some(16.0), None)
+            .items_center()
+            .child(
                 toast
                     .on_close(|s: &mut State| s.toast = None)
-                    .closable()
-                    .build(k),
-            )
-            .build(k),
+                    .build(k)
+                    .w_full()
+                    .max_w(320.0)
+                    .radius(18.0)
+                    .transition(Transition::move_edge(Edge::Top)),
+            ),
     )
 }
 

@@ -32,6 +32,16 @@ pub static COPY: Icon = icon(
     24.0,
     r#"<g fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6.6 11.4c0-2.263 0-3.394.703-4.097C8.006 6.6 9.137 6.6 11.4 6.6h4.8c2.263 0 3.394 0 4.097.703c.703.703.703 1.834.703 4.097v4.8c0 2.263 0 3.394-.703 4.097c-.703.703-1.834.703-4.097.703h-4.8c-2.263 0-3.394 0-4.097-.703C6.6 19.594 6.6 18.463 6.6 16.2z"/><path d="M17.396 6.6c-.005-1.774-.05-2.707-.657-3.314C16.036 2.583 14.905 2.583 12.642 2.583h-3.6c-2.263 0-3.394 0-4.097.703c-.703.703-.703 1.834-.703 4.097v3.6c0 2.263 0 3.394.703 4.097c.433.433.996.587 1.655.635"/></g>"#,
 );
+pub static CODE: Icon = icon(
+    "code",
+    24.0,
+    r#"<path d="m7 7-5 5 5 5m10-10 5 5-5 5m-4-13-2 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+);
+pub static WORD_WRAP: Icon = icon(
+    "word-wrap",
+    24.0,
+    r#"<path d="M3 6h18M3 11h14a4 4 0 0 1 0 8h-5m3-3-3 3 3 3M3 16h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+);
 pub static CHEV_DOWN: Icon = icon(
     "chev-down",
     24.0,

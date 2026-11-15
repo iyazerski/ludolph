@@ -264,9 +264,23 @@ impl State {
         else {
             return;
         };
-        tx.copy(answer);
-        chat.copied = Some((id.to_owned(), Instant::now()));
+        self.copy_text(id, &answer, tx);
+    }
+
+    pub fn copy_text(&mut self, key: &str, text: &str, tx: &mut Tx) {
+        tx.copy(text.to_owned());
+        if let Some(chat) = self.chat_mut().and_then(|p| p.existing_mut()) {
+            chat.copied = Some((key.to_owned(), Instant::now()));
+        }
         self.sync_tick();
+    }
+
+    pub fn toggle_code_wrap(&mut self, key: &str) {
+        if let Some(chat) = self.chat_mut().and_then(|p| p.existing_mut())
+            && !chat.wrapped_code.remove(key)
+        {
+            chat.wrapped_code.insert(key.to_owned());
+        }
     }
 
     pub fn load_info(&mut self) {
