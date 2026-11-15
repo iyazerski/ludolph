@@ -53,7 +53,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .on_submit(State::send);
     let creating = page.draft().is_some_and(|d| d.creating);
     let ready = page.can_send() && page.images_ready();
-    let send = IconButton::new(if editing.is_some() {
+    let mut send = IconButton::new(if editing.is_some() {
         &icons::CHECK
     } else if stop {
         &icons::STOP
@@ -61,7 +61,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         &icons::SEND
     })
     .variant(if stop {
-        IconButtonVariant::Neutral
+        IconButtonVariant::Ghost
     } else {
         IconButtonVariant::Submit
     })
@@ -81,6 +81,11 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     .on_press_tx(move |s: &mut State, tx: &mut Tx| if stop { s.stop() } else { s.send(tx) })
     .build(k)
     .radius(12.0);
+    if stop {
+        send = send
+            .hover(rune::Color::TRANSPARENT)
+            .press(rune::Color::TRANSPARENT);
+    }
     let listening = page.voice.listening().is_some();
     let dictate = IconButton::new(&icons::MIC)
         .variant(if listening {
@@ -471,7 +476,8 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
             .hover_group(),
     )
     .placement(Placement::TopStart)
-    .width(180.0)
+    // Rune's popover has a 200-point minimum; its content must fill that width.
+    .width(200.0)
     .disabled(!page.can_send())
     .on_choose(|s: &mut State, level, _| s.pick(Pick::Reasoning(level.to_owned())))
     .build(k, layer);

@@ -140,7 +140,7 @@ fn user_prose(k: &Kit, source: &str) -> El {
     let spans = super::widgets::markdown_spans(k, &shown);
     let links = crate::markup::links(&shown);
     let mut body = rich(shown, spans)
-        .font(k.ty.ui)
+        .font(k.ty.body.lh(22.4))
         .color(k.c.text_base)
         .wrap_anywhere()
         .selectable(true);
