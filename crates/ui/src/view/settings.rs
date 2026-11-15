@@ -245,23 +245,38 @@ fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
         None => out.push(row().w_full().px(PAD).py(12.0).child(busy(14.0, k))),
         Some(state) => {
             let pairing = state.pairing.as_ref();
-            match state
-                .link
-                .as_ref()
-                .filter(|l| l.status != LinkStatus::Rejected)
-            {
-                Some(link) => out.push(if page.phone.confirm_unlink {
-                    confirm_unlink(k)
-                } else {
-                    linked(link, pairing.is_none(), k)
-                }),
-                None => {
-                    out.push(relay_field(page, pairing.is_none(), k));
-                    if pairing.is_none() {
-                        let rejected = state.link.is_some();
-                        out.push(link_row(k, rejected));
-                    }
-                }
+            match &state.link {
+                Some(link) => out.push(relay_status(link, k)),
+                None => out.push(relay_field(page, pairing.is_none(), k)),
+            }
+            out.push(compact(
+                k,
+                &format!("Linked phones ({})", state.phones.len()),
+                Some(
+                    "Each phone has its own access to this Mac. Phone online status isn't tracked.",
+                ),
+                Button::new("Link new phone")
+                    .variant(ButtonVariant::Neutral)
+                    .help("Show a QR code to scan with another phone")
+                    .disabled(pairing.is_some())
+                    .on_press(State::link_phone)
+                    .build(k),
+            ));
+            if state.phones.is_empty() {
+                out.push(
+                    row()
+                        .w_full()
+                        .px(PAD)
+                        .py(12.0)
+                        .child(text("No phones linked").font(k.ty.ui).color(k.c.text_muted)),
+                );
+            }
+            for id in &state.phones {
+                out.push(linked_phone(
+                    k,
+                    id,
+                    page.phone.confirm_unlink.as_deref() == Some(id),
+                ));
             }
             if let Some(pairing) = pairing {
                 out.push(pairing_block(page, pairing, k));
@@ -282,15 +297,19 @@ fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
     out
 }
 
-fn linked(link: &RelayLink, can_link: bool, k: &Kit) -> El {
+fn relay_status(link: &RelayLink, k: &Kit) -> El {
     let (color, status) = match link.status {
         LinkStatus::Connected => (
             k.c.success.icon,
-            format!("Connected to {}", host(&link.relay)),
+            format!("Relay connected · {}", host(&link.relay)),
         ),
-        _ => (
+        LinkStatus::Connecting => (
             k.c.warning.icon,
-            format!("Connecting to {}…", host(&link.relay)),
+            format!("Relay connecting · {}", host(&link.relay)),
+        ),
+        LinkStatus::Rejected => (
+            k.c.danger.icon,
+            "Relay rejected this Mac. Link a phone again.".to_owned(),
         ),
     };
     let mut info = col().grow(1.0).min_w(0.0).gap(2.0).child(
@@ -308,53 +327,58 @@ fn linked(link: &RelayLink, can_link: bool, k: &Kit) -> El {
                 .wrap(),
         );
     }
-    let mut buttons = row().gap(8.0);
-    if can_link {
-        buttons = buttons.child(
-            Button::new("Link a phone")
-                .variant(ButtonVariant::Neutral)
-                .help("Show a QR code to scan with another phone")
-                .on_press(State::link_phone)
-                .build(k),
-        );
-    }
-    buttons = buttons.child(
-        Button::new("Unlink")
-            .variant(ButtonVariant::Outline)
-            .help("Disconnect this Mac from the relay, so no phone reaches it")
-            .on_press(|s: &mut State| s.confirm_unlink(true))
-            .build(k),
-    );
-    status_row(info, buttons)
+    status_row(info, el())
 }
 
-fn confirm_unlink(k: &Kit) -> El {
+fn linked_phone(k: &Kit, id: &str, confirm: bool) -> El {
+    let name = format!("Phone {}", id.chars().take(8).collect::<String>());
+    let label = if confirm {
+        format!("Unlink {name}?")
+    } else {
+        name
+    };
     let info = col()
         .grow(1.0)
         .min_w(0.0)
         .gap(2.0)
-        .child(text("Unlink this Mac?").font(k.ty.ui).color(k.c.text_base))
+        .child(text(label).font(k.ty.ui).color(k.c.text_base).truncate())
         .child(
-            text("No phone reaches it until you link one again, and the relay forgets it.")
-                .font(k.ty.text_small)
-                .color(k.c.text_muted)
-                .wrap(),
+            text(if confirm {
+                "Only this phone loses access. Link it again to reconnect."
+            } else {
+                "Linked to this Mac"
+            })
+            .font(k.ty.text_small)
+            .color(k.c.text_muted)
+            .wrap(),
         );
-    let buttons = row()
-        .gap(8.0)
-        .child(
-            Button::new("Cancel")
+    let phone = id.to_owned();
+    let buttons = if confirm {
+        row()
+            .gap(8.0)
+            .child(
+                Button::new("Cancel")
+                    .variant(ButtonVariant::Outline)
+                    .on_press(|s: &mut State| s.confirm_unlink(None))
+                    .build(k),
+            )
+            .child(
+                Button::new("Unlink")
+                    .variant(ButtonVariant::Danger)
+                    .on_press(move |s: &mut State| s.unlink_phone(&phone))
+                    .build(k),
+            )
+    } else {
+        row().child(
+            Button::new("Unlink")
                 .variant(ButtonVariant::Outline)
-                .on_press(|s: &mut State| s.confirm_unlink(false))
+                .on_press(move |s: &mut State| s.confirm_unlink(Some(phone.clone())))
                 .build(k),
         )
-        .child(
-            Button::new("Unlink")
-                .variant(ButtonVariant::Danger)
-                .on_press(State::unlink_phone)
-                .build(k),
-        );
+    };
     status_row(info, buttons)
+        .key(format!("phone-{id}"))
+        .help(id)
 }
 
 fn status_row(info: El, buttons: El) -> El {
@@ -392,23 +416,6 @@ fn relay_field(page: &SettingsPage, editable: bool, k: &Kit) -> El {
         wide(k, "Relay", input),
         k,
         "The server your phone reaches this Mac through. Change it if you run your own.",
-    )
-}
-
-fn link_row(k: &Kit, rejected: bool) -> El {
-    let hint = if rejected {
-        "The relay forgot this Mac. Link your phone again."
-    } else {
-        "Scan a QR code with your phone's camera to use Ludolph there."
-    };
-    compact(
-        k,
-        "Phone",
-        Some(hint),
-        Button::new("Link a phone")
-            .variant(ButtonVariant::Neutral)
-            .on_press(State::link_phone)
-            .build(k),
     )
 }
 

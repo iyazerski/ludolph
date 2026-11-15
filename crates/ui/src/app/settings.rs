@@ -32,7 +32,7 @@ pub struct Phone {
     pub state: Option<PhoneLink>,
     pub relay: TextEdit,
     pub qr: Option<(String, Image)>,
-    pub confirm_unlink: bool,
+    pub confirm_unlink: Option<String>,
     pub error: Option<String>,
 }
 
@@ -97,7 +97,7 @@ impl State {
                     state: None,
                     relay: TextEdit::default(),
                     qr: None,
-                    confirm_unlink: false,
+                    confirm_unlink: None,
                     error: None,
                 },
                 update: Update::Checking,
@@ -261,15 +261,19 @@ impl State {
         self.phone_call("stop_linking_phone", json!({}), "Couldn't stop linking");
     }
 
-    pub fn confirm_unlink(&mut self, ask: bool) {
+    pub fn confirm_unlink(&mut self, phone: Option<String>) {
         if let Some(page) = self.settings_page_mut() {
-            page.phone.confirm_unlink = ask;
+            page.phone.confirm_unlink = phone;
         }
     }
 
-    pub fn unlink_phone(&mut self) {
-        self.confirm_unlink(false);
-        self.phone_call("unlink_phone", json!({}), "Couldn't unlink the phone");
+    pub fn unlink_phone(&mut self, phone: &str) {
+        self.confirm_unlink(None);
+        self.phone_call(
+            "unlink_phone",
+            json!({"phone": phone}),
+            "Couldn't unlink the phone",
+        );
     }
 
     fn phone_call(&mut self, tool: &'static str, args: Value, failed: &'static str) {

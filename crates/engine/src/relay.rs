@@ -104,6 +104,7 @@ struct LinkedPhone {
     replays: Mutex<Replays>,
     replays_path: PathBuf,
     ops: Ops,
+    revoked: watch::Sender<bool>,
 }
 
 impl LinkedPhone {
@@ -115,6 +116,7 @@ impl LinkedPhone {
             replays: Mutex::new(replays),
             replays_path,
             ops: Ops::default(),
+            revoked: watch::channel(false).0,
         })
     }
 }
@@ -192,6 +194,18 @@ impl Phones {
         self.lock()
             .insert(phone.keys.phone.clone(), Arc::new(phone));
         Ok(())
+    }
+
+    pub fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<_> = self.lock().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    pub fn remove(&self, id: &str) {
+        if let Some(phone) = self.lock().remove(id) {
+            phone.revoked.send_replace(true);
+        }
     }
 
     async fn open(&self, sealed: Sealed, purpose: Purpose) -> Result<(Arc<LinkedPhone>, Opened)> {
@@ -637,6 +651,8 @@ async fn watch(
     request: Opened,
     out: mpsc::Sender<Up>,
 ) {
+    let mut revoked = phone.revoked.subscribe();
+    let ended = out.clone();
     let watch_nonce = request.nonce;
     let mut sent = 0;
     let mut send = move |frame: Value| {
@@ -660,7 +676,19 @@ async fn watch(
     match engine.subscribe_chat(&chat) {
         Ok(changes) => {
             let feed = Feed::new(engine, chat, false);
-            feed::follow(changes, feed, PHONE_FRAME, send).await;
+            let unlinked = tokio::select! {
+                biased;
+                _ = revoked.wait_for(|revoked| *revoked) => true,
+                _ = feed::follow(changes, feed, PHONE_FRAME, send) => false,
+            };
+            if unlinked {
+                let _ = ended
+                    .send(Up::Frame {
+                        id,
+                        frame: Err("this phone was unlinked from this Mac".to_owned()),
+                    })
+                    .await;
+            }
         }
         Err(e) => _ = send(json!({"error": format!("{e:#}")})).await,
     }

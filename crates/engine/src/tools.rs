@@ -215,7 +215,8 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
             Ok(phone_link(engine))
         }
         Tool::UnlinkPhone => {
-            engine.unlink_phone()?;
+            let args: UnlinkArgs = parse(args)?;
+            engine.unlink_phone(&args.phone)?;
             Ok(phone_link(engine))
         }
     }
@@ -232,8 +233,14 @@ struct LinkArgs {
     relay: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnlinkArgs {
+    phone: String,
+}
+
 fn phone_link(engine: &Engine) -> Value {
-    json!({"link": engine.phone(), "pairing": engine.pairing(), "relay": engine.relay()})
+    json!({"link": engine.phone(), "phones": engine.linked_phones(), "pairing": engine.pairing(), "relay": engine.relay()})
 }
 
 #[derive(Deserialize)]
