@@ -102,8 +102,18 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
             .h(30.0)
             .center_y()
             .gap(8.0)
-            .child(icon(&icons::DIFF, 16.0).color(k.c.icon_base))
-            .child(text("Changes").font(k.ty.ui).color(k.c.text_base).grow(1.0))
+            .child(
+                icon(&icons::DIFF, 16.0)
+                    .color(k.c.icon_base)
+                    .group_color(k.c.text_base),
+            )
+            .child(
+                text("Changes")
+                    .font(k.ty.ui)
+                    .color(k.c.text_muted)
+                    .group_color(k.c.text_base)
+                    .grow(1.0),
+            )
             .child(
                 rich(
                     stats.clone(),
@@ -118,7 +128,8 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
                 }),
             );
         body = body.child(
-            k.interactive(line.radius(6.0))
+            line.radius(6.0)
+                .hover_group()
                 .label(format!(
                     "Show current uncommitted changes in {} files",
                     counts.files

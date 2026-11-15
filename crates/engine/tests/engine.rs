@@ -2048,7 +2048,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
 
     assert_eq!(
         tool(&engine, "get_phone_link", json!({})).await.unwrap(),
-        json!({"link": null, "pairing": null, "relay": "https://ludolph.iyazerski.dev"})
+        json!({"link": null, "phones": [], "pairing": null, "relay": "https://ludolph.iyazerski.dev"})
     );
     let plain = json!({"relay": "http://relay.example.com"});
     let plain = tool(&engine, "link_phone", plain).await.unwrap_err();
@@ -2100,7 +2100,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     assert_eq!(
         linked,
         json!({"link": {"relay": relay, "status": "connected", "error": null},
-               "pairing": {"state": "linked"}, "relay": relay})
+               "phones": [phone.phone], "pairing": {"state": "linked"}, "relay": relay})
     );
     assert!(dir.path().join("state/relay.json").exists());
     let power = from_mac(&mut socket).await;
@@ -2318,7 +2318,81 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     std::fs::remove_dir(&replay_path).unwrap();
     std::fs::write(&replay_path, saved_replays).unwrap();
 
-    let unlinked = tool(&engine, "unlink_phone", json!({})).await.unwrap();
+    let mut ids = vec![phone.phone.clone(), second.phone.clone()];
+    ids.sort();
+    let linked = tool(&engine, "get_phone_link", json!({})).await.unwrap();
+    assert_eq!(linked["phones"], json!(ids));
+    assert!(tool(&engine, "unlink_phone", json!({})).await.is_err());
+    assert!(
+        tool(&engine, "unlink_phone", json!({"phone": "unknown"}))
+            .await
+            .is_err()
+    );
+
+    for (id, keys) in [(30, &phone), (31, &second)] {
+        let (data, _) = keys
+            .seal(Purpose::Watch, &json!({"chat": chat}).to_string())
+            .unwrap();
+        to_mac(
+            &mut socket,
+            json!({"type": "watch", "id": id, "sealed": {"phone": keys.phone, "data": data}}),
+        )
+        .await;
+        let frame = until_from_mac(&mut socket, |m| m["type"] == "frame" && m["id"] == id).await;
+        assert!(frame["frame"]["Ok"].is_string(), "{frame}");
+    }
+    let unlinked = tool(&engine, "unlink_phone", json!({"phone": phone.phone}))
+        .await
+        .unwrap();
+    assert_eq!(unlinked["phones"], json!([second.phone]));
+    assert_eq!(unlinked["link"]["status"], "connected");
+    let ended = until_from_mac(&mut socket, |m| m["type"] == "frame" && m["id"] == 30).await;
+    assert!(ended["frame"]["Err"].as_str().unwrap().contains("unlinked"));
+    let (blocked, _) = sealed_call(&phone, 32, "list_chats", json!({}));
+    to_mac(&mut socket, blocked).await;
+    let blocked = until_from_mac(&mut socket, |m| m["id"] == 32 && m["type"] == "reply").await;
+    assert!(
+        blocked["result"]["Err"]
+            .as_str()
+            .unwrap()
+            .contains("isn't linked")
+    );
+    let (send, _) = sealed_call(
+        &second,
+        33,
+        "send_message",
+        json!({"chat": chat, "text": "after unlink"}),
+    );
+    to_mac(&mut socket, send).await;
+    let frame = until_from_mac(&mut socket, |m| m["type"] == "frame" && m["id"] == 31).await;
+    assert!(
+        frame["frame"]["Ok"].is_string(),
+        "other phone keeps streaming: {frame}"
+    );
+
+    engine.shutdown().await.unwrap();
+    drop(socket);
+    let engine = self::engine(dir.path(), Duration::from_secs(60)).await;
+    let (mut socket, _, _) = accept_mac(&listener).await;
+    assert_eq!(from_mac(&mut socket).await["type"], "hello");
+    let linked = phone_link_until(&engine, |link| link["link"]["status"] == "connected").await;
+    assert_eq!(linked["phones"], json!([second.phone]));
+    let (blocked, _) = sealed_call(&phone, 34, "list_chats", json!({}));
+    to_mac(&mut socket, blocked).await;
+    let blocked = until_from_mac(&mut socket, |m| m["id"] == 34 && m["type"] == "reply").await;
+    assert!(
+        blocked["result"]["Err"].is_string(),
+        "unlink survives restart: {blocked}"
+    );
+    let (list, nonce) = sealed_call(&second, 35, "list_chats", json!({}));
+    to_mac(&mut socket, list).await;
+    let listed = until_from_mac(&mut socket, |m| m["id"] == 35 && m["type"] == "reply").await;
+    assert_eq!(opened_reply(&second, nonce, &listed)["ok"]["total"], 1);
+
+    let unlinked = tool(&engine, "unlink_phone", json!({"phone": second.phone}))
+        .await
+        .unwrap();
+    assert_eq!(unlinked["phones"], json!([]));
     assert_eq!(unlinked["link"], Value::Null);
     let closed = async {
         while let Some(Ok(message)) = socket.next().await {

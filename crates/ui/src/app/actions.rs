@@ -250,14 +250,17 @@ impl State {
         );
     }
 
-    pub fn copy_answer(&mut self, id: &str, tx: &mut Tx) {
+    pub fn copy_message(&mut self, id: &str, tx: &mut Tx) {
         let Some(chat) = self.chat_mut().and_then(|p| p.existing_mut()) else {
             return;
         };
         let Some(answer) = chat
             .messages()
             .find(|m| m.id == id)
-            .and_then(Message::answer)
+            .and_then(|m| match m.role {
+                crate::data::Role::User => Some(m.text()),
+                _ => m.answer(),
+            })
         else {
             return;
         };
@@ -581,6 +584,18 @@ impl State {
         } else {
             drop(tx.open_url(url));
         }
+    }
+
+    pub fn open_chat_file(&mut self, path: &str) {
+        let Some(chat) = self
+            .chat()
+            .and_then(ChatPage::existing)
+            .and_then(|c| c.chat.as_ref())
+        else {
+            return;
+        };
+        let path = crate::paths::expand_home(&chat.cwd).join(crate::paths::expand_home(path));
+        self.open_path(path.to_string_lossy().into_owned());
     }
 
     pub fn open_path(&mut self, path: String) {

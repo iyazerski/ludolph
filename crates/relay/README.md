@@ -41,7 +41,7 @@ In a fork, `.github/workflows/deploy-relay.yml` does the same on each push to `m
 
 ## First use
 
-1. In Ludolph's Settings (⌘,) on your Mac, set **Relay** to `https://<host>` and choose **Link a phone**.
+1. In Ludolph's Settings (⌘,) on your Mac, set **Relay** to `https://<host>` and choose **Link new phone**.
 2. Scan the QR code with your phone's camera and open the link. Create a passkey, and the Mac connects.
 
 Whoever links the first phone sets up the relay, so do it right after the relay starts. From then on, a new phone needs a Mac the relay knows, and a new Mac needs a signed-in phone. Add the app to your home screen and sign in there with the same passkey.

@@ -5,6 +5,7 @@ mod data;
 mod dictation;
 mod labels;
 mod markup;
+mod paths;
 mod prefs;
 mod update;
 mod view;

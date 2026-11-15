@@ -85,6 +85,7 @@ struct Inner {
     catalog: Catalog,
     relay: Mutex<Option<AbortHandle>>,
     phones: Arc<Phones>,
+    phone_links: Mutex<()>,
     phone: watch::Sender<Option<Phone>>,
     pairing_task: Mutex<Option<AbortHandle>>,
     pairing: watch::Sender<Option<Pairing>>,
@@ -347,6 +348,7 @@ impl Engine {
             settings: Mutex::new(settings),
             relay: Mutex::default(),
             phones,
+            phone_links: Mutex::default(),
             phone: watch::channel(None).0,
             pairing_task: Mutex::default(),
             pairing: watch::channel(None).0,
@@ -1032,6 +1034,10 @@ impl Engine {
         self.0.phone.borrow().clone()
     }
 
+    pub fn linked_phones(&self) -> Vec<String> {
+        self.0.phones.ids()
+    }
+
     pub fn pairing(&self) -> Option<Pairing> {
         self.0.pairing.borrow().clone()
     }
@@ -1091,6 +1097,12 @@ impl Engine {
             other => other?,
         };
         let config = &self.0.config;
+        // Pair completion and per-phone unlink both rewrite the same Keychain item.
+        let _links = self
+            .0
+            .phone_links
+            .lock()
+            .expect("the phone links lock isn't poisoned");
         match token {
             Some(token) => {
                 let link = Link {
@@ -1125,21 +1137,39 @@ impl Engine {
         self.0.pairing.send_replace(None);
     }
 
-    pub fn unlink_phone(&self) -> Result<()> {
-        self.stop_pairing();
+    pub fn unlink_phone(&self, phone: &str) -> Result<()> {
+        let _links = self
+            .0
+            .phone_links
+            .lock()
+            .expect("the phone links lock isn't poisoned");
         let config = &self.0.config;
-        let link = Link::load(&config.state_dir, config.secrets)?;
-        self.disconnect();
-        self.0.phones.set(&[])?;
-        Link::remove(&config.state_dir, config.secrets)?;
-        if let Some(link) = link {
-            // The phone shows a Mac the relay keeps as offline until it's removed there.
-            tokio::spawn(async move {
-                if let Err(e) = relay::forget(&link).await {
-                    eprintln!("relay: the relay may still list this Mac: {e:#}");
-                }
-            });
+        let mut link = Link::load(&config.state_dir, config.secrets)?
+            .context("this Mac has no linked phones")?;
+        let mut found = None;
+        for (i, secret) in link.phones.iter().enumerate() {
+            if seal::Keys::derive(secret)?.phone == phone {
+                found = Some(i);
+                break;
+            }
         }
+        let at = found.context("this phone isn't linked to this Mac")?;
+        link.phones.remove(at);
+        if !link.phones.is_empty() {
+            link.save(&config.state_dir, config.secrets)?;
+            self.0.phones.remove(phone);
+            return Ok(());
+        }
+        Link::remove(&config.state_dir, config.secrets)?;
+        self.0.phones.remove(phone);
+        self.stop_pairing();
+        self.disconnect();
+        // The phone shows a Mac the relay keeps as offline until it's removed there.
+        tokio::spawn(async move {
+            if let Err(e) = relay::forget(&link).await {
+                eprintln!("relay: the relay may still list this Mac: {e:#}");
+            }
+        });
         Ok(())
     }
 

@@ -1074,9 +1074,13 @@ fn tool_part(call: &Block) -> Part {
 fn tool_subject(name: &str, args: Option<&Arguments>) -> Option<String> {
     let arg = |field: fn(&Arguments) -> &Option<String>| args.and_then(|a| field(a).as_deref());
     let (path, pattern) = (arg(|a| &a.path), arg(|a| &a.pattern));
+    // File subjects are also open targets; only presentation may shorten them.
+    if matches!(name, "read" | "write" | "edit") {
+        return path.filter(|path| !path.is_empty()).map(str::to_owned);
+    }
     let subject = match (name, path, pattern) {
         ("bash", ..) => arg(|a| &a.command).map(Cow::Borrowed),
-        ("read" | "write" | "edit" | "ls", Some(path), _) => Some(Cow::Borrowed(path)),
+        ("ls", Some(path), _) => Some(Cow::Borrowed(path)),
         ("grep", Some(path), Some(pattern)) => Some(Cow::Owned(format!("{pattern} in {path}"))),
         ("grep" | "find", _, Some(pattern)) => Some(Cow::Borrowed(pattern)),
         _ => None,

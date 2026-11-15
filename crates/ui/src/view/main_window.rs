@@ -1,15 +1,14 @@
-use std::sync::OnceLock;
-
 use rune::{Cx, El, col, el, row, text};
 use rune_kit::shell::{SidebarToggle, SplitView, Toolbar};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
-use super::{chat, dialogs, icons, settings, sidebar, toast};
+use super::{chat, dialogs, icons, settings, sidebar, theme, toast};
 use crate::app::{ChatPage, Page, State};
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
-    let k = rune_theme_opencode::kit(cx.system_dark());
-    let panels = panel_kit(k);
+    let theme = theme::get(cx.system_dark(), s.prefs.borrow().accent);
+    let k = &theme.base;
+    let panels = &theme.panels;
     let mut layer = Vec::new();
     let (pane, bar) = match &s.page {
         Page::Chat(page) => (
@@ -17,7 +16,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             toolbar(s, page, k, &mut layer),
         ),
         Page::Settings(page) => (
-            settings::view(s, page, k, &mut layer),
+            settings::view(s, page, &theme.controls, &mut layer),
             Toolbar::new().leading(settings_title(k)),
         ),
         Page::List => (el(), Toolbar::new()),
@@ -36,18 +35,6 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .reduced_motion(cx.is_reduced_motion())
         .build(panels);
     rune_kit::root(split, layer)
-}
-
-fn panel_kit(k: &'static Kit) -> &'static Kit {
-    static DARK: OnceLock<Kit> = OnceLock::new();
-    if !k.dark {
-        return k;
-    }
-    DARK.get_or_init(|| {
-        let mut panels = k.clone();
-        panels.c.bg_deep = k.c.bg_base.mix(k.c.layer_01, 0.5);
-        panels
-    })
 }
 
 fn settings_title(k: &Kit) -> El {
