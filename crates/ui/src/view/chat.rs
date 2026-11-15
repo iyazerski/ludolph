@@ -336,7 +336,11 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
                     })
                     .collect();
                 started = Some(m.created_at);
-                out.push(user_bubble(k, &m.text(), images, Shade::Sent).key(key));
+                out.push(
+                    user_bubble(k, &m.text(), images, Shade::Sent)
+                        .child(footer(page, k, m))
+                        .key(key),
+                );
             }
             Role::Assistant => {
                 let streaming = m.status == MessageStatus::Streaming
@@ -741,7 +745,12 @@ fn toggle_group(s: &mut State, key: &str, open: bool) {
 
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     let mut out = row().w_full().gap(8.0).center_y();
-    if m.has_answer() {
+    if m.role == Role::User {
+        out = out.justify_end();
+    }
+    if m.has_answer()
+        || (m.role == Role::User && m.parts.iter().any(|p| matches!(p, Part::Text { .. })))
+    {
         let copied = page.just_copied(&m.id);
         let id = m.id.clone();
         out = out.child(
@@ -749,8 +758,12 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .variant(IconButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
                 .label(if copied { "Copied" } else { "Copy" })
-                .help("Copy the answer")
-                .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_answer(&id, tx))
+                .help(if m.role == Role::User {
+                    "Copy the message"
+                } else {
+                    "Copy the answer"
+                })
+                .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_message(&id, tx))
                 .build(k),
         );
     }

@@ -249,14 +249,17 @@ impl State {
         );
     }
 
-    pub fn copy_answer(&mut self, id: &str, tx: &mut Tx) {
+    pub fn copy_message(&mut self, id: &str, tx: &mut Tx) {
         let Some(chat) = self.chat_mut().and_then(|p| p.existing_mut()) else {
             return;
         };
         let Some(answer) = chat
             .messages()
             .find(|m| m.id == id)
-            .and_then(Message::answer)
+            .and_then(|m| match m.role {
+                crate::data::Role::User => Some(m.text()),
+                _ => m.answer(),
+            })
         else {
             return;
         };
