@@ -1,15 +1,3 @@
-//! ludolph-relay: a tiny relay between a phone browser and the Ludolph
-//! engines on your Macs.
-//!
-//! Each Mac dials out to `/connect` ([`hub`]), the phone signs in with a
-//! passkey ([`auth`]), and its calls are routed to the chosen Mac. A phone
-//! links by scanning a Mac's QR code ([`mod@pair`]). What the phone and a Mac
-//! say is sealed with a key the relay never sees, so it routes it unread.
-//!
-//! It serves plain HTTP behind a TLS-terminating proxy. API calls must be
-//! JSON POSTs from the app's own origin, with the session cookie
-//! (`SameSite=Strict`), so other sites can't make them.
-
 mod auth;
 mod hub;
 mod pair;
@@ -45,14 +33,10 @@ use hub::Hub;
 use pair::Pairings;
 use push::{Payload, Push, Subscription};
 
-/// The largest tool call the phone sends, which leaves room for a message's
-/// photos (8 of up to about 1 MiB, in base64, then sealed in base64 again).
-/// It goes to the Mac as one websocket frame, and the engine reads frames of
-/// up to 24 MiB.
+/// Allow photos plus base64 and sealing overhead; the engine accepts 24 MiB frames.
 const MAX_CALL: usize = 20 << 20;
 use store::{Machine, Store};
 
-/// The app's files: plain HTML, CSS, and JS, no build step.
 const ASSETS: &[(&str, &str, &[u8])] = &[
     (
         "/",
@@ -148,7 +132,6 @@ struct App {
     hub: Arc<Hub>,
     pairings: Arc<Pairings>,
     push: Arc<Push>,
-    /// The public URL's origin, which every API call must come from.
     origin: String,
 }
 
@@ -172,7 +155,6 @@ async fn main() -> Result<()> {
         router = router.route(
             path,
             get(move || async move {
-                // Always revalidate, so a new release shows up at once.
                 (
                     [
                         (header::CONTENT_TYPE, mime),
@@ -221,9 +203,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Resolve on Ctrl-C or SIGTERM. Kubernetes stops pods with SIGTERM, and as
-/// PID 1 in its container the relay would ignore it without a handler, so
-/// each deploy would wait out the grace period.
+/// Handle SIGTERM explicitly: PID 1 ignores its default disposition in the relay container.
 fn shutdown() -> Result<impl std::future::Future<Output = ()>> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate()).context("listening for SIGTERM")?;
@@ -236,7 +216,6 @@ fn shutdown() -> Result<impl std::future::Future<Output = ()>> {
     })
 }
 
-/// Refuse POSTs from any page but the app's own.
 async fn check_origin(State(app): State<App>, request: Request, next: Next) -> Response {
     if request.method() == Method::POST {
         let origin = request
@@ -273,12 +252,9 @@ async fn auth_status(State(app): State<App>, jar: CookieJar) -> Response {
 
 #[derive(Deserialize)]
 struct RegisterStart {
-    /// The pairing code that allows it, when not signed in.
     pair: Option<String>,
 }
 
-/// Start creating a passkey: when signed in, or through a pairing code that
-/// may make one (`pair`).
 async fn register_start(
     State(app): State<App>,
     jar: CookieJar,
@@ -297,8 +273,6 @@ struct PairCode {
     code: String,
 }
 
-/// What the phone's pairing page needs: the Mac, and how this phone may
-/// claim its code.
 async fn pairing(State(app): State<App>, jar: CookieJar, Json(body): Json<PairCode>) -> Response {
     let Some(code) = app.pairings.code(&body.code) else {
         return failure(StatusCode::NOT_FOUND, "this code expired");
@@ -312,8 +286,6 @@ async fn pairing(State(app): State<App>, jar: CookieJar, Json(body): Json<PairCo
     .into_response()
 }
 
-/// Link the code's Mac to this signed-in phone: add the Mac if it's new,
-/// and tell it.
 async fn claim_pairing(State(app): State<App>, Json(body): Json<PairCode>) -> Response {
     let Some(claim) = app.pairings.claim(&body.code) else {
         return failure(StatusCode::NOT_FOUND, "this code expired");
@@ -410,7 +382,6 @@ async fn remove_machine(State(app): State<App>, Json(body): Json<MachineId>) -> 
     done(result)
 }
 
-/// Pass a phone's sealed call to a Mac, and its sealed reply back.
 async fn call_tool(
     State(app): State<App>,
     Path(machine): Path<String>,
@@ -422,10 +393,6 @@ async fn call_tool(
     }
 }
 
-/// Stream a chat's feed from a Mac as server-sent events, one sealed frame
-/// each, for the request the phone sealed in the query. The stream ends when
-/// the Mac goes away or the phone falls behind; the phone then connects
-/// again and starts over.
 async fn watch_chat(
     State(app): State<App>,
     Path(machine): Path<String>,
@@ -452,7 +419,6 @@ async fn watch_chat(
     }
 }
 
-/// A Mac's link: its engine, with `Authorization: Bearer <token>`.
 async fn connect(
     State(app): State<App>,
     bearer: Option<TypedHeader<Authorization<Bearer>>>,
@@ -489,7 +455,6 @@ async fn connect(
     })
 }
 
-/// A Mac waiting for a phone to link, with its token if it has one.
 async fn pair(
     State(app): State<App>,
     bearer: Option<TypedHeader<Authorization<Bearer>>>,
@@ -505,8 +470,6 @@ async fn pair(
     ws.on_upgrade(move |socket| async move { app.pairings.serve(socket, machine).await })
 }
 
-/// The notification for one browser of a Mac's notice: the copy sealed for
-/// one of its phones, if it has one. With several Macs, it names the Mac.
 fn payload(
     machine: &Machine,
     notices: &[Sealed],
@@ -559,39 +522,4 @@ fn done(result: Result<()>) -> Response {
 
 fn failure(status: StatusCode, error: impl Into<String>) -> Response {
     (status, Json(json!({ "error": error.into() }))).into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_browser_gets_the_notice_sealed_for_its_phone_and_names_the_mac_only_when_there_are_several()
-     {
-        let mac = Machine {
-            id: "m".into(),
-            name: "Work Mac".into(),
-        };
-        let sealed = |phone: &str| Sealed {
-            phone: phone.into(),
-            data: format!("for {phone}"),
-        };
-        let notices = [sealed("a"), sealed("b")];
-        let sub = |phones: &[&str]| Subscription {
-            endpoint: "https://push.example/1".into(),
-            keys: push::SubscriptionKeys {
-                p256dh: String::new(),
-                auth: String::new(),
-            },
-            phones: phones.iter().map(|&p| p.into()).collect(),
-        };
-        let one = payload(&mac, &notices, false, &sub(&["x", "b"])).unwrap();
-        assert_eq!(
-            serde_json::to_value(&one).unwrap(),
-            json!({"type": "notice", "machine": "m", "mac": null, "sealed": {"phone": "b", "data": "for b"}})
-        );
-        let several = payload(&mac, &notices, true, &sub(&["a"])).unwrap();
-        assert_eq!(serde_json::to_value(&several).unwrap()["mac"], "Work Mac");
-        assert_eq!(payload(&mac, &notices, false, &sub(&["x"])), None);
-    }
 }

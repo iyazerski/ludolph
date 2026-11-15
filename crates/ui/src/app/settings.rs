@@ -1,6 +1,3 @@
-//! The settings page, in the main window: the global shortcut, which the
-//! app registers itself, the engine's settings, and the phone's link.
-
 use qrcode::QrCode;
 use qrcode::render::svg;
 use rune::{Image, Shortcut, ShortcutError, TextEdit};
@@ -11,44 +8,30 @@ use super::{Page, State, Window};
 use crate::data::{LinkStatus, Pairing, PhoneLink, RelayLink, Settings};
 use crate::update;
 
-/// The QR code's side in points.
 pub const QR_SIZE: f32 = 184.0;
 
-/// The settings page's own state.
 pub struct SettingsPage {
-    /// The engine's settings, once loaded.
     pub settings: Option<Settings>,
-    /// Why they couldn't be loaded.
     pub error: Option<String>,
     pub shortcut: ShortcutRecorderState,
-    /// The sidecar model's picker.
     pub model: ComboboxState,
     pub phone: Phone,
     pub update: Update,
-    /// The chat shown before, which going back opens again.
     previous: Option<String>,
 }
 
-/// Where updating stands. Each visit to the settings checks again.
 pub enum Update {
     Checking,
     Latest,
-    /// This newer version can be installed.
     Available(String),
-    /// This version is downloading, and the app restarts into it.
     Installing(String),
     Failed(String),
 }
 
-/// The phone's link, the relay field, and the QR code a phone scans.
 pub struct Phone {
-    /// `None` until loaded.
     pub state: Option<PhoneLink>,
-    /// The relay to link through, until the Mac is linked.
     pub relay: TextEdit,
-    /// The QR code of the page a waiting pairing opens, and that page.
     pub qr: Option<(String, Image)>,
-    /// Unlink was pressed once, so the row asks whether to.
     pub confirm_unlink: bool,
     pub error: Option<String>,
 }
@@ -64,8 +47,6 @@ impl Phone {
 }
 
 impl SettingsPage {
-    /// Whether the phone's link is trying to connect, or a phone is
-    /// linking, so the state is worth checking again.
     pub fn connecting(&self) -> bool {
         let connecting = self
             .phone
@@ -94,7 +75,6 @@ impl State {
         }
     }
 
-    /// Open the settings in the main window, from either window.
     pub fn open_settings(&mut self) {
         if self.window == Window::Quick {
             self.api.peer().update(|s, _| s.open_settings());
@@ -131,8 +111,6 @@ impl State {
         self.open();
     }
 
-    /// Leave the settings for the chat shown before them. A QR code shown
-    /// stops working.
     pub fn close_settings(&mut self) {
         let Some(page) = self.settings_page_mut() else {
             return;
@@ -152,7 +130,6 @@ impl State {
         }
     }
 
-    /// Look for a newer release, unless an install is under way.
     pub fn check_update(&mut self) {
         let Some(page) = self.settings_page_mut() else {
             return;
@@ -176,7 +153,6 @@ impl State {
         );
     }
 
-    /// Download the newer release, put it in place, and restart into it.
     pub fn install_update(&mut self) {
         let Some(page) = self.settings_page_mut() else {
             return;
@@ -194,7 +170,6 @@ impl State {
                     .and_then(|r| r)
                     .and_then(|app| update::relaunch(&app));
                 match done {
-                    // The new app restarts the engine too.
                     Ok(()) => tx.quit(),
                     Err(e) => {
                         if let Some(page) = s.settings_page_mut() {
@@ -224,23 +199,21 @@ impl State {
         );
     }
 
-    /// Change the engine's settings with `change`, showing the change at
-    /// once and undoing it if the engine refuses it.
     pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
         let Some(page) = self.settings_page_mut() else {
             return;
         };
-        let Some(old) = page.settings.clone() else {
+        let Some(settings) = page.settings.as_mut() else {
             return;
         };
-        let mut new = old.clone();
-        change(&mut new);
-        if new == old {
+        let old = settings.clone();
+        change(settings);
+        if *settings == old {
             return;
         }
-        page.settings = Some(new.clone());
-        self.show_expand_tools(new.expand_tools);
-        let args = serde_json::to_value(&new).unwrap_or(Value::Null);
+        let expand_tools = settings.expand_tools;
+        let args = json!(settings);
+        self.show_expand_tools(expand_tools);
         self.api.call(
             "set_settings",
             args,
@@ -260,7 +233,6 @@ impl State {
         );
     }
 
-    /// Load how the phone's link stands.
     pub fn load_phone(&mut self) {
         self.phone_call(
             "get_phone_link",
@@ -269,8 +241,6 @@ impl State {
         );
     }
 
-    /// Show a QR code that links a phone through the relay in the field,
-    /// or the relay this Mac is linked to.
     pub fn link_phone(&mut self) {
         let Some(page) = self.settings_page_mut() else {
             return;
@@ -287,12 +257,10 @@ impl State {
         );
     }
 
-    /// Stop showing the QR code; it stops working.
     pub fn stop_linking_phone(&mut self) {
         self.phone_call("stop_linking_phone", json!({}), "Couldn't stop linking");
     }
 
-    /// Ask whether to unlink, or stop asking.
     pub fn confirm_unlink(&mut self, ask: bool) {
         if let Some(page) = self.settings_page_mut() {
             page.phone.confirm_unlink = ask;
@@ -304,8 +272,6 @@ impl State {
         self.phone_call("unlink_phone", json!({}), "Couldn't unlink the phone");
     }
 
-    /// Call one of the engine's phone link tools, which all answer with the
-    /// link's state, and show it.
     fn phone_call(&mut self, tool: &'static str, args: Value, failed: &'static str) {
         self.api.call(
             tool,
@@ -325,8 +291,6 @@ impl State {
         );
     }
 
-    /// Show the phone link's `state`: draw a new pairing's QR code, and
-    /// say when a phone has linked.
     fn show_phone(&mut self, state: PhoneLink) {
         let Some(page) = self.settings_page() else {
             return;
@@ -357,13 +321,10 @@ impl State {
             if was_waiting {
                 self.notify("Phone linked");
             }
-            // How it ended matters only once.
             self.stop_linking_phone();
         }
     }
 
-    /// Register the saved global shortcut, as the app starts. One taken by
-    /// another app is left for the settings to show.
     pub fn register_saved_shortcut(&mut self) {
         let saved = self.prefs.borrow().shortcut.clone();
         let Some(saved) = saved else { return };
@@ -375,8 +336,6 @@ impl State {
         }
     }
 
-    /// Use `shortcut` from now on in place of the current one, or none. The
-    /// current one stays if the new one can't be registered.
     pub fn change_shortcut(&mut self, shortcut: Option<&Shortcut>) -> Result<(), ShortcutError> {
         match shortcut {
             Some(shortcut) => self.register_shortcut(shortcut.clone())?,
@@ -391,8 +350,6 @@ impl State {
         Ok(())
     }
 
-    /// Load whether the work under way shows open, which both windows
-    /// and the phone follow.
     pub(super) fn load_expand_tools(&mut self) {
         self.api.call(
             "get_settings",
@@ -404,14 +361,12 @@ impl State {
         );
     }
 
-    /// Draw tool calls in both windows by the `expandTools` setting `on`.
     fn show_expand_tools(&mut self, on: bool) {
         if self.expand_tools.replace(on) != on {
             self.api.peer().update(|_, _| {});
         }
     }
 
-    /// Register `shortcut` for the quick window, then let the old one go.
     fn register_shortcut(&mut self, shortcut: Shortcut) -> Result<(), ShortcutError> {
         let quick = self.quick();
         let id = quick.register_shortcut(shortcut, |s, _| s.toggle_window())?;
@@ -421,13 +376,10 @@ impl State {
         Ok(())
     }
 
-    /// The saved shortcut, which is also the registered one unless another
-    /// app holds it.
     fn registered_shortcut(&self) -> Option<Shortcut> {
         self.prefs.borrow().shortcut.as_deref()?.parse().ok()
     }
 
-    /// The quick window's handle, which owns the shortcut.
     fn quick(&self) -> rune::AppHandle<State> {
         match self.window {
             Window::Quick => self.api.app().clone(),
@@ -436,8 +388,6 @@ impl State {
     }
 }
 
-/// `url` as a QR code, dark on white like a printed one, which every
-/// camera reads.
 fn qr_code(images: &rune::ImageCache, url: &str) -> Option<Image> {
     let code = QrCode::new(url.as_bytes())
         .inspect_err(|e| eprintln!("making the QR code: {e}"))
@@ -447,6 +397,5 @@ fn qr_code(images: &rune::ImageCache, url: &str) -> Option<Image> {
         .dark_color(svg::Color("#000000"))
         .light_color(svg::Color("#ffffff"))
         .build();
-    // At 2x, the size Retina screens draw it at.
     Some(images.svg(svg.into_bytes(), QR_SIZE, 2.0))
 }

@@ -1,17 +1,13 @@
-//! Pull-request links mentioned in final assistant answers.
-
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use url::Url;
 
-/// Details derived from a session, without keeping another history store.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Details {
     /// All recorded compactions, including on earlier branches, as pi counts them.
     pub compactions: usize,
-    /// Links on the current branch, deduplicated by canonical PR URL.
     pub pull_requests: Vec<PullRequest>,
 }
 
@@ -22,7 +18,6 @@ pub struct PullRequest {
     pub label: String,
 }
 
-/// Extract links without copying thinking, images or tool arguments.
 pub(super) fn pull_requests(content: &RawValue) -> Vec<PullRequest> {
     #[derive(Deserialize)]
     struct Block {

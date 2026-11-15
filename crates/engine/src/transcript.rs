@@ -1,17 +1,3 @@
-//! Chat transcripts from pi's session files, as the app and the phone show
-//! them (`chat_view`), and the details a view loads on request: a tool
-//! call's arguments and output, and a sent image.
-//!
-//! A transcript is the path from the session's leaf back to its start
-//! (`docs/session-format.md`, "Tree Structure"), so entries on abandoned
-//! branches don't show. Each file is scanned once for its entries' ids,
-//! parents, kinds and byte ranges, and then only for what pi appended. Only
-//! the lines of the page asked for are parsed again, into just the fields a
-//! message shows, so a long session with big tool output costs little.
-//!
-//! A message is a user prompt, a note like a compaction, or an assistant
-//! turn: every assistant reply and tool result until the next prompt.
-
 mod details;
 mod nested;
 
@@ -38,18 +24,13 @@ use crate::jsonl::{self, Mark, Reopen, fix_surrogates, read_header, read_line};
 use crate::skills;
 use crate::text::one_line;
 
-/// How many files keep their scan.
 const MAX_FILES: usize = 8;
-/// The most characters of a tool call's subject, like a command, shown.
 const TOOL_CHARS: usize = 160;
 
-/// How a compaction reads, alone or in a turn's work.
 const COMPACTED: &str = "Compacted the conversation.";
 
-/// What the id of a message pi hasn't written yet starts with.
 const LIVE_ID: &str = "live-";
 
-/// One message, as a view shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -57,10 +38,7 @@ pub struct Message {
     /// pi hasn't written yet.
     pub id: String,
     pub role: Role,
-    /// Epoch milliseconds.
     pub created_at: i64,
-    /// When its last entry was written, in epoch milliseconds: for a reply,
-    /// when its turn's work ended.
     pub ended_at: i64,
     pub status: MessageStatus,
     pub parts: Vec<Part>,
@@ -78,8 +56,6 @@ impl Message {
 pub enum Role {
     User,
     Assistant,
-    /// A note that's neither side's: a compaction, a branch summary, or an
-    /// extension's message.
     System,
 }
 
@@ -91,20 +67,15 @@ pub enum MessageStatus {
     Aborted,
 }
 
-/// One piece of a message, in order.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Part {
     Text {
         text: String,
     },
-    /// The model's reasoning, which a view can fold away.
     Thinking {
         text: String,
     },
-    /// A tool call: pi's name for the tool, what it works on, like a
-    /// command or a path, and how it went. [`Transcripts::tool`] has its
-    /// arguments and output, by `id`.
     Tool {
         id: String,
         name: String,
@@ -112,15 +83,12 @@ pub enum Part {
         state: ToolState,
         calls: Vec<NestedCall>,
     },
-    /// The message's `index`th image, which [`Transcripts::image`] has.
     Image {
         index: usize,
     },
     Error {
         error: String,
     },
-    /// A note in the middle of a turn's work, like a compaction the agent
-    /// went on after.
     Note {
         text: String,
     },
@@ -135,100 +103,67 @@ pub enum ToolState {
     Cancelled,
 }
 
-/// A tool call's details, which a view loads when it's opened.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolOutput {
     pub name: String,
-    /// What the model called it with, whole.
     pub args: Value,
-    /// The output's text, or what it printed so far while it runs.
     pub text: String,
     pub images: Vec<Image>,
-    /// The tool's own extras, like an edit's diff.
     pub details: Value,
     pub failed: bool,
     pub running: bool,
-    /// The text was cut at [`MAX_OUTPUT`] bytes.
     pub truncated: bool,
 }
 
-/// An image, as pi keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Image {
     pub mime_type: String,
-    /// Base64.
     pub data: String,
 }
 
-/// The most output text [`ToolOutput`] carries. pi already cuts a
-/// command's output to its last 50 KB, so this is for other tools.
 pub const MAX_OUTPUT: usize = 1 << 20;
 
-/// What the running turn added, from pi's events.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tail<'a> {
-    /// Finished messages, as pi's `AgentMessage` values.
     pub messages: &'a [Value],
-    /// The message pi is writing.
     pub streaming: Option<&'a Value>,
-    /// Live nested calls, overlaid after reading the cached transcript.
     pub calls: Option<&'a HashMap<String, Vec<NestedCall>>>,
 }
 
-/// Messages a page shows when it isn't anchored, or its anchor is gone.
 pub const LATEST: usize = 40;
 
-/// Which messages of a transcript a page has.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Window {
-    /// The last `n`.
     Latest(usize),
-    /// From message `id` to the end, with `earlier` more before it. A
-    /// window anchored on a message keeps it as new ones come, which a
-    /// count from the end can't. Without the message, as when the session
-    /// moved to another branch, it's the latest [`LATEST`].
-    From { id: String, earlier: usize },
+    /// Anchor paging to a message; fall back to the latest page if its branch disappeared.
+    From {
+        id: String,
+        earlier: usize,
+    },
 }
 
-/// Messages of a transcript, up to its end.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Page {
-    /// The transcript's messages, of which these are the last.
     pub total: usize,
     pub messages: Vec<Message>,
-    /// The file's latest entry, which changes whenever pi writes one.
     pub leaf: Option<String>,
 }
 
 impl Page {
-    /// How many messages come before this page.
     pub fn older(&self) -> usize {
         self.total - self.messages.len()
     }
 }
 
-/// The scans of recently read session files.
 #[derive(Debug, Default)]
 pub struct Transcripts {
-    /// Least recently used first.
     files: Vec<(PathBuf, Scan)>,
 }
 
 impl Transcripts {
-    /// The `window` of the transcript in `path`, followed by the messages
-    /// of `tail` the file doesn't have yet. A chat pi hasn't
-    /// written yet has no `path`.
-    ///
-    /// pi writes each message when it ends, while its events carry on, so
-    /// the file and the tail overlap. A message is matched by its role, its
-    /// timestamp and, for a tool result, its call: pi writes the timestamp it
-    /// streamed.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file can't be read.
+    /// Deduplicate file and live messages by role, timestamp and tool-call id.
     pub fn page(&mut self, path: Option<&Path>, tail: Tail, window: &Window) -> Result<Page> {
         match path {
             Some(path) => self.scan(path)?.page(path, tail, window),
@@ -236,11 +171,6 @@ impl Transcripts {
         }
     }
 
-    /// Read compact session details from its incremental scan.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the session file cannot be read.
     pub fn details(&mut self, path: &Path) -> Result<Details> {
         let scan = self.scan(path)?;
         let mut seen = HashSet::new();
@@ -261,13 +191,6 @@ impl Transcripts {
         })
     }
 
-    /// The details of tool call `call` in the transcript in `path`, once its
-    /// result is written; `None` before. A `!command` you ran is a call too,
-    /// by its entry's id.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file can't be read.
     pub fn tool(&mut self, path: &Path, call: &str) -> Result<Option<ToolOutput>> {
         let scan = self.scan(path)?;
         if let Some(&i) = scan.by_id.get(call) {
@@ -301,7 +224,6 @@ impl Transcripts {
             .parse::<FullEntry>(path, result)?
             .message
             .unwrap_or_default();
-        // The call is in the assistant message the result follows.
         let mut args = Value::Null;
         let mut at = scan.entries[result].parent;
         while let Some(i) = at {
@@ -336,11 +258,6 @@ impl Transcripts {
         }))
     }
 
-    /// The `index`th image of entry `entry` in the transcript in `path`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file can't be read.
     pub fn image(&mut self, path: &Path, entry: &str, index: usize) -> Result<Option<Image>> {
         let scan = self.scan(path)?;
         let Some(&i) = scan.by_id.get(entry) else {
@@ -351,7 +268,6 @@ impl Transcripts {
         Ok(output(&content).1.into_iter().nth(index))
     }
 
-    /// `path`'s scan, brought up to date.
     fn scan(&mut self, path: &Path) -> Result<&mut Scan> {
         let cached = self.files.iter().position(|(p, _)| p == path);
         let scan = match cached {
@@ -374,7 +290,6 @@ impl Transcripts {
     }
 }
 
-/// What a transcript needs from a session file, without its content.
 #[derive(Debug, Default)]
 struct Scan {
     id: String,
@@ -384,12 +299,9 @@ struct Scan {
     modified: Option<SystemTime>,
     entries: Vec<Meta>,
     by_id: HashMap<String, usize>,
-    /// The last page's messages that are wholly in the file, by the first and
-    /// last entry each spans.
     rendered: HashMap<(usize, usize), Message>,
 }
 
-/// One entry: where it sits in the tree and in the file.
 #[derive(Debug)]
 struct Meta {
     id: String,
@@ -397,31 +309,22 @@ struct Meta {
     start: u64,
     len: u64,
     kind: Kind,
-    /// What matches it to a live message.
     stamp: Option<Stamp>,
-    /// A tool result that failed. Results are only rendered by this and
-    /// their call, so their lines, often big, aren't read again.
+    /// Tool results render from metadata; avoid rereading their potentially large output.
     failed: bool,
     calls: Vec<NestedCall>,
     pull_requests: Vec<PullRequest>,
 }
 
-/// How an entry joins the transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// It starts a message: a prompt or a note.
     Starts,
-    /// It joins the assistant turn that's going, or starts one.
     Turn,
-    /// A compaction: part of the turn that's going if the agent works on
-    /// after it, else a note of its own.
+    /// A compaction belongs to the current turn only if the agent continues working after it.
     Compaction,
-    /// It doesn't show, like a model change or a system prompt.
     Hidden,
 }
 
-/// A message's role, timestamp and tool call, which a live message and the
-/// entry pi writes for it share.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Stamp {
     role: Box<str>,
@@ -439,7 +342,6 @@ impl Stamp {
     }
 }
 
-/// A file entry or a live message, in transcript order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Item {
     File(usize),
@@ -447,7 +349,6 @@ enum Item {
 }
 
 impl Scan {
-    /// Entry `i`, read from `path` and parsed whole.
     fn parse<T: serde::de::DeserializeOwned>(&self, path: &Path, i: usize) -> Result<T> {
         let meta = &self.entries[i];
         let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -460,8 +361,6 @@ impl Scan {
             .with_context(|| format!("{}: parsing entry {}", path.display(), meta.id))
     }
 
-    /// Scan `path` from the start. A file without a complete header yet has
-    /// no entries.
     fn read(path: &Path) -> Result<Self> {
         let (mut reader, len, modified) = jsonl::open(path)?;
         let mut buf = Vec::new();
@@ -518,7 +417,6 @@ impl Scan {
         while let Some(len) = read_line(reader, buf, path)? {
             let start = self.offset;
             self.offset += len;
-            // pi skips lines it can't parse too.
             let Ok(line) = serde_json::from_slice::<Line>(buf) else {
                 continue;
             };
@@ -560,7 +458,6 @@ impl Scan {
         Ok(())
     }
 
-    /// Follow the current leaf, leaving abandoned branches out.
     fn chain(&self) -> Vec<usize> {
         let mut chain = Vec::new();
         let mut at = self.entries.len().checked_sub(1);
@@ -572,8 +469,6 @@ impl Scan {
         chain
     }
 
-    /// The `window` of the path to the leaf, followed by the messages of
-    /// `tail` that the path doesn't have.
     fn page(&mut self, path: &Path, tail: Tail, window: &Window) -> Result<Page> {
         let chain = self.chain();
         // The file can be any number of entries ahead of the events.
@@ -628,7 +523,6 @@ impl Scan {
             };
             messages.push(message);
         }
-        // Keep what this page rendered, and only that.
         for (span, message) in groups[skip..].iter().zip(&messages) {
             if let (Some(Item::File(first)), Some(Item::File(last))) = (span.first(), span.last()) {
                 self.rendered.insert((*first, *last), message.clone());
@@ -655,7 +549,6 @@ impl Scan {
         })
     }
 
-    /// File entry `i`, read from `path` unless it's a tool result.
     fn piece(
         &self,
         reader: &mut Option<BufReader<File>>,
@@ -697,9 +590,7 @@ impl Scan {
     }
 }
 
-/// Split items into messages: each prompt or note starts one, and an
-/// assistant turn runs until the next. A compaction the agent works on
-/// after stays in its turn, so the turn's work folds as one.
+/// Group assistant work through the next prompt; keep a continued compaction inside its turn.
 fn group(items: impl Iterator<Item = (Item, Kind)>) -> Vec<Vec<Item>> {
     let mut groups: Vec<Vec<Item>> = Vec::new();
     let mut in_turn = false;
@@ -722,7 +613,6 @@ fn group(items: impl Iterator<Item = (Item, Kind)>) -> Vec<Vec<Item>> {
     groups
 }
 
-/// An entry's fields a scan needs.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Line<'a> {
@@ -737,7 +627,6 @@ struct Line<'a> {
     message: Option<Head<'a>>,
 }
 
-/// A message entry's message, with only what decides its kind and stamp.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Head<'a> {
@@ -797,8 +686,7 @@ fn message_kind(message: &Value) -> Kind {
     role_kind(role, message["display"].as_bool())
 }
 
-/// An entry's fields a message shows. Fields left out, like file contents,
-/// images and thinking, are skipped as they're parsed, not copied.
+/// Skip fields such as images and tool output during parsing, not after copying them.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EntryView {
@@ -821,7 +709,6 @@ impl EntryView {
     }
 }
 
-/// A message's fields a message shows (`docs/message-types.md`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MessageView {
@@ -832,7 +719,6 @@ struct MessageView {
     content: Content,
     stop_reason: Option<String>,
     error_message: Option<String>,
-    /// A `bashExecution`'s command and exit code.
     command: Option<String>,
     exit_code: Option<i64>,
     tool_call_id: Option<String>,
@@ -840,23 +726,19 @@ struct MessageView {
     is_error: bool,
     #[serde(skip)]
     calls: Vec<NestedCall>,
-    /// A `bashExecution` you stopped.
     #[serde(default)]
     cancelled: bool,
 }
 
-/// A message's content: a string, as one text block, or blocks.
 #[derive(Debug, Default)]
 struct Content(Vec<Block>);
 
-/// A content block's fields a message shows.
 #[derive(Debug, Deserialize)]
 struct Block {
     #[serde(rename = "type", default)]
     kind: String,
     text: Option<String>,
     thinking: Option<String>,
-    /// A tool call's id, name and the arguments its subject comes from.
     id: Option<String>,
     name: Option<String>,
     arguments: Option<Arguments>,
@@ -907,11 +789,9 @@ impl<'de> Deserialize<'de> for Content {
     }
 }
 
-/// An entry with everything a tool call's or an image's details need.
 #[derive(Debug, Default, Deserialize)]
 struct FullEntry {
     message: Option<FullMessage>,
-    /// A `custom_message`'s.
     #[serde(default)]
     content: Value,
 }
@@ -928,7 +808,6 @@ struct FullMessage {
     is_error: bool,
     #[serde(default)]
     details: Value,
-    /// A `bashExecution`'s.
     command: Option<String>,
     output: Option<String>,
     exit_code: Option<i64>,
@@ -936,8 +815,6 @@ struct FullMessage {
     cancelled: bool,
 }
 
-/// The details of a tool that's running, from the live tail's
-/// `{toolName, args, partialResult}`.
 pub fn running_tool(tool: &Value) -> ToolOutput {
     let partial = &tool["partialResult"];
     let (text, images) = output(&partial["content"]);
@@ -954,7 +831,6 @@ pub fn running_tool(tool: &Value) -> ToolOutput {
     }
 }
 
-/// The text and images of a message's content: a string, or blocks.
 fn output(content: &Value) -> (String, Vec<Image>) {
     if let Some(text) = content.as_str() {
         return (text.to_owned(), Vec::new());
@@ -973,8 +849,6 @@ fn output(content: &Value) -> (String, Vec<Image>) {
     (texts.join("\n"), images)
 }
 
-/// `text` cut to [`MAX_OUTPUT`] bytes at a character's end, and whether it
-/// was cut.
 fn capped(mut text: String) -> (String, bool) {
     if text.len() <= MAX_OUTPUT {
         return (text, false);
@@ -987,11 +861,9 @@ fn capped(mut text: String) -> (String, bool) {
     (text, true)
 }
 
-/// One entry or live message being rendered.
 struct Piece {
     id: String,
     entry: EntryView,
-    /// From the live tail, so a tool call without a result is still running.
     live: bool,
     streaming: bool,
 }
@@ -1006,7 +878,6 @@ impl Piece {
         }
     }
 
-    /// Live message `i`; `None` if it isn't a message.
     fn live(i: usize, message: &Value, streaming: bool) -> Option<Self> {
         let record = nested::Calls::deserialize(&message["nestedCalls"]).ok();
         let details = (message["toolName"] == "codemode")
@@ -1023,7 +894,6 @@ impl Piece {
         })
     }
 
-    /// When it was written, in epoch milliseconds.
     fn time(&self) -> i64 {
         let message_time = self.entry.message.as_ref().and_then(|m| m.timestamp);
         message_time
@@ -1035,8 +905,6 @@ impl Piece {
     }
 }
 
-/// One message from its pieces, which [`group`] put together; `None` if
-/// none could be read.
 fn render(pieces: &[Piece]) -> Option<Message> {
     let first = pieces.first()?;
     let mut message = Message {
@@ -1097,12 +965,9 @@ fn render(pieces: &[Piece]) -> Option<Message> {
     Some(message)
 }
 
-/// Fill in an assistant turn: its prose, thinking, tool calls and errors in
-/// order.
 fn render_turn(pieces: &[Piece], message: &mut Message) {
     // Tool results come after their calls, so states are settled at the end.
     let mut failed: HashMap<&str, &MessageView> = HashMap::new();
-    // Each call's part, and whether it's from the live tail.
     let mut calls: Vec<(usize, bool)> = Vec::new();
     let mut parts = Vec::new();
     for piece in pieces {
@@ -1178,14 +1043,12 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
     message.parts = parts;
 }
 
-/// The text and images of a user or custom message's content.
 fn content_parts(content: &Content) -> Vec<Part> {
     let mut images = 0..;
     content
         .0
         .iter()
         .filter_map(|block| match block.kind.as_str() {
-            // An image sent alone comes with an empty text block.
             "text" => Some(Part::Text {
                 text: block.text.clone().filter(|text| !text.is_empty())?,
             }),
@@ -1197,8 +1060,6 @@ fn content_parts(content: &Content) -> Vec<Part> {
         .collect()
 }
 
-/// A tool call's part, done until its result says otherwise. The subject is
-/// what pi's built-in tools (its `docs/tools.md`) work on.
 fn tool_part(call: &Block) -> Part {
     let name = call.name.as_deref().unwrap_or("tool");
     Part::Tool {
@@ -1210,7 +1071,6 @@ fn tool_part(call: &Block) -> Part {
     }
 }
 
-/// Describe the subject of a built-in tool without keeping its full arguments.
 fn tool_subject(name: &str, args: Option<&Arguments>) -> Option<String> {
     let arg = |field: fn(&Arguments) -> &Option<String>| args.and_then(|a| field(a).as_deref());
     let (path, pattern) = (arg(|a| &a.path), arg(|a| &a.pattern));

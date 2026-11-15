@@ -1,28 +1,15 @@
-//! The app's login item: a launch agent that opens Ludolph.app, hidden, at
-//! each login, while the `openAtLogin` setting is on. Nothing of Ludolph's
-//! starts at login without it.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-/// Labelled like the app.
 const LABEL: &str = "dev.iyazerski.ludolph";
 
-/// Where launchd finds the login item.
 pub fn path(home: &Path) -> PathBuf {
     home.join(format!("Library/LaunchAgents/{LABEL}.plist"))
 }
 
-/// Write the login item for `app` when `on`, else remove it. Only an engine
-/// in Ludolph.app manages it: without `app`, as for a development engine,
-/// the item is left alone, and turning it on fails.
-///
-/// # Errors
-///
-/// Fails if it's turned on without `app`, or the file can't be written or
-/// removed.
+/// Leave the installed login item alone when running outside Ludolph.app.
 pub fn apply(home: &Path, app: Option<&Path>, on: bool) -> Result<()> {
     let path = path(home);
     let Some(app) = app else {
@@ -65,7 +52,6 @@ pub fn apply(home: &Path, app: Option<&Path>, on: bool) -> Result<()> {
     std::fs::write(&path, xml).with_context(|| format!("writing {}", path.display()))
 }
 
-/// The login item, as launchd reads it.
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct LoginItem {

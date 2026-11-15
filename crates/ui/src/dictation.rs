@@ -1,7 +1,3 @@
-//! Dictation with Apple's speech recognizer: the microphone feeds it, and it
-//! reports what it hears so far. Winit's text input drops most of what macOS
-//! system dictation types, so the app listens itself.
-
 use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
@@ -20,15 +16,11 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// The recognizer's error for a session that ended before any speech.
 const NO_SPEECH: isize = 1110;
-/// Where System Settings lets the user change their answer.
 const SETTINGS: &str = "Allow Ludolph in System Settings ▸ Privacy & Security";
 
 pub enum Heard {
-    /// Everything heard since the session started, as text.
     Words(String),
-    /// How loud the microphone is, from 0 to 1, many times a second.
     Level(f32),
-    /// The session is over and its words are final.
     Done,
     Failed(String),
 }
@@ -40,8 +32,6 @@ pub struct Listening {
     task: Retained<SFSpeechRecognitionTask>,
 }
 
-/// Ask for speech recognition and the microphone, then call `done` on any
-/// thread with why dictation can't run, if it can't.
 pub fn authorize(done: impl FnOnce(Allowed) + Send + 'static) {
     let done = Once::new(done);
     // SAFETY: the status is a plain class property.
@@ -85,9 +75,7 @@ fn microphone(done: Once) {
 }
 
 impl Listening {
-    /// Listen to the microphone, calling `heard` with what it hears until the
-    /// session ends: on the audio thread for levels, else on the main thread.
-    /// Needs `authorize` to have passed.
+    /// Require authorization; level callbacks run on the audio thread, transcripts on the main thread.
     pub fn start(heard: impl Fn(Heard) + Send + Sync + 'static) -> Result<Self, String> {
         let heard = Arc::new(heard);
         // SAFETY: plain Speech and AVFAudio calls on the main thread, with
@@ -113,7 +101,6 @@ impl Listening {
                 move |buffer: NonNull<AVAudioPCMBuffer>, _: NonNull<AVAudioTime>| {
                     let buffer = buffer.as_ref();
                     feed.appendAudioPCMBuffer(buffer);
-                    // Each buffer, a small fraction of a second, draws one bar.
                     if let Some(level) = level(buffer) {
                         loud(Heard::Level(level));
                     }
@@ -161,7 +148,6 @@ impl Listening {
         }
     }
 
-    /// Stop listening; the last words and `Heard::Done` follow.
     pub fn stop(&self) {
         // SAFETY: valid objects; stopping twice is harmless.
         unsafe {
@@ -200,14 +186,10 @@ unsafe fn level(buffer: &AVAudioPCMBuffer) -> Option<f32> {
     Some(((db + 50.0) / 40.0).clamp(0.0, 1.0))
 }
 
-/// What a session heard so far. The recognizer starts a new transcription
-/// after each pause, and once listening stops, repeats the last one or all
-/// of them as final.
+/// Speech restarts after pauses and may repeat the last phrase or entire transcript when stopped.
 #[derive(Default)]
 struct Transcript {
-    /// Everything before the current transcription.
     said: String,
-    /// The words of `said`, kept so each result doesn't split it again.
     said_words: Vec<String>,
     /// The words of the transcription kept at the last pause, until another
     /// starts.
@@ -215,8 +197,6 @@ struct Transcript {
 }
 
 impl Transcript {
-    /// Take a result's transcription, `pause` when it's the last before a
-    /// pause, and return everything heard.
     fn take(&mut self, current: &str, pause: bool) -> String {
         let current_words = words(current);
         if self.kept.as_ref() == Some(&current_words) {
@@ -237,12 +217,10 @@ impl Transcript {
     }
 }
 
-/// The words of `s`, to compare transcriptions whatever their case and punctuation.
 fn words(s: &str) -> Vec<String> {
     s.unicode_words().map(str::to_lowercase).collect()
 }
 
-/// `before`, then `after`, with a space between when both have text.
 pub fn join(before: &str, after: &str) -> String {
     match (before.trim_end(), after.trim_start()) {
         ("", after) => after.to_owned(),
@@ -254,8 +232,7 @@ pub fn join(before: &str, after: &str) -> String {
 type Allowed = Result<(), String>;
 type Callback = Box<dyn FnOnce(Allowed) + Send>;
 
-/// `authorize`'s callback, shared by blocks that AppKit may copy and call
-/// more than once; it runs once.
+/// AppKit may copy and invoke the block more than once; consume the callback only once.
 #[derive(Clone)]
 struct Once(Arc<Mutex<Option<Callback>>>);
 
@@ -283,13 +260,11 @@ mod tests {
     #[test]
     fn keeps_each_pause_once() {
         let mut t = Transcript::default();
-        // (transcription, before a pause, everything heard)
         let steps = [
             ("Nice", false, "Nice"),
             ("Nice it works", true, "Nice it works"),
             ("Really", false, "Nice it works Really"),
             ("Really well", true, "Nice it works Really well"),
-            // Stopping repeats the last transcription as final.
             ("Really well.", false, "Nice it works Really well"),
         ];
         for (current, pause, heard) in steps {
@@ -297,7 +272,6 @@ mod tests {
         }
         let mut t = Transcript::default();
         t.take("Nice it works", true);
-        // Or it repeats everything.
         assert_eq!(
             t.take("Nice, it works really well.", false),
             "Nice, it works really well."

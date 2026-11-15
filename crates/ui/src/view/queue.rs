@@ -1,12 +1,9 @@
-//! Waiting messages above the composer, with edit, delete and steer controls.
-
 use rune::{El, col, row, text};
 use rune_kit::{Button, ButtonVariant, IconButton, IconButtonVariant, Kit};
 
 use super::icons;
 use crate::app::{ChatPage, State};
 
-/// Show waiting prompts without putting them in the transcript before they are sent.
 pub fn view(page: &ChatPage, k: &Kit) -> Option<El> {
     let chat = page.existing()?;
     if chat.queued.is_empty() {

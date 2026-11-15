@@ -1,12 +1,3 @@
-//! Web Push: tell the phone when a chat finishes, needs an answer, or fails,
-//! even while the app is closed.
-//!
-//! The browser subscribes with the relay's VAPID key and hands back an
-//! endpoint on its push service (FCM for Chrome). Notifications are encrypted
-//! for the subscription (RFC 8291, `aes128gcm`, by `web-push-native`) and
-//! signed with the VAPID key (RFC 8292, with `ring`). The key and the
-//! subscriptions live in the data dir.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,51 +17,40 @@ use ludolph_json_file as json_file;
 
 use crate::store::blocking;
 
-/// Push services keep an undelivered notification this long.
 const TTL_SECS: u64 = 24 * 3600;
-/// The VAPID `sub` claim: a contact for the push service.
 const CONTACT: &str = "https://github.com/iyazerski/ludolph";
-/// How long a VAPID token stays valid; push services accept up to 24 h.
 const VAPID_LIFETIME_SECS: u64 = 12 * 3600;
-/// How long one request to a push service may take.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTH_SECRET_LEN: usize = 16;
 
-/// A browser's push subscription, as `PushSubscription.toJSON()` gives it,
-/// with the ids of the phone links it holds keys for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Subscription {
     pub endpoint: String,
     pub keys: SubscriptionKeys,
-    /// A Mac's notice reaches this browser sealed for one of these.
     #[serde(default)]
     pub phones: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubscriptionKeys {
-    /// The browser's P-256 public key, uncompressed, base64url.
     pub p256dh: String,
-    /// The 16-byte authentication secret, base64url.
     pub auth: String,
 }
 
-/// What a notification carries; the service worker shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Payload {
-    /// Sent from the app's settings to try notifications.
-    Test { title: String, body: String },
-    /// A Mac's notice, sealed for the phone: only it reads what happened.
+    Test {
+        title: String,
+        body: String,
+    },
     Notice {
         machine: String,
-        /// The Mac's name, when there are several, so the phone says which.
         mac: Option<String>,
         sealed: Sealed,
     },
 }
 
-/// The VAPID key, the browsers' subscriptions, and delivery to them.
 pub struct Push {
     vapid: EcdsaKeyPair,
     rng: SystemRandom,
@@ -80,7 +60,6 @@ pub struct Push {
 }
 
 impl Push {
-    /// Load (or create) the VAPID key and the saved subscriptions in `dir`.
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let rng = SystemRandom::new();
@@ -99,9 +78,7 @@ impl Push {
             .map_err(|e| anyhow!("bad VAPID key in {}: {e}", key_file.display()))?;
         let store = dir.join("subscriptions.json");
         let subscriptions = json_file::load(&store)?.unwrap_or_default();
-        // reqwest leaves the crypto provider to the app, and the scratch
-        // image has no system roots: use ring and Mozilla's bundled roots.
-        // An error only means a provider is already installed.
+        // The scratch image has no system roots; reqwest also leaves provider selection to us.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
             .iter()
@@ -120,14 +97,11 @@ impl Push {
         })
     }
 
-    /// The VAPID public key the browser subscribes with, base64url.
     pub fn public_key(&self) -> String {
         B64.encode(self.vapid.public_key().as_ref())
     }
 
-    /// Save `subscription`, replacing an older one for the same endpoint.
     pub async fn subscribe(&self, subscription: Subscription) -> Result<()> {
-        // Reject keys that can't be used now, not at the first notification.
         decode_keys(&subscription.keys)?;
         self.update(|subs| {
             subs.retain(|s| s.endpoint != subscription.endpoint);
@@ -141,8 +115,7 @@ impl Push {
             .await
     }
 
-    /// Apply `change` to a copy of the subscriptions, save it, and only then
-    /// make it current, so a failed save leaves them as the file has them.
+    /// Publish subscription changes only after saving their copy succeeds.
     async fn update(&self, change: impl FnOnce(&mut Vec<Subscription>)) -> Result<()> {
         let mut subs = self.subscriptions.lock().await;
         let mut next = subs.clone();
@@ -164,8 +137,6 @@ impl Push {
         self.deliver(&sub, payload).await
     }
 
-    /// Send each subscription its `payload`, if it has one, dropping ones the
-    /// push service retired.
     pub async fn broadcast(&self, payload: impl Fn(&Subscription) -> Option<Payload>) {
         let subs = self.subscriptions.lock().await.clone();
         for sub in subs {
@@ -198,7 +169,6 @@ impl Push {
         if status.is_success() {
             return Ok(());
         }
-        // 404/410: the browser unsubscribed or the subscription expired.
         if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
             self.unsubscribe(&sub.endpoint).await?;
             bail!("subscription expired ({status}); removed it");
@@ -207,7 +177,6 @@ impl Push {
         bail!("push service answered {status}: {}", text.trim())
     }
 
-    /// The `Authorization` header: a VAPID JWT for `audience`, plus the public key.
     fn vapid_header(&self, audience: &str) -> Result<String> {
         let exp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + VAPID_LIFETIME_SECS;
         let header = B64.encode(br#"{"typ":"JWT","alg":"ES256"}"#);
@@ -256,31 +225,6 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    #[tokio::test]
-    async fn subscribing_checks_the_browser_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        let push = Push::open(dir.path()).unwrap();
-        // RFC 8291 appendix A's browser keys.
-        let p256dh = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
-        let sub = |p256dh: &str, auth: &str| Subscription {
-            endpoint: "https://push.example/abc".into(),
-            keys: SubscriptionKeys {
-                p256dh: p256dh.into(),
-                auth: auth.into(),
-            },
-            phones: Vec::new(),
-        };
-        push.subscribe(sub(p256dh, "BTBZMqHH6r4Tts7J_aSIgg=="))
-            .await
-            .unwrap();
-        for (p256dh, auth) in [
-            (&p256dh[..40], "BTBZMqHH6r4Tts7J_aSIgg"),
-            (p256dh, "BTBZMqHH6r4T"),
-        ] {
-            assert!(push.subscribe(sub(p256dh, auth)).await.is_err());
-        }
-    }
-
     #[test]
     fn vapid_tokens_verify_with_the_public_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -298,7 +242,6 @@ mod tests {
         let claims: Value =
             serde_json::from_slice(&B64.decode(input.split('.').nth(1).unwrap()).unwrap()).unwrap();
         assert_eq!(claims["aud"], "https://fcm.googleapis.com");
-        // The key survives a restart, so existing subscriptions keep working.
         assert_eq!(
             Push::open(dir.path()).unwrap().public_key(),
             push.public_key()

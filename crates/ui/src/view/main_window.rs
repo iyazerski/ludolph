@@ -1,6 +1,3 @@
-//! The main window: the sidebar beside the chat or the settings, under a
-//! toolbar with the page's title and actions.
-
 use std::sync::OnceLock;
 
 use rune::{Cx, El, col, el, row, text};
@@ -41,9 +38,6 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     rune_kit::root(split, layer)
 }
 
-/// `k` for the panels around the chat. In dark mode they're a grey a little
-/// lighter than the chat's, in place of the theme's near-black, so the chat
-/// reads as the page and the sidebar as the frame around it.
 fn panel_kit(k: &'static Kit) -> &'static Kit {
     static DARK: OnceLock<Kit> = OnceLock::new();
     if !k.dark {
@@ -56,7 +50,6 @@ fn panel_kit(k: &'static Kit) -> &'static Kit {
     })
 }
 
-/// Back to the chat, and the page's title.
 fn settings_title(k: &Kit) -> El {
     row()
         .gap(6.0)
@@ -72,7 +65,6 @@ fn settings_title(k: &Kit) -> El {
         .child(text("Settings").font(k.ty.ui_medium).color(k.c.text_base))
 }
 
-/// The chat's title and project, then its actions.
 fn toolbar(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> Toolbar {
     let (title, sub) = chat::titles(page);
     let mut titles = col().min_w(0.0).shrink().child(

@@ -1,33 +1,21 @@
-//! The phone app's icons (`relay/assets/app.js` `ICONS`), with each group's
-//! attributes moved onto its elements.
-
 use std::sync::LazyLock;
 
 use rune::Icon;
-/// A step of thinking among tool calls. The phone leaves thinking out.
 pub use rune_theme_opencode::icons::OUTLINE_BRAIN as THOUGHT;
-/// The settings. The phone keeps its settings under its menu, without one.
 pub use rune_theme_opencode::icons::SETTINGS_GEAR as SETTINGS;
-/// A new chat, and a project's folder in the main window's sidebar. The
-/// phone has neither.
 pub use rune_theme_opencode::icons::{EDIT as NEW_CHAT, FOLDER};
-/// Expanding the quick window's chat into the main window, and popping the
-/// main window's chat out into the quick one. The phone has neither.
 pub use rune_theme_opencode::icons::{OUTLINE_EXPAND as EXPAND, SQUARE_ARROW_TOP_RIGHT as POP_OUT};
 
 const fn icon(name: &'static str, view: f32, body: &'static str) -> Icon {
     Icon { name, view, body }
 }
 
-/// A project's folder while its chats show, drawn to match the theme's
-/// closed `FOLDER`.
 pub static FOLDER_OPEN: Icon = icon(
     "folder-open",
     16.0,
     r#"<path d="M1.33337 13.3333V2H6.66671L8.66671 4H13.3334V6.66667M1.33337 13.3333L3.33337 6.66667H15.3334L13.3334 13.3333H1.33337Z" stroke="currentColor" stroke-miterlimit="10" stroke-linecap="square" stroke-linejoin="round" fill="none"/>"#,
 );
 
-/// Chat details, matching the phone's circled information icon.
 pub static INFO: Icon = icon(
     "info",
     24.0,
@@ -150,14 +138,13 @@ pub static CLOSE: Icon = icon(
     24.0,
     r#"<path d="M17 7 7 17M7 7l10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 );
-/// The track under a context ring.
 pub static RING: Icon = icon(
     "ring",
     16.0,
     r#"<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/>"#,
 );
 
-/// The used share of a context ring, one per percent: icons are static SVG.
+/// Rune uses static SVGs; cache one arc for each whole percent.
 static ARCS: LazyLock<Vec<Icon>> = LazyLock::new(|| (0..=100).map(arc).collect());
 
 fn arc(percent: u32) -> Icon {
@@ -174,7 +161,6 @@ fn arc(percent: u32) -> Icon {
             r#"<path d="M8 2A6 6 0 {large} 1 {x:.3} {y:.3}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#
         ),
     };
-    // Built once per percent for the life of the app.
     icon(
         Box::leak(format!("ring-{percent}").into_boxed_str()),
         16.0,
@@ -182,13 +168,11 @@ fn arc(percent: u32) -> Icon {
     )
 }
 
-/// The arc of a context ring `fraction` full.
 pub fn ring(fraction: f64) -> &'static Icon {
     let percent = (fraction.clamp(0.0, 1.0) * 100.0).round() as usize;
     &ARCS[percent]
 }
 
-/// A model's provider mark, from its `provider/model` id, else a bot.
 pub fn mark(model: &str) -> &'static Icon {
     let (provider, name) = model.split_once('/').unwrap_or((model, model));
     // A gateway like bifrost has no mark, so the model's family stands in.
@@ -206,7 +190,6 @@ pub fn mark(model: &str) -> &'static Icon {
         .unwrap_or(&BOT)
 }
 
-/// The icon of one of pi's tools, as the phone shows it.
 pub fn tool(name: &str) -> &'static Icon {
     match name {
         "bash" => &TERMINAL,

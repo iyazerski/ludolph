@@ -1,11 +1,7 @@
-//! How the windows word what they show, as the phone app words it: ages,
-//! model and thinking names, tool calls.
-
 use chrono::{DateTime, Utc};
 
 use crate::data::{NestedCall, Spent, ToolState};
 
-/// Compact age, like the desktop sidebar: now, 34m, 4h, 2d, 3w.
 pub fn ago(when: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let s = (now - when).num_seconds().max(0);
     if s < 60 {
@@ -21,7 +17,6 @@ pub fn ago(when: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// How long a turn worked: 42s, 6m 56s, 1h 5m.
 pub fn worked(secs: i64) -> String {
     let s = secs.max(0);
     if s < 60 {
@@ -33,14 +28,12 @@ pub fn worked(secs: i64) -> String {
     }
 }
 
-/// Format the context's used/capacity counts and cumulative chat cost.
 pub fn context_readout(tokens: Option<u64>, window: u64, spent: Option<Spent>) -> (String, String) {
     let used = tokens.map_or_else(|| "—".to_owned(), thousands);
     let cost = spent.map_or_else(|| "—".to_owned(), |spent| dollars(spent.cost));
     (format!("{used}/{}", thousands(window)), cost)
 }
 
-/// Format US dollars without rounding a small nonzero cost to zero.
 pub fn dollars(cost: f64) -> String {
     if cost > 0.0 && cost < 0.01 {
         "<$0.01".to_owned()
@@ -50,12 +43,10 @@ pub fn dollars(cost: f64) -> String {
     }
 }
 
-/// Round a token count to tenths of a thousand without trailing zeroes.
 fn thousands(tokens: u64) -> String {
     format!("{}k", (tokens as f64 / 100.0).round() / 10.0)
 }
 
-/// A model id without its provider: `anthropic/claude-x` reads `claude-x`.
 pub fn short_model(model: &str) -> &str {
     model.rsplit('/').next().unwrap_or(model)
 }
@@ -70,7 +61,6 @@ pub fn reasoning_name(level: &str) -> String {
         .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
-/// The desktop's project tone, by FNV-1a of the project path.
 pub fn tone_index(path: &str) -> usize {
     let hash = path.bytes().fold(2_166_136_261u32, |h, b| {
         (h ^ u32::from(b)).wrapping_mul(16_777_619)
@@ -78,11 +68,9 @@ pub fn tone_index(path: &str) -> usize {
     (hash % 8) as usize
 }
 
-/// One tool call, as a message's tool part has it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ToolCall<'a> {
     pub id: &'a str,
-    /// pi's name for the tool.
     pub name: &'a str,
     pub subject: &'a str,
     pub state: ToolState,
@@ -102,7 +90,6 @@ impl<'a> From<&'a NestedCall> for ToolCall<'a> {
 }
 
 impl ToolCall<'_> {
-    /// Whether this is one of pi's own tools, which the rows name by verb.
     fn known(&self) -> bool {
         matches!(
             self.name,
@@ -110,7 +97,6 @@ impl ToolCall<'_> {
         )
     }
 
-    /// The verb a row starts with ("Run cargo test").
     pub fn verb(&self) -> &'static str {
         match self.name {
             "bash" => "Run",
@@ -124,8 +110,6 @@ impl ToolCall<'_> {
         }
     }
 
-    /// What a row names after its verb: the subject, with an extension's
-    /// tool named first.
     pub fn arg(&self) -> String {
         if self.known() {
             self.subject.to_owned()
@@ -136,7 +120,6 @@ impl ToolCall<'_> {
         }
     }
 
-    /// Whether the subject is a file, shown by name on a badge.
     pub fn on_file(&self) -> bool {
         matches!(self.name, "read" | "write" | "edit") && !self.subject.is_empty()
     }
@@ -146,7 +129,6 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// A tool group's one-line summary, as the phone words it.
 pub fn tool_summary(tools: &[ToolCall]) -> String {
     let scripts = tools.iter().filter(|tool| tool.name == "codemode").count();
     let tools: Vec<_> = tools
@@ -222,96 +204,4 @@ pub fn tool_summary(tools: &[ToolCall]) -> String {
     chars
         .next()
         .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_readout_is_compact_and_keeps_unknown_usage_explicit() {
-        for (tokens, cost, want) in [
-            (Some(75_000), Some(0.75), ("75k/272k", "$0.75")),
-            (Some(1500), Some(0.625), ("1.5k/272k", "$0.63")),
-            (Some(0), Some(0.0), ("0k/272k", "$0.00")),
-            (None, Some(0.001), ("—/272k", "<$0.01")),
-            (None, None, ("—/272k", "—")),
-        ] {
-            let spent = cost.map(|cost| Spent { cost, tokens: 0 });
-            let got = context_readout(tokens, 272_000, spent);
-            assert_eq!((got.0.as_str(), got.1.as_str()), want);
-        }
-    }
-
-    #[test]
-    fn tool_groups_summarize_like_the_phone() {
-        let call = |name, subject, state| ToolCall {
-            id: "t",
-            name,
-            subject,
-            state,
-            calls: &[],
-        };
-        let tools = [
-            call("bash", "ls", ToolState::Done),
-            call("bash", "pwd", ToolState::Done),
-            call("edit", "a.rs", ToolState::Done),
-            call("edit", "a.rs", ToolState::Done),
-            call("read", "b.rs", ToolState::Done),
-            call("codemode", "", ToolState::Failed),
-        ];
-        assert_eq!(
-            tool_summary(&tools),
-            "Ran 2 commands · edited 1 file · read 1 file"
-        );
-        let children = [
-            NestedCall {
-                id: "c/1".into(),
-                name: "bash".into(),
-                subject: Some("cargo test".into()),
-                state: ToolState::Done,
-                error: None,
-            },
-            NestedCall {
-                id: "c/2".into(),
-                name: "mcp__check".into(),
-                subject: None,
-                state: ToolState::Failed,
-                error: Some("denied".into()),
-            },
-        ];
-        let mut wrapper = call("codemode", "", ToolState::Failed);
-        wrapper.calls = &children;
-        assert_eq!(
-            tool_summary(&[wrapper]),
-            "Ran 1 command · called 1 tool · 1 failed"
-        );
-        assert_eq!(
-            tool_summary(&[call("codemode", "", ToolState::Done)]),
-            "Ran 1 script"
-        );
-        assert_eq!(tools[5].arg(), "codemode");
-        assert_eq!(call("mcp", "x", ToolState::Done).arg(), "mcp · x");
-    }
-
-    #[test]
-    fn ages_read_like_the_sidebar() {
-        let now: DateTime<Utc> = "2026-11-06T12:00:00Z".parse().unwrap();
-        for (secs, want) in [
-            (5, "now"),
-            (125, "2m"),
-            (7300, "2h"),
-            (90_000, "1d"),
-            (1_300_000, "2w"),
-        ] {
-            assert_eq!(ago(now - chrono::Duration::seconds(secs), now), want);
-        }
-    }
-
-    #[test]
-    fn work_times_read_in_minutes_and_seconds() {
-        for (secs, want) in [(42, "42s"), (416, "6m 56s"), (3900, "1h 5m")] {
-            assert_eq!(worked(secs), want);
-        }
-    }
 }

@@ -1,5 +1,3 @@
-//! Waiting prompts, kept apart from pi's transcript until their turn starts.
-
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
@@ -7,12 +5,10 @@ use super::{Chat, Engine};
 use crate::skills;
 use crate::transcript::Image;
 
-/// Bound unsent drafts, including base64 images, so a queue cannot grow without limit.
+/// Include image payloads in the queue's memory budget.
 const MAX_BYTES: usize = 12 * 1024 * 1024;
-/// Keep both the view and the work waiting behind one chat small.
 const MAX_MESSAGES: usize = 32;
 
-/// A waiting message's view, without copying image data into every feed frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Queued {
@@ -22,7 +18,7 @@ pub struct Queued {
     pub error: Option<String>,
 }
 
-/// An unsent draft; it is not chat history and lives only for this engine's life.
+/// Unsent drafts are ephemeral, not session history.
 #[derive(Debug, Clone)]
 pub(super) struct Waiting {
     pub id: String,
@@ -32,7 +28,6 @@ pub(super) struct Waiting {
 }
 
 impl Waiting {
-    /// Count the bytes retained by this draft.
     fn bytes(&self) -> usize {
         self.text.len()
             + self
@@ -42,7 +37,6 @@ impl Waiting {
                 .sum::<usize>()
     }
 
-    /// Describe the draft without its image payloads.
     fn view(&self) -> Queued {
         Queued {
             id: self.id.clone(),
@@ -54,7 +48,6 @@ impl Waiting {
 }
 
 impl Engine {
-    /// Describe the chat's waiting messages while holding its state lock.
     pub(super) fn queued(chat: Option<&Chat>) -> Vec<Queued> {
         chat.into_iter()
             .flat_map(|chat| &chat.waiting)
@@ -62,7 +55,6 @@ impl Engine {
             .collect()
     }
 
-    /// Hold a prompt until the agent finishes, without handing it to pi yet.
     pub(super) fn enqueue(
         &self,
         id: &str,
@@ -90,11 +82,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Edit a message that has not started, preserving its images and place.
-    ///
-    /// # Errors
-    ///
-    /// Fail if it has already started, the edit is empty, or the queue is full.
     pub async fn edit_queued(&self, id: &str, message: &str, text: &str) -> Result<()> {
         let ops = self.ops(id)?;
         let _ops = ops.lock().await;
@@ -120,11 +107,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Delete one message that has not started.
-    ///
-    /// # Errors
-    ///
-    /// Fail if it has already started or was removed.
     pub async fn delete_queued(&self, id: &str, message: &str) -> Result<()> {
         let ops = self.ops(id)?;
         let _ops = ops.lock().await;
@@ -140,11 +122,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Send one waiting prompt now, steering a running pi or starting a new turn.
-    ///
-    /// # Errors
-    ///
-    /// Fail if the message is gone or pi refuses it. Keep rejected drafts for retry.
+    /// Keep a rejected draft available for retry.
     pub async fn steer_queued(&self, id: &str, message: &str) -> Result<()> {
         let stops = self.stops(id);
         let ops = self.ops(id)?;
@@ -176,11 +154,7 @@ impl Engine {
         result.map(|_| ())
     }
 
-    /// Start the oldest waiting prompt if the chat is idle.
-    ///
-    /// # Errors
-    ///
-    /// Fail if the agent is still working or pi rejects the prompt. Keep rejected drafts for retry.
+    /// Keep a rejected draft available for retry.
     pub async fn resume_queue(&self, id: &str) -> Result<()> {
         let stops = self.stops(id);
         let ops = self.ops(id)?;
@@ -189,10 +163,12 @@ impl Engine {
         loop {
             let draft = {
                 let state = self.state();
-                if state.stopping || state.chats.get(id).is_none_or(|chat| chat.stops != stops) {
+                if state.stopping {
                     return Ok(());
                 }
-                let chat = state.chats.get(id).context("the chat is gone")?;
+                let Some(chat) = state.chats.get(id).filter(|chat| chat.stops == stops) else {
+                    return Ok(());
+                };
                 if chat
                     .process
                     .as_ref()
@@ -224,7 +200,7 @@ impl Engine {
         }
     }
 
-    /// Dispatch after a clean settle, outside the event reader and under the chat's command lock.
+    /// Run outside the event reader, under the chat's `ops` lock.
     pub(super) fn queue_soon(&self, id: &str) {
         if !self
             .state()

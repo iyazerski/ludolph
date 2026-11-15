@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Print commit subjects for a release range, expanding squash merges through GitHub.
 : "${GH_REPO:?GH_REPO must name the owner/repository}"
 range="${1:?usage: release_notes.sh REVISION_RANGE}"
 

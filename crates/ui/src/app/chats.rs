@@ -1,25 +1,18 @@
-//! Chat menu actions and their dialogs.
-
 use rune::{Drag, Phase, PointerPress, PopupItem, PopupMenu, TextEdit, Tx};
 use serde_json::{Value, json};
 
 use super::{State, Window};
 
-/// Name a project drop surface without ambiguous path-prefix matches.
 pub fn project_drop_key(id: &str) -> String {
     format!("drop-project-{}-{id}", id.len())
 }
 
-/// The dialog a chat's menu opened.
 pub enum ChatDialog {
-    /// The new title, as it's typed.
     Rename { chat: String, title: Box<TextEdit> },
-    /// Whether to delete the chat, shown by its title.
     Delete { chat: String, title: String },
 }
 
 impl State {
-    /// Open chat `id`'s context menu at `at`, as a right-click in a list asks.
     pub fn chat_menu(&mut self, id: String, at: PointerPress, tx: &mut Tx) {
         let other = match self.window {
             Window::Main => "Open in Quick Window",
@@ -40,7 +33,6 @@ impl State {
         });
     }
 
-    /// Track an internal chat drag and move it only when dropped on another project.
     pub fn drag_chat(&mut self, id: &str, drag: &Drag, tx: &mut Tx) {
         if drag.cancelled() {
             self.list.drag_chat = None;
@@ -83,7 +75,6 @@ impl State {
         });
     }
 
-    /// Move a dropped chat to `project`; feeds update both windows.
     fn move_chat(&mut self, chat: String, project: String) {
         self.api.call(
             "move_chat",
@@ -96,7 +87,6 @@ impl State {
         );
     }
 
-    /// Ask for chat `id`'s new title, starting from its current one.
     pub fn ask_rename(&mut self, id: String) {
         let mut title = TextEdit::new(self.title_of(&id));
         title.set_selection(0, title.text.len());
@@ -107,7 +97,6 @@ impl State {
         });
     }
 
-    /// Ask whether to delete chat `id`.
     pub fn ask_delete(&mut self, id: String) {
         let title = self.title_of(&id);
         self.chat_dialog = Some(ChatDialog::Delete { chat: id, title });
@@ -117,7 +106,6 @@ impl State {
         self.chat_dialog = None;
     }
 
-    /// The rename dialog's title field, or a scratch one once it's closed.
     pub fn rename_field(&mut self) -> &mut TextEdit {
         match &mut self.chat_dialog {
             Some(ChatDialog::Rename { title, .. }) => title,
@@ -125,7 +113,6 @@ impl State {
         }
     }
 
-    /// Rename the chat to what the dialog holds; the list's feed shows it.
     pub fn rename_chat(&mut self) {
         let Some(ChatDialog::Rename { chat, title }) = &self.chat_dialog else {
             return;
@@ -147,7 +134,6 @@ impl State {
         );
     }
 
-    /// Delete the chat the dialog asked about, and leave it in both windows.
     pub fn delete_chat(&mut self) {
         let Some(ChatDialog::Delete { chat, .. }) = self.chat_dialog.take() else {
             return;
@@ -166,15 +152,12 @@ impl State {
         );
     }
 
-    /// Leave chat `id`'s page, if it shows, now the chat is gone.
     fn chat_gone(&mut self, id: &str) {
         if self.shows_chat(id) {
             self.leave_chat();
         }
     }
 
-    /// Chat `id`'s title as the list shows it, or a page's if the list
-    /// hasn't loaded it.
     fn title_of(&self, id: &str) -> String {
         let listed = self.list.chats.iter().flatten().find(|c| c.id == id);
         let shown = self

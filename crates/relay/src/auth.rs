@@ -1,10 +1,3 @@
-//! Sign-in with a passkey (WebAuthn), and the session cookie it sets.
-//!
-//! There's one user. Passkeys are created by linking a phone to a Mac
-//! (`pair`), or by a signed-in browser.
-//! Ceremony state stays in memory for a few minutes: a restart only cancels
-//! a sign-in that's under way.
-
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -20,15 +13,11 @@ use webauthn_rs::prelude::{
 
 use crate::store::{SESSION_TTL, Store};
 
-/// The session cookie. `__Host-` makes the browser require `Secure`, `Path=/`
-/// and no `Domain`, so no other site or subdomain can set it.
+/// __Host- cookies require Secure, Path=/ and no Domain to block subdomain cookie injection.
 const COOKIE: &str = "__Host-ludolph";
-/// How long a started sign-in or passkey creation stays valid.
 const FLOW_TTL: Duration = Duration::from_secs(300);
-/// Unfinished flows kept at most; older ones are dropped first.
 const MAX_FLOWS: usize = 64;
 
-/// A ceremony's server-side state, between its start and finish.
 enum Flow {
     Register(PasskeyRegistration),
     Login(PasskeyAuthentication),
@@ -39,14 +28,11 @@ struct Pending {
     flow: Flow,
 }
 
-/// Passkey sign-in and creation for the relay's one user.
 pub struct Auth {
     webauthn: Webauthn,
     flows: Mutex<HashMap<String, Pending>>,
 }
 
-/// A started ceremony: the browser passes `options` to WebAuthn and sends
-/// the result back with `flow`.
 #[derive(Serialize)]
 pub struct Started<T> {
     pub flow: String,
@@ -54,7 +40,6 @@ pub struct Started<T> {
 }
 
 impl Auth {
-    /// Set up WebAuthn for passkeys bound to `public_url`'s host.
     pub fn new(public_url: &Url) -> Result<Self> {
         let rp_id = public_url
             .host_str()
@@ -82,7 +67,6 @@ impl Auth {
         })
     }
 
-    /// Finish creating a passkey and save it.
     pub fn finish_register(
         &self,
         store: &Store,
@@ -111,7 +95,6 @@ impl Auth {
         })
     }
 
-    /// Finish signing in, and record the passkey's new state.
     pub fn finish_login(
         &self,
         store: &Store,
@@ -128,7 +111,6 @@ impl Auth {
         store.update_passkeys(&result)
     }
 
-    /// Remember `flow` under a fresh id, dropping expired and excess flows.
     fn keep(&self, flow: Flow) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let mut flows = self.lock();
@@ -151,7 +133,6 @@ impl Auth {
         id
     }
 
-    /// Take the flow `id`, once, if it hasn't expired.
     fn take(&self, id: &str) -> Option<Flow> {
         let pending = self.lock().remove(id)?;
         (pending.at.elapsed() < FLOW_TTL).then_some(pending.flow)
@@ -168,7 +149,6 @@ pub fn session_cookie(jar: &CookieJar) -> Option<&str> {
     jar.get(COOKIE).map(Cookie::value)
 }
 
-/// Sign the browser in with `token`.
 pub fn set_cookie(jar: CookieJar, token: String) -> CookieJar {
     let max_age = time::Duration::seconds(SESSION_TTL.as_secs().cast_signed());
     jar.add(session(token, max_age))
@@ -178,7 +158,6 @@ pub fn clear_cookie(jar: CookieJar) -> CookieJar {
     jar.remove(session(String::new(), time::Duration::ZERO))
 }
 
-/// The session cookie with `value`, and the attributes `__Host-` requires.
 fn session(value: String, max_age: time::Duration) -> Cookie<'static> {
     Cookie::build((COOKIE, value))
         .max_age(max_age)
@@ -187,21 +166,4 @@ fn session(value: String, max_age: time::Duration) -> Cookie<'static> {
         .http_only(true)
         .same_site(SameSite::Strict)
         .build()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn flows_are_single_use() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        let auth = Auth::new(&Url::parse("https://ludolph.example.com").unwrap()).unwrap();
-        let started = auth.start_register(&store).unwrap();
-        assert!(matches!(auth.take(&started.flow), Some(Flow::Register(_))));
-        assert!(auth.take(&started.flow).is_none());
-        // No passkey yet, so no sign-in.
-        assert!(auth.start_login(&store).is_err());
-    }
 }

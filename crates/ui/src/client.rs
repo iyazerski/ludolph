@@ -1,10 +1,3 @@
-//! A connection to the engine's socket (`ludolph_engine::server`): tool
-//! calls with their answers, and subscriptions that push what changes.
-//!
-//! The engine runs on its own, so it may start after the app, restart, or
-//! stop. The client keeps connecting, says whether it's connected, and
-//! subscribes again once it is: a chat's feed starts over with a reset.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,15 +9,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, watch};
 
-/// The first wait before connecting again, doubled up to [`RETRY_MAX`].
 const RETRY_MIN: Duration = Duration::from_millis(250);
-/// The longest wait: how late the app notices an engine that started.
 const RETRY_MAX: Duration = Duration::from_secs(4);
 
-/// What a call answers while the engine is down.
 pub const DOWN: &str = "Ludolph's engine isn't running";
 
-/// Where a subscription's pushes go, on the client's task.
 pub type Sink = Arc<dyn Fn(Value) + Send + Sync>;
 
 enum Request {
@@ -42,7 +31,6 @@ enum Request {
     Unsubscribe(u64),
 }
 
-/// A handle to the connection; clones share it.
 #[derive(Clone)]
 pub struct Client {
     requests: mpsc::UnboundedSender<Request>,
@@ -51,7 +39,6 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect to the engine at `socket` from a task on the current runtime.
     pub fn start(socket: PathBuf) -> Self {
         let (requests, queue) = mpsc::unbounded_channel();
         let (up, watching) = watch::channel(false);
@@ -63,12 +50,10 @@ impl Client {
         }
     }
 
-    /// Whether the engine is connected, as it changes.
     pub fn up(&self) -> watch::Receiver<bool> {
         self.up.clone()
     }
 
-    /// Call `tool` with `args`, and return its answer or why it failed.
     pub async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
         let (reply, answer) = oneshot::channel();
         let request = Request::Call {
@@ -80,9 +65,6 @@ impl Client {
         answer.await.unwrap_or_else(|_| Err(DOWN.to_owned()))
     }
 
-    /// Follow `topic` with `args`: each push goes to `sink`, and so does
-    /// `{"error": …}` if the engine refuses it. It lasts until the handle
-    /// drops.
     pub fn subscribe(&self, topic: &'static str, args: Value, sink: Sink) -> Subscription {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let _ = self.requests.send(Request::Subscribe {
@@ -98,7 +80,6 @@ impl Client {
     }
 }
 
-/// A subscription, ended when it drops.
 pub struct Subscription {
     id: u64,
     requests: mpsc::UnboundedSender<Request>,
@@ -116,7 +97,6 @@ struct Followed {
     sink: Sink,
 }
 
-/// Connect, serve, and connect again, until every [`Client`] is gone.
 async fn run(
     socket: PathBuf,
     mut queue: mpsc::UnboundedReceiver<Request>,
@@ -154,8 +134,6 @@ async fn run(
     }
 }
 
-/// Serve requests on `stream` until it ends. Returns whether clients are
-/// still there.
 async fn serve(
     stream: UnixStream,
     queue: &mut mpsc::UnboundedReceiver<Request>,
@@ -221,7 +199,6 @@ fn line(out: &mut Vec<u8>, record: &Value) {
     out.push(b'\n');
 }
 
-/// Hand one record from the engine to the call or subscription it's for.
 fn receive(
     text: &str,
     calls: &mut HashMap<String, oneshot::Sender<Result<Value, String>>>,
@@ -250,10 +227,9 @@ fn receive(
             None => Ok(record["ok"].take()),
         };
         let _ = reply.send(answer);
-    } else if let Some(error) = record.get("error").filter(|e| !e.is_null()) {
-        // A subscription the engine refused, as for a chat that's gone.
-        if let Some(f) = of("id").and_then(|id| followed.remove(&id)) {
-            (f.sink)(json!({"error": error}));
-        }
+    } else if let Some(error) = record.get("error").filter(|e| !e.is_null())
+        && let Some(f) = of("id").and_then(|id| followed.remove(&id))
+    {
+        (f.sink)(json!({"error": error}));
     }
 }

@@ -1,7 +1,3 @@
-//! Ludolph's windows: the main window, with the chats in a sidebar beside
-//! the open chat, and the quick window, a small floating one shown and
-//! hidden on a global shortcut. Both talk to the engine over its socket.
-
 mod api;
 mod app;
 mod client;
@@ -36,8 +32,6 @@ const MIN_SIZE: (f32, f32) = (340.0, 420.0);
 const MAIN_SIZE: (f32, f32) = (1120.0, 760.0);
 const MAIN_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 
-/// The first spot: the primary display's top right, under the menu bar. It's an
-/// initial position, not a placement, so later opens keep where the user dragged it.
 fn top_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     let display = displays.iter().find(|d| d.primary).or(displays.first())?;
     let px = |points: f32| (f64::from(points) * display.scale).round() as i32;
@@ -45,7 +39,6 @@ fn top_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     Some((right - px(SIZE.0 + 24.0), display.position.1 + px(56.0)))
 }
 
-/// Where the main window was last, if that's still on a display.
 fn saved_frame(prefs: &Prefs, displays: &[rune::Display]) -> Option<Frame> {
     let frame = prefs.main_frame?;
     let (x, y) = frame.position;
@@ -57,7 +50,6 @@ fn saved_frame(prefs: &Prefs, displays: &[rune::Display]) -> Option<Frame> {
     shown.then_some(frame)
 }
 
-/// The main window's first spot: the middle of the primary display.
 fn centered(displays: &[rune::Display]) -> Option<(i32, i32)> {
     let display = displays.iter().find(|d| d.primary).or(displays.first())?;
     let px = |points: f32| (f64::from(points) * display.scale).round() as i32;
@@ -71,26 +63,16 @@ fn centered(displays: &[rune::Display]) -> Option<(i32, i32)> {
     ))
 }
 
-/// This build's version, by the engine's rule (`ludolph_engine::VERSION`):
-/// the release's, which CI sets in `LUDOLPH_VERSION`, else the crate's.
 pub const VERSION: &str = match option_env!("LUDOLPH_VERSION") {
     Some(version) => version,
     None => env!("CARGO_PKG_VERSION"),
 };
 
 pub struct Opts {
-    /// The engine's folder, with its socket; the app keeps its own state there too.
     pub state_dir: PathBuf,
-    /// Start with no window, as at login, rather than with the main window.
     pub hidden: bool,
 }
 
-/// Run the app until it quits. It owns the main thread, as macOS needs;
-/// the engine's calls run on a small tokio runtime beside it.
-///
-/// # Errors
-///
-/// Fails if another copy of the app is running, or the runtime can't start.
 pub fn run(opts: Opts) -> Result<()> {
     std::fs::create_dir_all(&opts.state_dir)
         .with_context(|| format!("creating {}", opts.state_dir.display()))?;
@@ -130,12 +112,10 @@ pub fn run(opts: Opts) -> Result<()> {
             view,
         )
     };
-    // Both start windowless, so a window is made only once it first opens.
     let quick = App::new(spec(SIZE, MIN_SIZE)).windowless();
     let main = App::new(spec(MAIN_SIZE, MAIN_MIN_SIZE)).windowless();
     let (quick_handle, main_handle) = (quick.handle(), main.handle());
     let dock = main_handle.clone();
-    // Registered once the app runs, so the settings can change it.
     quick_handle.update(|s, _| s.register_saved_shortcut());
     if !opts.hidden {
         main_handle.update(|s, _| s.open());
@@ -166,7 +146,6 @@ pub fn run(opts: Opts) -> Result<()> {
         })
         .chrome(Chrome {
             full_size_content: true,
-            // Centred in the toolbar band, as `SplitView` asks.
             traffic_lights: Some((16.0, 17.0)),
             drag_regions: true,
         })
@@ -179,7 +158,6 @@ pub fn run(opts: Opts) -> Result<()> {
         })
         .on_close(State::closed)
         .on_quit(|s, _| s.keep_frame())
-        // The Dock icon, or opening the app again from Finder or Spotlight.
         .on_reopen(|s, _, _| {
             s.open();
             true
@@ -229,7 +207,6 @@ pub fn run(opts: Opts) -> Result<()> {
                     {
                         handle.set_position(frame.position);
                     }
-                    // The same handle each time the window opens again.
                     drop(main_window.set(handle.clone()));
                 }),
         ]

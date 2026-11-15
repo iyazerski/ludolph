@@ -1,5 +1,3 @@
-//! Chat details as a main-window card or a separate quick-window page.
-
 use rune::{El, Link, ScrollSpec, Span, TextStyle, Tx, col, icon, rich, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
@@ -8,7 +6,6 @@ use super::widgets::{busy, head, head_titles, hide_button};
 use crate::app::{Existing, State, Window};
 use crate::data::ChatDetails;
 
-/// Open quick-window details or toggle the main window's card.
 pub fn toggle(s: &State, k: &Kit) -> El {
     let shown = s.window == Window::Main && s.prefs.borrow().show_details;
     IconButton::new(&icons::INFO)
@@ -32,7 +29,6 @@ pub fn toggle(s: &State, k: &Kit) -> El {
         .build(k)
 }
 
-/// Show quick-window details without squeezing the transcript or composer.
 pub fn page(chat: &Existing, k: &Kit) -> El {
     let back = IconButton::new(&icons::BACK)
         .variant(IconButtonVariant::Ghost)
@@ -68,7 +64,6 @@ pub fn page(chat: &Existing, k: &Kit) -> El {
         )
 }
 
-/// Keep the card compact; long PR lists scroll independently.
 pub fn card(chat: &Existing, k: &Kit) -> El {
     let project = chat
         .chat
@@ -98,7 +93,6 @@ pub fn card(chat: &Existing, k: &Kit) -> El {
         .border(1.0, k.c.border_muted)
 }
 
-/// Render only recorded facts, without fetching PR status or source links.
 fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
     if let Some(counts) = &details.changes {
         let stats = format!("+{} −{}", counts.additions, counts.deletions);

@@ -1,11 +1,6 @@
-// Ludolph on the phone: your Macs' pi chats, from anywhere.
-// Plain JS, no build. The relay routes /api/call/<mac> to a Mac's engine
-// tools (list_chats, chat_view, send_message, ...), sealed so only this phone
-// and the Mac read them (seal.js). The look started
-// from Zeron's mobile app (apps/ios/Zeron), which follows its desktop.
 "use strict";
 
-// Zeron desktop icons (crates/ui/assets/icons, MIT): [viewBox, svg attributes, body].
+// Icons from Zeron (MIT): [viewBox, svg attributes, body].
 const ICONS = {
   "back": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M14.75 17.5 9.25 12 14.75 6.5\"/>"],
   "chevDown": ["0 0 24 24", "fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", "<path d=\"M17.5 9.25 12 14.75 6.5 9.25\"/>"],
@@ -41,11 +36,8 @@ const ICONS = {
   "bot": ["0 0 24 24", "", "<rect x=\"4.75\" y=\"7.75\" width=\"14.5\" height=\"11.5\" rx=\"2.75\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/><path d=\"M12 7.5V5.25M9.25 12.25V14M14.75 12.25V14M2 12.5V15M22 12.5V15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"/><circle cx=\"12\" cy=\"3.75\" r=\"1.25\" fill=\"currentColor\"/>"],
 };
 
-// ---- helpers -------------------------------------------------------------------
-
 const $ = (sel, root = document) => root.querySelector(sel);
 
-/** An inline icon from Zeron's set. */
 function icon(name, cls = "") {
   const [box, attrs, body] = ICONS[name] || ICONS.tool;
   const wrap = document.createElement("span");
@@ -53,7 +45,6 @@ function icon(name, cls = "") {
   return wrap.firstChild;
 }
 
-/** A model's provider mark from its `provider/model` id, as the desktop picks it, else a bot. */
 function modelMark(model) {
   const [provider, name = provider] = (model || "").split(/\/(.*)/);
   // A gateway like bifrost has no mark, so the model's family stands in.
@@ -66,7 +57,6 @@ function modelMark(model) {
   return wrap.firstChild;
 }
 
-/** A status glyph: `spin` (sidebar), `trail` (transcript), `dot`, or `check`. */
 function glyph(kind, color) {
   const el = h("span", { class: `glyph ${kind}`, style: color ? { color } : null });
   if (kind === "spin") el.append(...Array.from({ length: 6 }, (_, i) => h("i", { style: { animationDelay: `${-[0, 1, 5, 2, 4, 3][i] / 6 * 0.75}s` } })));
@@ -78,8 +68,6 @@ function glyph(kind, color) {
   return el;
 }
 
-/** Build an element: `h("div", { class: "x", onclick }, child, "text")`. */
-/** A chat's name: its title, or until it has one, its first prompt's first line. */
 function chatTitle(c) {
   return c.title || c.firstPrompt?.trim().split("\n")[0] || "Untitled chat";
 }
@@ -104,7 +92,6 @@ function h(tag, attrs = {}, ...children) {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const haptic = (ms = 8) => navigator.vibrate?.(ms);
 
-/** Compact age, like the desktop sidebar: now, 34m, 4h, 2d. */
 function ago(when) {
   const t = Date.parse(when);
   if (!t) return "";
@@ -116,17 +103,14 @@ function ago(when) {
   return `${Math.floor(s / 604800)}w`;
 }
 
-/** The chat status as one word: working, awaitingInput, errored, interrupted, or idle. */
 const statusOf = chat => (chat?.status || "idle").split(" ")[0];
 const isStale = chat => /stale/.test(chat?.status || "");
 
 const shortModel = m => (m || "").split("/").pop();
 const reasoningName = level => ({ xhigh: "X-High" })[level] || (level ? level[0].toUpperCase() + level.slice(1) : "");
 
-/** pi's thinking levels, for a model it doesn't list, like a new chat's default. */
 const DEFAULT_LEVELS = ["off", "minimal", "low", "medium", "high"];
 
-/** Share requests per Mac, keeping the previous labels while a refresh runs. */
 const catalogs = new Map();
 function catalog(machine, refresh = false) {
   let entry = catalogs.get(machine);
@@ -147,7 +131,6 @@ function catalog(machine, refresh = false) {
   return entry;
 }
 
-/** The desktop's context ring: a faint track under the used arc. */
 function ring(fraction, color) {
   const r = 6.25, c = 2 * Math.PI * r;
   const wrap = document.createElement("span");
@@ -156,7 +139,6 @@ function ring(fraction, color) {
   return wrap.firstChild;
 }
 
-/** The desktop's context ring tooltip (labels::context_help), as one line per fact. */
 function contextReadout({ tokens, window: size }, spent) {
   const k = value => (Math.round(value / 100) / 10) + "k";
   const counts = (tokens == null ? "—" : k(tokens)) + "/" + k(size);
@@ -165,9 +147,6 @@ function contextReadout({ tokens, window: size }, spent) {
   return [counts, cost];
 }
 
-// The desktop's project tones (project_icon.rs), indexed by FNV-1a of the
-// project path (project_color_index): slate, blue, violet, rose, amber,
-// emerald, teal, orange.
 const TONES_DARK = ["#94a3b8", "#93c5fd", "#c4b5fd", "#fda4af", "#fcd34d", "#6ee7b7", "#5eead4", "#fdba74"];
 const TONES_LIGHT = ["#475569", "#2563eb", "#7c3aed", "#be123c", "#a16207", "#047857", "#0f766e", "#c2410c"];
 const dark = matchMedia("(prefers-color-scheme: dark)");
@@ -176,14 +155,11 @@ function toneIndex(path) {
   for (const b of new TextEncoder().encode(path)) hash = Math.imul(hash ^ b, 16777619) >>> 0;
   return hash % 8;
 }
-/** The project monogram tile; chats without a project read "H" (Home). */
 function tile(project) {
   const index = project ? toneIndex(project.path || project.name) : 6;
   const tone = (dark.matches ? TONES_DARK : TONES_LIGHT)[index];
   return h("span", { class: "tile", style: { "--tone": tone } }, (project?.name || "Home").trim()[0]?.toUpperCase() || "?");
 }
-
-// ---- relay ---------------------------------------------------------------------
 
 const net = { online: true, listeners: new Set() };
 function setOnline(online) {
@@ -194,13 +170,10 @@ function setOnline(online) {
 
 class ApiError extends Error {}
 
-/** How long a request may take. The relay answers within 30 s, so only a
- * stalled connection (say, after a network switch) runs out; without a
- * deadline it would hold up its poller for good. */
+// Bound stalled connections even when the relay cannot deliver its own timeout.
 const REQUEST_TIMEOUT = 40000;
 
-/** An error from the network or the relay, not from a Mac: the request may
- * or may not have got through. */
+// Delivery is unknown after a network or relay failure, unlike a Mac's explicit refusal.
 class LostError extends Error {}
 
 async function post(path, body = {}) {
@@ -212,31 +185,23 @@ async function post(path, body = {}) {
     throw new LostError("Can't reach the relay");
   }
   setOnline(true);
-  // Null when the body didn't arrive whole, also when the deadline cut it off.
   const data = await res.json().catch(() => null);
   if (res.status === 401 && !path.startsWith("/auth/")) { showSignIn(); throw new ApiError("Sign in first"); }
   if (!res.ok) throw new ApiError(data?.error || `HTTP ${res.status}`);
   if (data == null) throw new LostError("Can't reach the relay");
   return data;
 }
-/** This phone's links to its Macs, by machine id, as `Seal.links` keeps them. */
 let links = new Map();
 async function loadLinks() { links = new Map((await Seal.links()).map(l => [l.machine, l])); }
 const NOT_LINKED = "This phone can't open this Mac's chats yet. On the Mac, open Ludolph's Settings, choose Link a phone, and scan the code.";
 
-/** Calls that must not run twice. Each gets an op id, and the Mac runs an op
- * once however often it's asked, so a call the relay or the network gave up
- * on is asked for again rather than reported as failed. */
+// Reuse operation ids across retries so a lost reply cannot repeat a mutation.
 const ONCE = new Set(["send_message", "create_chat", "respond_to_input", "edit_queued_message", "delete_queued_message", "resume_queue"]);
-/** How long to keep asking for a call that runs once. */
 const ONCE_PATIENCE = 3 * 60_000;
-/** What the relay says when a Mac isn't connected, so nothing reached it. */
 const NOT_CONNECTED = "this Mac is offline";
 const BUSY = "this Mac is busy; try again";
-/** The relay's answers that leave a call's fate unknown, or that a retry may fix. */
 const RETRY = new Set([NOT_CONNECTED, "this Mac went offline", "this Mac didn't answer in time", BUSY]);
 
-/** Run an engine tool on one Mac: sealed for it, and its answer opened. */
 async function call(machine, tool, args = {}) {
   if (!ONCE.has(tool)) {
     const reply = await callSealed(machine, { tool, args });
@@ -251,7 +216,6 @@ async function call(machine, tool, args = {}) {
       if (!reply.pending) return reply.ok;
       reached = true;
     } catch (e) {
-      // Retry only what may have reached the Mac, or might once it's back.
       const never = !reached && e.message === NOT_CONNECTED;
       if (!(e instanceof LostError) || never || Date.now() > until) throw e;
       if (e.message !== BUSY) reached = true;
@@ -261,9 +225,7 @@ async function call(machine, tool, args = {}) {
   }
 }
 
-/** Seal `call` for `machine`, send it, and return the Mac's opened reply:
- * `{ok}` or `{pending}`. A Mac's error throws an `ApiError`, and the relay's
- * or the network's a `LostError`. */
+// Keep relay/network failures (LostError) separate from authenticated Mac refusals (ApiError).
 async function callSealed(machine, call) {
   const link = links.get(machine);
   if (!link) throw new ApiError(NOT_LINKED);
@@ -279,8 +241,6 @@ async function callSealed(machine, call) {
   return reply;
 }
 
-/** How to follow `chat` on `machine` for `eventStream`: each connection seals
- * a new request, and opens its frames in order. */
 function chatStream(machine, chat) {
   return async () => {
     const link = links.get(machine);
@@ -295,9 +255,7 @@ function chatStream(machine, chat) {
   };
 }
 
-/** Run `fn` now and then every `interval()` ms while the page is visible.
- * Runs never overlap: `now()` during a run asks for one more right after it,
- * so an older answer can't land after a newer one. */
+// Never overlap refreshes: a late result must not overwrite newer state.
 function poller(fn, interval) {
   let timer = null, stopped = false, failures = 0, running = false, again = false;
   const tick = async () => {
@@ -323,14 +281,8 @@ function poller(fn, interval) {
   return { now: tick, stop() { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", wake); } };
 }
 
-/** A stream with nothing, not even the relay's keep-alive, for this long is dead. */
 const STALL_TIMEOUT = 40000;
 
-/** Follow server-sent events while the page is visible. `connect` gives each
- * connection its `path` and how to `decode` its events, whose results go to
- * `onEvent`. `onDown` gets the reason when the stream is refused, and `null`
- * once it's up. It reconnects after a drop, backing off while it keeps
- * failing; each connection starts over, as the relay sends. */
 function eventStream(connect, onEvent, onDown) {
   let ctl = null, timer = null, stopped = false, failures = 0;
   const open = async () => {
@@ -371,7 +323,6 @@ function eventStream(connect, onEvent, onDown) {
         }
       }
     } catch (e) {
-      // An abort is ours: hidden, stopped, or stalled.
       if (e.name !== "AbortError") { refused = true; setOnline(false); }
     } finally {
       clearTimeout(stall);
@@ -384,43 +335,32 @@ function eventStream(connect, onEvent, onDown) {
   document.addEventListener("visibilitychange", wake);
   open();
   return {
-    /** Connect now if the stream is down. */
     now: open,
     stop() { stopped = true; clearTimeout(timer); ctl?.abort(); document.removeEventListener("visibilitychange", wake); },
   };
 }
 
-/** What the app knows about the Macs and their chats. `chats` holds every
- * Mac loaded so far, so switching back shows them at once; `loaded` names those Macs. */
 const store = { machines: null, chats: null, loaded: new Set() };
 const machineName = id => store.machines?.find(m => m.id === id)?.name || "Mac";
 const severalMacs = () => (store.machines?.length || 0) > 1;
 
-/** A Mac's state: offline (its engine isn't connected right now), unlinked
- * (this phone has no key for it), or ready. */
 const macState = m => !m.status.online ? "offline" : links.has(m.id) ? "ready" : "unlinked";
-/** A Mac's state in a few words, with its version when it's ready. */
 const stateText = m => ({ ready: versions(m), offline: "Offline", unlinked: "Not linked on this phone" })[macState(m)];
 const ready = () => (store.machines || []).filter(m => macState(m) === "ready");
-/** The Ludolph version a ready Mac runs. */
 const versions = m => `Ludolph ${m.status.version}`;
-/** A Mac's battery, like "Battery 85%, charging", if it reported one. */
 function batteryText(m) {
   const b = m.status.battery;
   if (!b) return null;
   const state = { charging: ", charging", plugged: ", plugged in" }[b.state] || "";
   return `Battery ${b.percent}%${state}`;
 }
-/** A Mac's state line with its battery, if it has one. */
 const withBattery = (m, text) => [text, batteryText(m)].filter(Boolean).join(" · ");
 
-/** The Mac the list shows: the one picked last, else the first ready one. */
 function selectedMac() {
   const machines = store.machines || [];
   return machines.find(m => m.id === localStorage.getItem("ludolph.mac")) || ready()[0] || machines[0] || null;
 }
 
-/** The note for a Mac that can't show chats, if it can't. */
 function macNote(m) {
   if (macState(m) === "offline") {
     return h("div", { class: "offline-note" }, h("span", {}, h("b", {}, `${m.name} is offline.`),
@@ -430,7 +370,6 @@ function macNote(m) {
   return null;
 }
 
-/** Load the Macs, then the selected Mac's chats, newest activity first. */
 async function loadChats() {
   const { machines } = await post("/api/machines");
   store.machines = machines;
@@ -447,11 +386,9 @@ async function loadChats() {
   seen.prime(fresh);
 }
 
-/** Which finished turns this phone has seen, so new ones read "Done". */
 const seen = {
   map: JSON.parse(localStorage.getItem("ludolph.seen") || "null"),
   save() { localStorage.setItem("ludolph.seen", JSON.stringify(this.map)); },
-  /** Count chats this phone hasn't met yet as seen, so only later turns read "Done". */
   prime(chats) {
     this.map ||= {};
     let changed = false;
@@ -469,14 +406,11 @@ const seen = {
   },
 };
 
-// ---- passkeys ------------------------------------------------------------------
-
 const b64 = {
   decode: s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
   encode: buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
 };
 
-/** Create a passkey; `pair` is the pairing code that allows it, if not signed in yet. */
 async function createPasskey(pair) {
   const { flow, options } = await post("/auth/register/start", { pair });
   const o = options.publicKey;
@@ -514,9 +448,6 @@ async function signInWithPasskey() {
   } });
 }
 
-// ---- markdown ------------------------------------------------------------------
-
-/** Syntax highlighting by highlight.js (`hljs.js`); languages it doesn't know stay plain. */
 function highlight(code, lang) {
   lang = (lang || "").toLowerCase();
   if (!lang || !window.hljs?.getLanguage(lang)) return esc(code);
@@ -550,7 +481,6 @@ function codeBlock(code, lang) {
     `<pre><code>${highlight(code, lang)}</code></pre></div>`;
 }
 
-/** Render a Markdown subset to HTML: fences, headings, lists, quotes, tables, rules. */
 function markdown(src) {
   const lines = (src || "").replace(/\r/g, "").split("\n");
   const out = [];
@@ -602,7 +532,6 @@ function list(lines, start) {
   const base = indentOf(lines[start]);
   const first = lines[start].match(LIST_ITEM)[2];
   const ordered = /\d/.test(first);
-  // A bullet item after numbered ones, or the reverse, starts a new list.
   const sameKind = m => /\d/.test(m[2]) === ordered;
   const items = [];
   let i = start;
@@ -660,9 +589,6 @@ async function copyText(text) {
   haptic();
 }
 
-// ---- toasts and sheets ---------------------------------------------------------
-
-/** How long dictation cleanup may take before the words stay as heard. */
 const POLISH_TIMEOUT = 20000;
 
 const TOAST_GLYPH = {
@@ -681,7 +607,6 @@ function toast({ title, body = "", kind = "info", onclick, timeout = 3800 }) {
 }
 
 let openSheetClose = null;
-/** Show a bottom sheet in place of any open one; `build(close)` returns its content. Back closes it. */
 function sheet(build) {
   // The new sheet takes the open one's history entry, so Back still closes one sheet.
   const replacing = Boolean(openSheetClose);
@@ -704,7 +629,6 @@ function sheet(build) {
   if (replacing) history.replaceState({ sheet: true }, "");
   else history.pushState({ sheet: true }, "");
   openSheetClose = close;
-  // Drag down from the top to dismiss.
   let startY = null;
   panel.addEventListener("touchstart", e => { if (panel.scrollTop <= 0) startY = e.touches[0].clientY; }, { passive: true });
   panel.addEventListener("touchmove", e => {
@@ -724,14 +648,11 @@ function sheet(build) {
 }
 window.addEventListener("popstate", () => openSheetClose?.(true));
 
-/** A sheet row: icon, label (with an optional second line), value. */
 function itemRow({ iconName, lead, label, sub, value, onclick, cls = "", extra }) {
   return h(onclick ? "button" : "div", { class: `item-row ${cls}`, onclick },
     lead || (iconName && icon(iconName)), h("div", { class: "label" }, label, sub && h("div", { class: "sub" }, sub)),
     value != null && h("span", { class: "value" }, value), extra);
 }
-
-// ---- routing ------------------------------------------------------------------
 
 let current = null;
 
@@ -745,7 +666,6 @@ function route() {
   else if (parts[1] === "new") view = chatView(null, null, fromList);
   else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "details") view = detailsView(parts[2], parts[4], !!previous, previous?.fromList ?? previous?.chatFromList);
   else if (parts[1] === "m" && parts[3] === "chat" && parts[5] === "changes") view = changesView(parts[2], parts[4], parts[6], !!previous, previous?.fromList ?? previous?.chatFromList);
-  // Returning from a chat page keeps the chat's original back destination.
   else if (parts[1] === "m" && parts[3] === "chat") view = chatView(parts[2], parts[4], ["changes", "details"].includes(previous?.kind) ? previous.chatFromList : fromList);
   else view = listView();
   current = view;
@@ -760,9 +680,7 @@ function route() {
   view.mounted?.();
 }
 window.addEventListener("hashchange", route);
-// Drop finished entry animations: Chrome may not blur behind glass inside an
-// element that still has one, even after it ends. Exits (`.out`, `.leave`)
-// keep theirs until the element is removed.
+  // Chrome may stop blurring behind glass while a completed entry animation is retained.
 document.addEventListener("animationend", ({ target: el }) => {
   if (el.classList.contains("out") || el.classList.contains("leave")) return;
   if (el.classList.contains("enter")) el.classList.remove("enter", "back");
@@ -788,19 +706,14 @@ function offlineBanner(text = "Can't reach the relay. Retrying…") {
   return { el, stop: () => net.listeners.delete(show) };
 }
 
-/** Turn the bar's card to glass once content scrolls under it. */
 function solidOnScroll(scroll, bar, at = 8) {
   const update = () => bar.classList.toggle("solid", scroll.scrollTop > at);
   scroll.addEventListener("scroll", update, { passive: true });
   return update;
 }
 
-// ---- sign in ------------------------------------------------------------------
-
-/** How to link a phone, which only a Mac starts. */
 const LINK_HINT = "On your Mac, open Ludolph's Settings, choose Link a phone, and scan the QR code with this phone's camera.";
 
-/** The sign-in screen. Without a passkey yet, it says how to link a phone instead. */
 function signInView(hasPasskey = true) {
   const btn = h("button", { class: "btn solid" }, icon("key"), "Sign in with passkey");
   const el = h("div", { class: "view" }, h("div", { class: "signin" },
@@ -822,11 +735,6 @@ function signInView(hasPasskey = true) {
   return { kind: "signin", el, destroy() {} };
 }
 
-/**
- * The page a Mac's QR code opens: link this phone to that Mac. A signed-in
- * phone links at once. Otherwise it signs in with its passkey, or creates one
- * when the relay allows: for a Mac the relay knows, or on a relay without any.
- */
 function pairView(code, secret) {
   const text = h("p", {}, "Checking the code…");
   const actions = h("div", { class: "pair-actions" });
@@ -834,7 +742,6 @@ function pairView(code, secret) {
     h("img", { src: "/icon-192.png", alt: "" }),
     h("h1", {}, "Link this phone"), text, actions));
   const done = async machine => {
-    // A new Mac connects once it has its token, so wait a little for it rather than show it offline.
     text.textContent = `Connecting to ${machine.name}…`;
     actions.replaceChildren();
     for (let i = 0; i < 20; i++) {
@@ -848,7 +755,6 @@ function pairView(code, secret) {
     history.replaceState(null, "", "#/");
     route();
   };
-  // The secret never leaves this phone: the Mac showed it, and the relay never sees it.
   const claim = async () => {
     const { machine } = await post("/api/pair/claim", { code });
     await Seal.link(machine.id, secret);
@@ -895,11 +801,8 @@ function pairView(code, secret) {
   return { kind: "pair", el, destroy() {} };
 }
 
-// ---- chat list ----------------------------------------------------------------
-
 const listState = { query: "", filter: "all", scroll: 0 };
 
-/** The list's status filters; Recent means active in the last 15 minutes. */
 const RECENT_MS = 15 * 60 * 1000;
 const FILTERS = [
   { id: "all", label: "All", keeps: () => true, empty: "No chats yet" },
@@ -909,9 +812,7 @@ const FILTERS = [
     empty: "No chats active in the last 15 minutes" },
 ];
 const collapsed = new Set(JSON.parse(localStorage.getItem("ludolph.collapsed") || "[]"));
-/** Chats a project shows at first, and how many more "Show more" adds, as on the desktop. */
 const GROUP_CHATS = 5;
-/** How many chats each project the user expanded shows, by its key. */
 const shownMore = new Map();
 
 function listView() {
@@ -938,8 +839,6 @@ function listView() {
   const moreButtons = new Map();
   let painted = store.loaded.has(selectedMac()?.id);
 
-  // In a project section the row is one line, like the sidebar; search
-  // results also name the project.
   function row(c, withProject) {
     const s = statusOf(c), unseen = s === "idle" && seen.unseen(c);
     const sig = JSON.stringify([chatTitle(c), s, isStale(c), unseen, ago(c.lastMessageAt || c.createdAt), c.project?.id, c.model, withProject]);
@@ -973,7 +872,6 @@ function listView() {
       live && glyph("spin"), icon("chevDown", "chev"));
   }
 
-  /** The row that shows `GROUP_CHATS` more of a project's chats. */
   function moreButton(key) {
     if (!moreButtons.has(key)) {
       moreButtons.set(key, h("button", { class: "more-row", onclick: () => {
@@ -985,7 +883,6 @@ function listView() {
     return moreButtons.get(key);
   }
 
-  /** Show `id`'s chats: at once if they're loaded, then fresh ones. */
   function pick(id) {
     if (id === selectedMac()?.id) return;
     haptic(5);
@@ -1001,7 +898,6 @@ function listView() {
     const machines = store.machines;
     const sel = selectedMac();
     if (machines) {
-      // One tab per Mac; the dot tells its state at a glance.
       macs.replaceChildren(...machines.map(m => {
         const state = macState(m);
         const tone = state === "ready" ? "var(--tone-done)" : state === "offline" ? "var(--tertiary)" : "var(--tone-input)";
@@ -1032,7 +928,6 @@ function listView() {
       nodes.push(...hits.map(c => row(c, true)));
       if (!hits.length) nodes.push(h("div", { class: "empty" }, "No chats match your search"));
     } else {
-      // Projects, most recently active first, like the sidebar.
       const groups = new Map();
       for (const c of chats) {
         const key = `${c.machine}/${c.project?.id || "home"}`;
@@ -1042,7 +937,6 @@ function listView() {
       for (const [key, g] of groups) {
         nodes.push(section(key, g.project, g.items));
         if (collapsed.has(key)) continue;
-        // A filter's matches all show; the whole list shows each project's newest.
         const limit = filter.id === "all" ? shownMore.get(key) || GROUP_CHATS : Infinity;
         nodes.push(...g.items.slice(0, limit).map(c => row(c, false)));
         if (g.items.length > limit) nodes.push(moreButton(key));
@@ -1064,20 +958,14 @@ function listView() {
   };
 }
 
-// ---- chat ---------------------------------------------------------------------
-
-// How the desktop labels each of pi's tools ("Run cargo test"); others show as "Tool <name>".
 const TOOL_VIEW = {
   bash: ["Run", "terminal"], read: ["Read", "read"], write: ["Write", "edit"], edit: ["Edit", "edit"],
   grep: ["Search", "search"], find: ["Glob", "search"], ls: ["List", "read"],
 };
-/** The tools whose subject is a file, shown by name on a badge. */
 const FILE_TOOLS = new Set(["read", "write", "edit"]);
-/** A tool part's state as its row's class. */
 const STATE_CLASS = { running: "run", failed: "err", cancelled: "cancelled", done: "" };
 const baseName = path => path.split(/[\\/]/).filter(Boolean).pop() || path;
 
-/** The colour file-type icon for `path`, chosen as rune-theme-opencode's `file_icons::file`. */
 function fileIcon(path) {
   const name = baseName(path).toLowerCase();
   const suffixes = [name, ...[...name.matchAll(/\./g)].map(m => name.slice(m.index + 1)).filter(Boolean)];
@@ -1088,11 +976,9 @@ function fileIcon(path) {
   return wrap.firstChild;
 }
 
-/** The desktop's file badge: the file type's icon in a well, and the file's name. */
 const fileBadge = path => h("span", { class: "badge" }, h("span", { class: "well" }, fileIcon(path)), h("span", { class: "name" }, baseName(path)));
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-/** A tool group's one-line summary, as the desktop words it. */
 function toolSummary(tools) {
   const scripts = tools.filter(t => t.name === "codemode").length;
   tools = tools.flatMap(t => t.calls?.length ? t.calls : t.name === "codemode" ? [] : [t]);
@@ -1124,14 +1010,11 @@ function toolSummary(tools) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/** A run of consecutive tool calls, folded under the desktop's summary; `onOpen(tool)` shows one's output. */
 function toolGroup(tools, open, onToggle, onOpen, isOpen, toggleCall) {
   const live = tools.some(t => t.state === "running");
   const block = h("div", { class: `tools${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { block.classList.toggle("open"); onToggle(block.classList.contains("open")); haptic(4); } },
     icon("chevDown", "chev"), h("span", { class: `sum${live ? " shimmer" : ""}` }, toolSummary(tools)));
-  // One line per call, as the desktop's activity rows: icon, verb, then the
-  // subject, or a file call's badge.
   const toolRow = (t, onClick) => {
     const [verb, iconName] = TOOL_VIEW[t.name] || ["Tool", "tool"];
     const arg = TOOL_VIEW[t.name] ? t.subject || "" : [t.name, t.subject].filter(Boolean).join(" · ");
@@ -1164,7 +1047,6 @@ function toolGroup(tools, open, onToggle, onOpen, isOpen, toggleCall) {
   return block;
 }
 
-/** How long a turn worked, as the desktop words it: 42s, 6m 56s, 1h 5m. */
 function workedFor(ms) {
   const secs = Math.floor(ms / 1000);
   if (secs < 60) return `${secs}s`;
@@ -1172,7 +1054,6 @@ function workedFor(ms) {
   return `${Math.floor(secs / 3600)}h ${Math.floor(secs / 60) % 60}m`;
 }
 
-/** A finished turn's work before its answer, folded under how long it took. */
 function workedFold(ms, blocks, open, onToggle, changes) {
   const fold = h("div", { class: `worked${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { fold.classList.toggle("open"); onToggle(fold.classList.contains("open")); haptic(4); } },
@@ -1181,17 +1062,12 @@ function workedFold(ms, blocks, open, onToggle, changes) {
   return fold;
 }
 
-/** A message's prose: its text parts, joined as read_chat joins them. */
 const textOf = m => m.parts.filter(p => p.kind === "text").map(p => p.text).join("\n\n");
 
-/** The text a new chat was started with, shown in it until the transcript has it. */
 let handoff = null;
 
-/** A chat, or with no `id` a new one: the same screen, empty until the first
- * message creates the chat on `machine` (the selected Mac when null). */
 function chatView(machine, id, fromList) {
   const isDraft = !id;
-  // The new chat's picks, seeded from the last one started.
   const draft = isDraft ? newDraft() : null;
   if (isDraft) machine = draft.machine;
   const cached = store.chats?.find(c => c.id === id && c.machine === machine);
@@ -1217,12 +1093,9 @@ function chatView(machine, id, fromList) {
   const scroll = h("div", { class: "scroll" }, msgs);
   const textarea = h("textarea", { rows: 1, "aria-label": "Message", spellcheck: "true", placeholder: isDraft ? "Describe the task" : "Message" });
   const sendBtn = h("button", { class: "send", "aria-label": "Send", disabled: true }, icon("send"));
-  // The browser's speech recognition, where it has one (Safari, Chrome).
   const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
   const micBtn = Speech && h("button", { class: "mic", "aria-label": "Dictate", onclick: () => dictate() }, icon("mic"));
-  // The running dictation, and whether what it heard is being cleaned up.
   let dictation = null, polishing = false;
-  // Bars of varied height and pace, so the waveform looks alive.
   const recTime = h("span", { class: "rec-time" }, "0:00");
   const recorder = Speech && h("div", { class: "recorder", "aria-live": "polite" },
     h("div", { class: "wave", "aria-label": "Listening" }, Array.from({ length: 72 }, (_, i) =>
@@ -1230,15 +1103,11 @@ function chatView(machine, id, fromList) {
     recTime,
     h("span", { class: "rec-busy" }, glyph("spin"), "Cleaning up…"));
   const jump = h("button", { class: "jump glass", "aria-label": "Scroll to bottom", onclick: () => toBottom(true) }, icon("back"));
-  // As on the desktop: the box holds the text, the model chip, dictation and Send;
-  // under it, the project and branch, and the context ring.
   const modelChip = h("button", { class: "model-chip", "aria-label": "Model", onclick: () => modelSheet() });
   const meta = h("div", { class: "composer-meta" });
   const ctxSlot = h("div", { class: "ctx-slot" });
   const footer = h("div", { class: "composer-foot hide" }, meta, ctxSlot);
-  // The desktop's `$` menu: the agent's skills, filtered by what follows the `$`.
   const skillMenu = h("div", { class: "skill-menu glass hide", role: "listbox" });
-  // Images to send with the message, already sized for a model.
   let attached = [];
   const attachments = h("div", { class: "attachments hide" });
   const picker = h("input", { type: "file", accept: "image/*", multiple: true, hidden: true });
@@ -1255,26 +1124,18 @@ function chatView(machine, id, fromList) {
     footer));
   const offline = offlineBanner();
   const macOffline = h("div", { class: "offline glass hide" });
-  // A pi in a terminal has the chat: the Mac won't send to it until it's taken over.
   const elsewhere = h("div", { class: "offline glass hide" }, icon("alert"), "Open in a terminal",
     h("button", { class: "open", onclick: () => takeOver() }, "Take over"));
   const el = h("div", { class: "view" }, scroll, bar, offline.el, macOffline, elsewhere, dock);
-  // The transcript scrolls under the floating composer; keep room for it.
   const dockSize = new ResizeObserver(() => el.style.setProperty("--dock", `${dock.offsetHeight}px`));
   dockSize.observe(dock);
 
-  // The page is the Mac's feed (`frame`, its messages by id in `ids` order),
-  // after the earlier messages loaded with chat_view (`before`).
   let chat = null, read = null, frame = null, ids = [], keepAnchor = false, pending = [];
   const feedMessages = new Map();
   let before = [], beforeChanges = [];
-  // The composer's branch, context, and model (composer_info): re-read when the chat
-  // moves, at most every few seconds.
   let info = null, infoFor = "", infoAt = 0, contextExpanded = false;
   const rendered = new Map();
-  // Folds the user opened or closed, by key; the rest follow their default.
   const openGroups = new Map();
-  // The Mac's "Tool calls" setting: the work under way shows open while the agent runs.
   let expandTools = false;
   call(machine, "get_settings").then(s => {
     if (!!s.expandTools === expandTools) return;
@@ -1310,25 +1171,20 @@ function chatView(machine, id, fromList) {
     textarea.style.height = `${Math.min(textarea.scrollHeight, window.innerHeight * 0.4)}px`;
     updateComposer();
     drafts[draftKey] = textarea.value;
-    // After a failed load, the next keystroke tries again.
     if (skillsError) skillsFor = "";
     drawSkills();
   });
   textarea.addEventListener("keydown", e => {
-    // With the skill menu open, Enter or Tab picks its first skill; Escape closes it.
     const first = !skillMenu.classList.contains("hide") && skillMenu.querySelector(".skill");
     if (first && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) { e.preventDefault(); first.click(); return; }
     if (e.key === "Escape" && !skillMenu.classList.contains("hide")) { e.preventDefault(); skillMenu.classList.add("hide"); return; }
     // Enter sends on a hardware keyboard; phones keep Enter for new lines.
     if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer: coarse)").matches) { e.preventDefault(); sendBtn.click(); }
   });
-  // The caret may move into or out of a `$` word without typing.
   for (const type of ["click", "keyup"]) textarea.addEventListener(type, e => e.key !== "Escape" && drawSkills());
   // Late, so a tap that blurs the text still lands on its skill.
   textarea.addEventListener("blur", () => setTimeout(() => document.activeElement !== textarea && skillMenu.classList.add("hide"), 200));
 
-  // The chat's skills (a new chat's: those in its project), loaded on the
-  // first `$` and again when the new chat's picks change.
   let skills = null, skillsError = "", skillsFor = "";
   function loadSkills() {
     const key = isDraft ? `${machine}/${draft.project}` : id;
@@ -1345,7 +1201,6 @@ function chatView(machine, id, fromList) {
     }).then(() => key === skillsFor && drawSkills());
   }
 
-  /** The `$` word the caret ends: where its `$` is and the text after it. */
   function skillQuery() {
     const pos = textarea.selectionStart;
     if (pos !== textarea.selectionEnd) return null;
@@ -1357,10 +1212,8 @@ function chatView(machine, id, fromList) {
     const query = document.activeElement === textarea && skillQuery();
     if (!query) { skillMenu.classList.add("hide"); return; }
     loadSkills();
-    // Names that start with the text first, then the ones that contain it.
     const found = (skills || []).filter(s => s.name.toLowerCase().includes(query.text))
       .sort((a, b) => b.name.toLowerCase().startsWith(query.text) - a.name.toLowerCase().startsWith(query.text));
-    // A `$` word no skill matches (like a price) is just text.
     if (skills?.length && query.text && !found.length) { skillMenu.classList.add("hide"); return; }
     const note = text => h("div", { class: "skill-note" }, text);
     skillMenu.replaceChildren(...(!skills ? [note("Loading skills…")]
@@ -1374,7 +1227,6 @@ function chatView(machine, id, fromList) {
     skillMenu.scrollTop = 0;
   }
 
-  /** Replace the `$` word at the caret with the skill's name. */
   function pickSkill(skill) {
     const query = skillQuery();
     if (!query) return;
@@ -1389,19 +1241,15 @@ function chatView(machine, id, fromList) {
     textarea.dispatchEvent(new Event("input"));
   }
 
-  /** `text` with each `$name` of a known skill as the reference that invokes it. */
   function withSkillRefs(text) {
     const refs = new Map((skills || []).map(s => [s.name, s.ref]));
     return refs.size ? text.replace(/(^|\s)\$([\w-]+(?::[\w-]+)*)/g, (all, lead, name) => (refs.has(name) ? lead + refs.get(name) : all)) : text;
   }
-  /** Start or stop dictation. Like Codex, a waveform replaces the text while
-   * listening; what's heard shows only once cleaned up, after the typed text. */
   function dictate() {
     if (dictation) { dictation.stop(); return; }
     haptic(5);
     const typed = textarea.value;
     const lead = typed && !/\s$/.test(typed) ? " " : "";
-    // What the ended sessions heard, and what the current one has so far.
     let earlier = "", heard = "", failed = false, rec = null;
     const session = {
       stopped: false, cancelled: false,
@@ -1420,7 +1268,6 @@ function chatView(machine, id, fromList) {
     const clock = setInterval(tick, 500);
     showRecorder("recording");
 
-    /** Start a recognition session; false if the browser refused. */
     function listen() {
       rec = new Speech();
       rec.lang = navigator.language;
@@ -1435,8 +1282,7 @@ function chatView(machine, id, fromList) {
       rec.onend = () => {
         earlier = [earlier, heard].filter(Boolean).join(" ");
         heard = "";
-        // Chrome on Android ends a session at every pause, even a continuous
-        // one; keep listening until the user stops.
+        // Android Chrome ends recognition at each pause even in continuous mode.
         if (!session.stopped && !failed && listen()) return;
         if (dictation === session) dictation = null;
         clearInterval(clock);
@@ -1447,9 +1293,7 @@ function chatView(machine, id, fromList) {
       try { rec.start(); return true; } catch (e) { toast({ title: "Couldn't start dictation", body: e.message, kind: "error" }); return false; }
     }
     function onresult(e) {
-      // Every phrase so far, final or not; browsers differ on the spaces between them.
-      // Chrome on Android adds each update of a phrase as a new result, so a
-      // result that continues the one before it replaces it.
+    // Android Chrome appends phrase updates as new results; replace continuations instead of repeating them.
       const phrases = [];
       for (const r of e.results) {
         const said = r[0].transcript.trim();
@@ -1461,7 +1305,6 @@ function chatView(machine, id, fromList) {
       heard = phrases.join(" ");
     }
   }
-  /** Show the waveform ("recording"), the cleanup spinner ("polishing"), or the text (""). */
   function showRecorder(state) {
     composerBox.classList.toggle("recording", state === "recording");
     composerBox.classList.toggle("polishing", state === "polishing");
@@ -1469,8 +1312,6 @@ function chatView(machine, id, fromList) {
   }
   const stopDictation = () => dictation?.abort();
 
-  /** Have the Mac's model turn what dictation heard into a clean message, put
-   * after `before`. A failed cleanup puts the words in as heard. */
   async function polish(before, heard) {
     polishing = true;
     micBtn.disabled = true;
@@ -1489,7 +1330,6 @@ function chatView(machine, id, fromList) {
     showRecorder("");
     textarea.dispatchEvent(new Event("input"));
   }
-  /** A phrase's words, for comparing two updates of it: no case or punctuation. */
   const words = s => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
   textarea.value = drafts[draftKey] || "";
@@ -1513,7 +1353,6 @@ function chatView(machine, id, fromList) {
     updateComposer();
   }
 
-  /** Take the attached images for sending; `restore` puts them back if it fails. */
   function takeImages() {
     const taken = attached;
     attached = [];
@@ -1606,14 +1445,12 @@ function chatView(machine, id, fromList) {
         remove.disabled = true;
         try {
           await api("delete_chat");
-          // Closing goes back past the sheet's history entry, so the list replaces the chat's after.
           const toList = () => location.replace("#/");
           if (history.state?.sheet) addEventListener("popstate", toList, { once: true });
           else toList();
           close();
         } catch (e) { toast({ title: "Couldn't delete", body: e.message, kind: "error" }); remove.disabled = false; }
       } }, "Delete");
-      // An untitled chat's title is its whole first message.
       const title = chat ? chatTitle(chat).replace(/\s+/g, " ").trim() : "";
       const what = title ? `“${title.length > 80 ? `${title.slice(0, 80).trimEnd()}…` : title}”` : "This chat";
       return [
@@ -1645,7 +1482,6 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  // A call's arguments and output, loaded when it's opened.
   function openTool(t) {
     haptic(4);
     const [verb] = TOOL_VIEW[t.name] || ["Tool"];
@@ -1661,7 +1497,6 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  // A sent image, loaded when its chip is tapped.
   function openImage(m, index) {
     haptic(4);
     const head = h("h2", {}, `Image ${index + 1}`);
@@ -1672,7 +1507,6 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  /** `parts` with each run of consecutive tool calls as one `{kind: "tools", tools, at}`, and thinking left out. */
   function grouped(parts) {
     const out = [];
     parts.forEach((p, at) => {
@@ -1706,9 +1540,6 @@ function chatView(machine, id, fromList) {
         images.length ? h("div", { class: "shots" }, images.map(p => h("button", { class: "chip", onclick: () => !isPending && openImage(m, p.index) }, icon("image"), `Image ${p.index + 1}`))) : null) : null);
   }
 
-  // Prose, tool groups, and errors in transcript order, as on the desktop:
-  // only the work under way shows open, and once the turn ends, what came
-  // before its answer folds under how long it took.
   function assistantMessage(m, isLast, startedAt, changes) {
     const streaming = m.status === "streaming" || (isLast && isWorking());
     const parts = grouped(m.parts);
@@ -1717,7 +1548,6 @@ function chatView(machine, id, fromList) {
       if (p.kind === "note") return h("div", { class: "turn-note" }, p.text);
       if (p.kind === "tools") return toolsBlock(m, p, streaming && expandTools && i === parts.length - 1);
       const body = h("div", { class: "md", html: markdown(p.text) });
-      // The caret trails the reply while it streams, not prose a tool followed.
       if (streaming && i === parts.length - 1) {
         const lastBlock = body.lastElementChild;
         (lastBlock && !lastBlock.classList.contains("code") ? lastBlock : body).append(h("span", { class: "caret" }));
@@ -1743,7 +1573,6 @@ function chatView(machine, id, fromList) {
     const firstPaint = !rendered.size;
     const nodes = [];
     const last = read.messages[read.messages.length - 1];
-    // A reply's turn started with the prompt before it.
     let startedAt = null;
     for (const m of read.messages) {
       if (m.role === "system") continue;
@@ -1761,13 +1590,11 @@ function chatView(machine, id, fromList) {
       }
       nodes.push(entry.node);
     }
-    // Drop optimistic bubbles once the transcript has the real message.
     pending = pending.filter(p => {
       const landed = read.messages.some(m => m.role === "user" && textOf(m).trim() === p.text);
       if (landed) p.el.remove();
       return !landed;
     });
-    // What pi holds for the agent, from here or elsewhere, shows as queued.
     const queue = [...(read.run?.steering || []), ...(read.run?.followUp || [])];
     for (const p of pending) p.el.classList.toggle("queued", queue.includes(p.text));
     const others = queue.filter(text => !pending.some(p => p.text === text)).map(queuedBubble);
@@ -1783,7 +1610,6 @@ function chatView(machine, id, fromList) {
     else if (stick) toBottom(!firstPaint);
   }
 
-  /** Waiting prompts stay above the composer, with a separate editor so its draft is safe. */
   function drawQueue() {
     const queued = read?.queued || [];
     queuePanel.classList.toggle("hide", !queued.length && !queueEdit);
@@ -1841,8 +1667,6 @@ function chatView(machine, id, fromList) {
     return queuedBubbles.get(text);
   }
 
-  // "Working 38s" until the agent shows text or a running tool; what pi waits
-  // on, a retry or compaction, shows whatever the agent showed.
   function drawWorking() {
     const last = read?.messages[read.messages.length - 1];
     const quiet = !last || last.role === "user"
@@ -1859,7 +1683,6 @@ function chatView(machine, id, fromList) {
     workLabel.textContent = compacting ? "Compacting context" : "Working";
     working.title = "";
     const lastUser = [...(read?.messages || [])].reverse().find(m => m.role === "user");
-    // Epoch milliseconds.
     const since = lastUser?.createdAt;
     secs.textContent = since ? `${Math.max(0, Math.round((Date.now() - since) / 1000))}s` : "";
   }
@@ -1869,7 +1692,6 @@ function chatView(machine, id, fromList) {
     if (!document.hidden) refreshModels();
   }, 1000);
 
-  /** Refresh visible options after terminal sign-ins, without starting a pi per poll. */
   function refreshModels(force = false) {
     if (!machine) return;
     const entry = catalog(machine, force);
@@ -1886,7 +1708,6 @@ function chatView(machine, id, fromList) {
     }, error => { if (!gone) console.warn("list_models", error); });
   }
 
-  // What a finished turn changed, opening its diff; kept per turn so redraws reuse it.
   const changeButtons = new Map();
   function changesButton(c) {
     const sig = `${c.files}|${c.additions}|${c.deletions}`;
@@ -1900,7 +1721,6 @@ function chatView(machine, id, fromList) {
     return kept.node;
   }
 
-  // An extension asks something: tap an option or Yes/No, or type an answer.
   function drawQuestion(input) {
     if (!input) { questionSlot.replaceChildren(); questionId = null; return; }
     if (questionId === input.id) return;
@@ -1951,7 +1771,6 @@ function chatView(machine, id, fromList) {
     } catch (e) { console.warn("composer_info", e); }
   }
 
-  /** The model and reasoning the composer shows: the new chat's picks, else the chat's. */
   const config = () => (isDraft ? draft
     : { model: info ? info.model : chat?.model, reasoning: info ? info.reasoning : chat?.reasoning });
 
@@ -1964,8 +1783,6 @@ function chatView(machine, id, fromList) {
     modelChip.replaceChildren(modelMark(model), h("span", { class: "name" }, label),
       // replaceChildren, unlike h(), prints null as "null": no level, no node.
       reasoning ? h("span", { class: "lvl" }, reasoningName(reasoning)) : "");
-    // A new chat picks its project (and Mac) here, in front of the checkout;
-    // the header names the Mac.
     const project = isDraft && draft.projects.find(p => p.id === draft.project);
     const projectChip = isDraft && machine && h("button", { class: "project-chip", "aria-label": "Project", onclick: () => projectSheet() },
       tile(project || null), h("span", { class: "txt" }, project?.name || "No project"));
@@ -1978,9 +1795,7 @@ function chatView(machine, id, fromList) {
     const usage = info.contextUsage;
     const fraction = usage?.window > 0 && usage.tokens != null ? usage.tokens / usage.window : null;
     const tone = fraction >= 0.9 ? "var(--danger)" : fraction >= 0.75 ? "var(--warning)" : "var(--secondary)";
-    // A set `checkout` means a git project, the only place the branch shows.
     const left = info.checkout && h("span", { class: "branch-ref" }, icon("branch"), h("span", { class: "txt" }, info.branch || "No ref"));
-    // A model without a known window gets no ring, as on the desktop.
     const figures = usage?.window > 0 ? contextReadout(usage, info.spent) : [];
     const right = usage?.window > 0 && h("button", { class: "ctx", style: { color: fraction == null ? "var(--tertiary)" : tone },
       "aria-label": contextExpanded ? figures.join(", ") + ". Show context ring" : "Show context usage and cost",
@@ -1992,7 +1807,6 @@ function chatView(machine, id, fromList) {
     footer.classList.toggle("hide", !projectChip && !left && !right);
   }
 
-  /** Pick the model and reasoning for the next turns, like the desktop's picker. */
   function modelSheet() {
     if (!machine) return;
     haptic(5);
@@ -2022,7 +1836,6 @@ function chatView(machine, id, fromList) {
         const { model: current, reasoning } = config();
         const levels = levelsOf(models, current);
         const check = on => (on ? icon("check") : null);
-        // Reasoning first, as pills: pi lists dozens of models.
         body.replaceChildren(
           levels.length ? h("div", { class: "group-label" }, "Reasoning") : "",
           levels.length ? h("div", { class: "pills" }, levels.map(l => h("button", { class: `pill${l === reasoning ? " on" : ""}`, "aria-pressed": String(l === reasoning),
@@ -2045,7 +1858,6 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  /** Keep the new chat's model in its Mac's catalog and its reasoning on the model's levels. */
   function fitDraft(models) {
     const entry = catalog(machine);
     const previous = models.find(model => model.id === draft.model);
@@ -2057,7 +1869,6 @@ function chatView(machine, id, fromList) {
     draft.reasoning = saved || (levels.includes(normal) ? normal : levels.includes("medium") ? "medium" : levels[0] || "");
   }
 
-  /** Pick the new chat's project, and its Mac when there are several. */
   function projectSheet() {
     haptic(5);
     sheet(close => {
@@ -2093,7 +1904,6 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  /** Load the new chat's projects and models on its Mac, keeping valid picks. */
   async function loadDraft() {
     drawHeader();
     if (!machine) return;
@@ -2114,7 +1924,6 @@ function chatView(machine, id, fromList) {
     } catch (e) { toast({ title: "Couldn't load the options", body: e.message, kind: "error" }); }
   }
 
-  /** Create the chat with the first message, then show it in place of this screen. */
   async function create() {
     const typed = textarea.value.trim();
     if (creating || (!typed && !attached.length) || !machine) return;
@@ -2164,15 +1973,12 @@ function chatView(machine, id, fromList) {
     drawInfo();
   }
 
-  /** Show why the Mac can't stream the chat; `null` hides it. */
   function down(reason) {
     const why = reason && (/offline|didn't answer/.test(reason) ? `${machineName(machine)} is offline` : reason);
     if (why) macOffline.replaceChildren(icon("alert"), why);
     macOffline.classList.toggle("hide", !why);
   }
 
-  // Each frame has the page's ids and only the messages that changed; the
-  // chat, its run, and what it asks come whole.
   function onFrame(next) {
     if (next.error) return down(next.error);
     if (next.reset) { feedMessages.clear(); before = []; beforeChanges = []; }
@@ -2190,7 +1996,6 @@ function chatView(machine, id, fromList) {
     seen.mark(chat);
     drawHeader();
     const infoKey = `${chat.status}|${chat.lastMessageAt}`;
-    // Each step of a run grows the context; its end always reads it again.
     const settled = was === "working" && chat.status !== "working";
     if (configured || ((infoKey !== infoFor || chat.status === "working") && (settled || Date.now() - infoAt > 8000))) { infoFor = infoKey; loadInfo(); }
     compose();
@@ -2244,9 +2049,6 @@ function chatView(machine, id, fromList) {
   };
 }
 
-// ---- turn changes ---------------------------------------------------------------
-
-/** Files of a `git diff` patch: each one's path, counts, and hunks of numbered lines. */
 function parsePatch(patch) {
   const files = [];
   let file = null, hunk = null, oldNo = 0, newNo = 0;
@@ -2264,7 +2066,6 @@ function parsePatch(patch) {
       hunk = { head: line, lines: [] };
       file.hunks.push(hunk);
     } else if (!hunk) {
-      // Headers before the first hunk: only what changes the path or says why there are no lines.
       if (line.startsWith("+++ ") && line !== "+++ /dev/null") file.path = line.slice(4).replace(/^b\//, "");
       else if (line.startsWith("Binary files")) file.note = "Binary file";
     } else if (line[0] === "+") {
@@ -2281,7 +2082,6 @@ function parsePatch(patch) {
   return files;
 }
 
-/** Files this long start folded, so a big turn doesn't stall the phone. */
 const FOLD_LINES = 400;
 
 function diffFile(file) {
@@ -2312,7 +2112,6 @@ function diffFile(file) {
   return el;
 }
 
-/** Details occupy their own page; only this page refreshes working-tree counts. */
 function detailsView(machine, id, fromChat, chatFromList) {
   const cached = store.chats?.find(c => c.id === id && c.machine === machine);
   const back = () => { haptic(5); fromChat ? history.back() : go(chatHash(machine, id)); };
@@ -2350,7 +2149,6 @@ function detailsView(machine, id, fromChat, chatFromList) {
   return { kind: "details", chatFromList, el, destroy() { gone = true; poll.stop(); offline.stop(); } };
 }
 
-/** Saved turn changes or the current working tree, using the same diff viewer. */
 function changesView(machine, id, turn, fromChat, chatFromList) {
   const working = turn === "working";
   const cached = store.chats?.find(c => c.id === id && c.machine === machine);
@@ -2372,10 +2170,8 @@ function changesView(machine, id, turn, fromChat, chatFromList) {
   return { kind: "changes", chatFromList: fromChat && chatFromList, el, destroy() { gone = true; offline.stop(); } };
 }
 
-/** Unsent text per chat, kept while moving between chats. */
 const drafts = {};
 
-/** Make `parent`'s children exactly `nodes`, moving only what changed. */
 function reconcile(parent, nodes) {
   nodes.forEach((node, i) => {
     if (parent.children[i] !== node) parent.insertBefore(node, parent.children[i] || null);
@@ -2383,14 +2179,11 @@ function reconcile(parent, nodes) {
   while (parent.children.length > nodes.length) parent.lastElementChild.remove();
 }
 
-// ---- new chat -----------------------------------------------------------------
-
 const prefs = {
   get: () => { try { return JSON.parse(localStorage.getItem("ludolph.new") || "{}"); } catch { return {}; } },
   set: value => localStorage.setItem("ludolph.new", JSON.stringify(value)),
 };
 
-/** A new chat's picks: last time's, on the selected Mac when it's ready. */
 function newDraft() {
   const online = ready();
   const saved = prefs.get();
@@ -2398,17 +2191,11 @@ function newDraft() {
   return { machine, project: saved.project ?? null, model: saved.model || "", reasoning: saved.reasoning || "", projects: [] };
 }
 
-/** The most images a message takes, as the engine allows. */
 const MAX_IMAGES = 8;
-/** A picked image's longest side, past which it's scaled down: models scale
- * bigger ones down anyway, so the extra pixels only cost upload time. */
 const MAX_EDGE = 1600;
-/** Up to this size, an image a model takes as it is isn't re-encoded. */
 const KEEP_BYTES = 1 << 20;
 const MODEL_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
-/** A picked image as a model takes it, sized down and as JPEG if it must be,
- * with an object URL for its thumbnail. */
 async function imageFor(file) {
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
@@ -2434,13 +2221,10 @@ async function imageFor(file) {
   return { mimeType: blob.type, data: url.slice(url.indexOf(",") + 1), url: URL.createObjectURL(blob) };
 }
 
-/** The reasoning levels for `model`: its own, else pi's. */
 function levelsOf(models, model) {
   const own = models.find(m => m.id === model)?.reasoningLevels;
   return own?.length ? own : DEFAULT_LEVELS;
 }
-
-// ---- settings: Macs, notifications, sign out ------------------------------------
 
 const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window && window.isSecureContext;
 
@@ -2468,11 +2252,8 @@ async function enablePush() {
   return sub;
 }
 
-/** What the relay keeps of this browser's subscription: with this phone's
- * links, since a Mac's notice reaches it sealed for one of them. */
 const subscription = sub => ({ ...sub.toJSON(), phones: [...links.values()].map(l => l.phone) });
 
-/** Keep the relay's copy of this browser's subscription current. */
 function refreshPush() {
   currentSubscription()
     .then(sub => sub && Notification.permission === "granted" && post("/push/subscribe", subscription(sub)))
@@ -2540,7 +2321,6 @@ function settingsSheet() {
   });
 }
 
-/** One Mac's page: its state, and removing it. */
 function macPage(m, close) {
   const sub = { ready: versions(m), offline: "Offline. Open Ludolph on it.", unlinked: NOT_LINKED }[macState(m)];
   return [
@@ -2561,8 +2341,6 @@ function macPage(m, close) {
   ];
 }
 
-// ---- start --------------------------------------------------------------------
-
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(e => console.warn("service worker:", e));
   navigator.serviceWorker.addEventListener("message", ({ data }) => {
@@ -2570,7 +2348,6 @@ if ("serviceWorker" in navigator) {
     if (data?.type === "notice") {
       const n = data.notice;
       const target = n.machine && n.chat ? chatHash(n.machine, n.chat) : null;
-      // That chat is open: its view already shows what happened.
       if (target && location.hash === target) return;
       toast({ title: n.title, body: n.body, kind: n.kind, timeout: 6000, onclick: target ? () => go(target) : null });
     }
@@ -2580,14 +2357,12 @@ if ("serviceWorker" in navigator) {
 (async () => {
   try { await loadLinks(); }
   catch (e) { toast({ title: "Couldn't read this phone's links", body: e.message, kind: "error", timeout: 8000 }); }
-  // The pairing page signs in on its own.
   if (location.hash.startsWith("#/pair/")) return route();
   try {
     const { signedIn, hasPasskey } = await post("/auth/status");
     if (!signedIn) return showSignIn(hasPasskey);
     if (location.hash.startsWith("#/new")) store.machines = (await post("/api/machines")).machines;
   } catch {
-    // The relay is unreachable: show the cached shell; polling retries.
   }
   route();
   refreshPush();

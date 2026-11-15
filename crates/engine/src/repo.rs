@@ -1,20 +1,14 @@
-//! What the composer shows about a chat's git checkout.
-
 use std::path::Path;
 use std::process::Stdio;
 
 use tokio::process::Command;
 
-/// The git checkout a folder is in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkout {
-    /// Whether it's a linked worktree rather than the repo's main one.
     pub worktree: bool,
-    /// The checked-out branch; `None` on a detached `HEAD`.
     pub branch: Option<String>,
 }
 
-/// The checkout holding `cwd`, or `None` outside git.
 pub async fn checkout(cwd: &Path) -> Option<Checkout> {
     let (dirs, branch) = tokio::join!(
         git(
@@ -38,7 +32,6 @@ pub async fn checkout(cwd: &Path) -> Option<Checkout> {
     })
 }
 
-/// What git printed for `args` in `cwd`, or `None` if it failed.
 async fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")

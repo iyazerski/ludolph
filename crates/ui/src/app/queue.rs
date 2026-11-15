@@ -1,5 +1,3 @@
-//! Edit waiting prompts in the composer and send individual prompts as steering.
-
 use rune::{TextEdit, Tx};
 use serde_json::{Value, json};
 
@@ -7,7 +5,6 @@ use super::page::QueueEdit;
 use super::{State, Voice};
 
 impl State {
-    /// Edit a waiting prompt in the composer, saving its unsent draft until done.
     pub fn edit_queued(&mut self, id: &str, tx: &mut Tx) {
         let Some(page) = self.chat_mut() else { return };
         let Some(message) = page
@@ -36,7 +33,6 @@ impl State {
         tx.focus("composer", false);
     }
 
-    /// Save the waiting prompt's text, keeping its images and place.
     pub fn save_queued(&mut self, _: &mut Tx) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
@@ -68,7 +64,6 @@ impl State {
         );
     }
 
-    /// Delete just this waiting prompt, not other messages in the queue.
     pub fn delete_queued(&mut self, id: &str) {
         let Some(page) = self.chat() else { return };
         let nav = page.nav;
@@ -91,7 +86,6 @@ impl State {
         );
     }
 
-    /// Retry the oldest waiting prompt after a stopped or failed run.
     pub fn resume_queue(&mut self) {
         let Some(chat) = self.chat().and_then(|page| page.existing()) else {
             return;
@@ -107,14 +101,12 @@ impl State {
         );
     }
 
-    /// Leave the queue edit and restore the composer's unsent draft.
     pub fn cancel_queue_edit(&mut self) {
         if let Some(page) = self.chat_mut() {
             page.cancel_queue_edit();
         }
     }
 
-    /// Send one waiting prompt to pi now, bypassing the default queue behavior.
     pub fn steer_queued(&mut self, id: &str) {
         let Some(page) = self.chat() else { return };
         let nav = page.nav;

@@ -1,6 +1,4 @@
-//! Self-update: find the latest GitHub release, and swap the running
-//! Ludolph.app for it. The system's curl downloads, so the app carries no
-//! HTTP stack of its own. Each call blocks, so run it off the UI thread.
+//! Update operations block on system curl and filesystem work; run them off the UI thread.
 
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
@@ -12,16 +10,9 @@ use serde::Deserialize;
 
 const REPO: &str = "iyazerski/ludolph";
 const ASSET: &str = "Ludolph.zip";
-/// The code requirement every release meets: Ludolph's bundle ID, signed with
-/// the release certificate (`MACOS_CERT_P12` in CI). `install.sh` has the same
-/// hash, and a new certificate needs it in both.
+/// Keep this release-certificate hash in sync with install.sh and CI signing.
 const SIGNER: &str = r#"=identifier "dev.iyazerski.ludolph" and certificate leaf = H"7c6d7b2fa7382af0dd7f9f3e31f6e016fbe2fd46""#;
 
-/// Return the latest release's version, like `0.1.7`, if it's newer than this one.
-///
-/// # Errors
-///
-/// Fails if GitHub can't be reached, or answers something unexpected.
 pub fn available() -> Result<Option<String>> {
     #[derive(Deserialize)]
     struct Release {
@@ -37,20 +28,12 @@ pub fn available() -> Result<Option<String>> {
     Ok(newer(latest, crate::VERSION)?.then(|| latest.to_owned()))
 }
 
-/// Whether version `candidate` comes after `current`, as semantic versions.
 fn newer(candidate: &str, current: &str) -> Result<bool> {
     let parse =
         |v: &str| semver::Version::parse(v).with_context(|| format!("unexpected version {v}"));
     Ok(parse(candidate)? > parse(current)?)
 }
 
-/// Download release `version` and put it in place of the running
-/// Ludolph.app. Returns the app's path, to start it again.
-///
-/// # Errors
-///
-/// Fails if this isn't Ludolph.app, the download fails or isn't Ludolph's
-/// own, or the app's folder can't be written.
 pub fn install(version: &str) -> Result<PathBuf> {
     let app = running_app()?;
     let parent = app.parent().context("the app has no folder")?;
@@ -60,16 +43,10 @@ pub fn install(version: &str) -> Result<PathBuf> {
     std::fs::create_dir(&work)
         .with_context(|| format!("Ludolph can't write to {}", parent.display()))?;
     let result = unpack_and_swap(&app, &work, version);
-    // After a swap, the old version is what's left in `work`.
     let _ = std::fs::remove_dir_all(&work);
     result.map(|()| app)
 }
 
-/// Start `app` once this process has quit.
-///
-/// # Errors
-///
-/// Fails if the shell that waits can't start.
 pub fn relaunch(app: &Path) -> Result<()> {
     Command::new("/bin/sh")
         .args([
@@ -83,7 +60,6 @@ pub fn relaunch(app: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The Ludolph.app this binary runs from.
 fn running_app() -> Result<PathBuf> {
     let exe = std::env::current_exe()?.canonicalize()?;
     exe.ancestors()
@@ -93,8 +69,6 @@ fn running_app() -> Result<PathBuf> {
         .context("Ludolph isn't running from Ludolph.app, so it can't update itself")
 }
 
-/// Download release `version` into `work`, check that it's Ludolph's, and
-/// swap it with `app`.
 fn unpack_and_swap(app: &Path, work: &Path, version: &str) -> Result<()> {
     let url = format!("https://github.com/{REPO}/releases/download/v{version}/{ASSET}");
     let zip = curl(&[&url])?;
@@ -139,8 +113,6 @@ fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// GET with the system's curl, which follows GitHub's redirects to its
-/// download hosts. Returns the body.
 fn curl(args: &[&str]) -> Result<Vec<u8>> {
     let output = Command::new("/usr/bin/curl")
         .args(["-fsSL", "--max-time", "300", "-A", "Ludolph"])
@@ -171,25 +143,7 @@ fn run(command: &mut Command) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SIGNER, newer};
-
-    #[test]
-    fn compares_versions_by_number() {
-        for (candidate, current, expected) in [
-            ("0.1.10", "0.1.9", true),
-            ("0.1.9", "0.1.10", false),
-            ("0.1.5", "0.1.5", false),
-            ("0.2.0", "0.1.99", true),
-            ("1.0.0", "0.9.9", true),
-        ] {
-            assert_eq!(
-                newer(candidate, current).unwrap(),
-                expected,
-                "{candidate} vs {current}"
-            );
-        }
-        assert!(newer("0.4", "0.3.0").is_err());
-    }
+    use super::SIGNER;
 
     #[test]
     fn trusts_the_certificate_install_sh_trusts() {

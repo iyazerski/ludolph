@@ -1,7 +1,3 @@
-//! A chat's page, as the phone shows it: the header, the transcript with its
-//! tool groups, thinking and errors, pi's dialogs, and the composer under
-//! them.
-
 use rune::{Color, El, Link, ScrollSpec, TextStyle, Tx, col, el, icon, rich, row, text};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{
@@ -18,11 +14,8 @@ use crate::labels::{self, ToolCall, tool_summary};
 use rune::Image;
 use rune_theme_opencode::file_icons;
 
-/// How wide the main window's transcript and composer get, so lines stay
-/// readable in a wide window.
 const READING_WIDTH: f32 = 780.0;
 
-/// The quick window's chat page: its header over the page.
 pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     if let Some(chat) = page.existing()
         && let Some(changes) = &chat.changes
@@ -39,8 +32,6 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(body(s, page, k, layer))
 }
 
-/// The main window's chat pane: the page without a header, as the
-/// window's toolbar has the title and actions.
 pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     if let Some(chat) = page.existing()
         && let Some(changes) = &chat.changes
@@ -50,7 +41,6 @@ pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     body(s, page, k, layer)
 }
 
-/// The transcript, or a new chat's greeting, over the composer.
 fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let chat = chat_body(s, page, k, layer);
     let Some(existing) = page
@@ -68,7 +58,6 @@ fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(col().w(280.0).shrink().pt(12.0).pr(12.0).child(card))
 }
 
-/// Keep the transcript and composer together when the details card is shown.
 fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let wide = s.window == Window::Main;
     let mut body = col().key("transcript").w_full().px(14.0).py(10.0).gap(32.0);
@@ -149,7 +138,6 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(composer)
 }
 
-/// The page's title and subtitle: the chat's title and project.
 pub fn titles(page: &ChatPage) -> (String, String) {
     match &page.target {
         Target::New(d) => {
@@ -214,7 +202,6 @@ fn header(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     bar
 }
 
-/// The chat's menu: agent controls and session actions.
 pub fn more_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let trigger = IconButton::new(&icons::MORE)
         .variant(IconButtonVariant::Ghost)
@@ -312,7 +299,6 @@ fn errbox(k: &Kit, why: &str) -> El {
         )
 }
 
-/// The chat's messages; `expanded` opens tool groups until clicked.
 fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
     let Some(shown) = &page.page else {
         return vec![
@@ -337,7 +323,6 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
         );
     }
     let last = shown.last().map(|m| m.id.as_str());
-    // When the turn of the reply next shown began: its prompt's time.
     let mut started = None;
     for m in page.messages() {
         let key = format!("m-{}", m.id);
@@ -390,7 +375,6 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool) -> Vec<El> {
     out
 }
 
-/// A spinner with what the run does, and a faint detail after it.
 fn working_row(k: &Kit, label: &str, detail: Option<String>) -> El {
     row()
         .gap(8.0)
@@ -406,8 +390,6 @@ fn working_row(k: &Kit, label: &str, detail: Option<String>) -> El {
         )
 }
 
-/// What a run waits on besides the model: a retry after an error, or
-/// compacting the context.
 fn run_note(k: &Kit, run: Option<&Run>) -> Option<El> {
     let run = run?;
     if let Some(retry) = &run.retry {
@@ -428,7 +410,6 @@ fn run_note(k: &Kit, run: Option<&Run>) -> Option<El> {
         .map(|_| working_row(k, "Compacting context", None))
 }
 
-/// How a user bubble shows: sent, sending, or waiting in pi's queue.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shade {
     Sent,
@@ -436,11 +417,8 @@ enum Shade {
     Queued,
 }
 
-/// An image in a user bubble: its thumbnail once loaded, and the message
-/// and index that open it once pi has written it.
 type Tile<'a> = (Option<&'a Image>, Option<(String, usize)>);
 
-/// A message the user sent, with its images.
 fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
     let opacity = if shade == Shade::Sent { 1.0 } else { 0.6 };
     let shown = text_in.trim().to_owned();
@@ -490,12 +468,10 @@ fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
     out
 }
 
-/// A row that's neither side's, like a compaction, in the middle.
 fn system_note(k: &Kit, m: &Message) -> El {
     note(k, &m.text())
 }
 
-/// A one-line note in the middle, faint.
 fn note(k: &Kit, line: &str) -> El {
     row().w_full().justify_center().child(
         text(single_line(line))
@@ -506,14 +482,11 @@ fn note(k: &Kit, line: &str) -> El {
     )
 }
 
-/// A piece of an assistant message as the transcript shows it: the work
-/// between two texts, tool calls and thinking, goes in one group.
 enum Piece<'a> {
     Part(usize, &'a Part),
     Work(usize, Vec<Step<'a>>),
 }
 
-/// One step of the work between two texts, by its part's index.
 enum Step<'a> {
     Tool(ToolCall<'a>),
     Thought(usize, &'a str),
@@ -537,7 +510,6 @@ fn pieces(parts: &[Part]) -> Vec<Piece<'_>> {
                 calls,
             }),
             Part::Thinking { text } => Step::Thought(i, text),
-            // The transcript shows a reply's images nowhere, so they don't split the work.
             Part::Image { .. } => continue,
             Part::Text { .. } | Part::Error { .. } | Part::Note { .. } => {
                 out.push(Piece::Part(i, part));
@@ -552,10 +524,6 @@ fn pieces(parts: &[Part]) -> Vec<Piece<'_>> {
     out
 }
 
-/// Prose, thinking, tool groups and errors in transcript order, as on the
-/// desktop. A finished reply folds everything before its last text under how
-/// long the turn, begun at `started`, worked. While it streams, the work at
-/// its end opens if `expanded`; work with a text after it starts closed.
 fn assistant(
     page: &Existing,
     k: &Kit,
@@ -600,7 +568,6 @@ fn assistant(
         if fold.is_some_and(|f| n < f) && !worked_open {
             continue;
         }
-        // The rule sets the answer apart from the work, shown or not.
         if Some(n) == fold {
             out = out.child(el().w_full().h(1.0).fill(k.c.border_muted));
         }
@@ -611,7 +578,6 @@ fn assistant(
             Piece::Part(_, Part::Error { error }) => vec![errbox(k, error)],
             Piece::Part(_, Part::Note { text }) => vec![note(k, text)],
             Piece::Part(..) => Vec::new(),
-            // Thinking alone stays a fold of its own; with tool calls it joins their rail.
             Piece::Work(_, steps) if !steps.iter().any(|s| matches!(s, Step::Tool(_))) => steps
                 .iter()
                 .filter_map(|step| match step {
@@ -642,8 +608,6 @@ fn assistant(
     out
 }
 
-/// A text part as Markdown, with its inline code coloured and linked to the
-/// files it names.
 fn prose(page: &Existing, k: &Kit, style: &MarkdownStyle, text: &str, streaming: bool) -> El {
     let soft = breaks::breakable(text);
     let shown = soft.as_deref().unwrap_or(text);
@@ -660,7 +624,6 @@ fn prose(page: &Existing, k: &Kit, style: &MarkdownStyle, text: &str, streaming:
         // The source with break points would paste broken links.
         .copy_source(soft.is_none())
         .on_link_tx(|s: &mut State, url: &str, tx: &mut Tx| {
-            // Code links are paths; Rune opens web links only.
             s.open_link(url, tx);
         });
     if let Some(links) = links {
@@ -676,8 +639,6 @@ fn prose(page: &Existing, k: &Kit, style: &MarkdownStyle, text: &str, streaming:
     }
 }
 
-/// The header that folds a finished turn's work before its answer, with how
-/// long the turn took.
 fn worked(k: &Kit, key: &str, millis: i64, open: bool) -> El {
     let toggle = key.to_owned();
     let label = match millis {
@@ -709,13 +670,10 @@ fn worked(k: &Kit, key: &str, millis: i64, open: bool) -> El {
     row().key(format!("worked-{key}")).w_full().child(head)
 }
 
-/// Whether the fold at `key` shows open: as the user last set it, or
-/// `default`.
 fn is_open(page: &Existing, key: &str, default: bool) -> bool {
     page.open_groups.get(key).copied().unwrap_or(default)
 }
 
-/// The model's reasoning, folded under "Thinking" until opened.
 fn thinking(page: &Existing, k: &Kit, key: &str, text_in: &str, live: bool) -> El {
     let open = is_open(page, key, false);
     let toggle = key.to_owned();
@@ -775,14 +733,12 @@ fn chevron(k: &Kit, open: bool) -> El {
         })
 }
 
-/// Close the fold at `key` if it shows `open`, else open it, and keep it so.
 fn toggle_group(s: &mut State, key: &str, open: bool) {
     if let Some(chat) = s.chat_mut().and_then(ChatPage::existing_mut) {
         chat.open_groups.insert(key.to_owned(), !open);
     }
 }
 
-/// Show a finished reply's Copy action followed by its timestamp.
 fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     let mut out = row().w_full().gap(8.0).center_y();
     if m.has_answer() {
@@ -812,9 +768,6 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
     out
 }
 
-/// The work between two texts on one rail, under a summary of its tool
-/// calls. It shows open if `default` until clicked; `live` is the streaming
-/// message's last part, so thinking there shows as under way.
 fn tool_group(
     page: &Existing,
     k: &Kit,
@@ -837,7 +790,6 @@ fn tool_group(
         Step::Thought(i, _) => thinking(*i),
     });
     let toggle = key.to_owned();
-    // The chevron sits on the rail's trunk, the summary over the rows' icons.
     let mut head = row()
         .h(TOOL_HEADER_HEIGHT)
         .gap(RAIL_X)
@@ -883,7 +835,6 @@ fn tool_group(
     group
 }
 
-/// Nest actual calls under their wrapper, expanded independently of the outer work.
 fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
     if tool.calls.is_empty() && tool.name != "codemode" {
         return tool_row(k, tool, last);
@@ -1020,16 +971,11 @@ fn tool_step(page: &Existing, k: &Kit, tool: &ToolCall, last: bool) -> El {
     out
 }
 
-/// Where the rail's trunk runs, from the group's left edge.
 const RAIL_X: f32 = 8.0;
-/// The desktop's activity rows: one line each, branching off the trunk.
 const TOOL_ROW_HEIGHT: f32 = 28.0;
 const TOOL_HEADER_HEIGHT: f32 = 24.0;
 const TOOL_TEXT: f32 = 12.0;
 
-/// One call on the rail, as the desktop draws it: an elbow off the trunk,
-/// the kind's icon, its verb, and its subject on one truncated line. File
-/// tools show the file's name on a badge instead of its path.
 fn tool_row(k: &Kit, tool: &ToolCall, last: bool) -> El {
     let failed = tool.state == ToolState::Failed;
     let tint = if failed {
@@ -1055,8 +1001,6 @@ fn tool_row(k: &Kit, tool: &ToolCall, last: bool) -> El {
     rail_row(k, last, lead, tool.verb(), tint, None, subject)
 }
 
-/// A step of thinking on the rail: its first line, which is often a
-/// heading, and the whole text below once clicked.
 fn thought_row(k: &Kit, key: &str, text_in: &str, live: bool, open: bool, last: bool) -> El {
     let tint = k.c.text_muted;
     let lead = if live {
@@ -1089,7 +1033,6 @@ fn thought_row(k: &Kit, key: &str, text_in: &str, live: bool, open: bool, last: 
     if !open {
         return line;
     }
-    // The trunk runs on beside the text, unless this is the rail's last step.
     let trunk = if last { 0.0 } else { 1.0 };
     let body = col()
         .w_full()
@@ -1106,7 +1049,6 @@ fn thought_row(k: &Kit, key: &str, text_in: &str, live: bool, open: bool, last: 
     col().w_full().child(line).child(body)
 }
 
-/// Where a rail row's verb starts: past the elbow and the icon.
 const RAIL_TEXT_X: f32 = 12.0 + 4.0 + 14.0 + 8.0;
 
 fn rail_text(k: &Kit) -> TextStyle {
@@ -1117,8 +1059,6 @@ fn rail_text(k: &Kit) -> TextStyle {
     }
 }
 
-/// A row on the rail: an elbow off the trunk, `lead`, `verb`, and `subject`
-/// on one line.
 fn rail_row(
     k: &Kit,
     last: bool,
@@ -1137,7 +1077,6 @@ fn rail_row(
         .h(TOOL_ROW_HEIGHT / 2.0)
         .border_sides([0.0, 0.0, 1.0, 1.0], k.c.border_muted)
         .corners([0.0, 0.0, 0.0, 6.0]);
-    // The trunk runs on past every row but the last, which ends in its elbow.
     let mut branch = col().w(12.0).h(TOOL_ROW_HEIGHT).child(elbow);
     if !last {
         branch = branch.border_sides([0.0, 0.0, 0.0, 1.0], k.c.border_muted);
@@ -1152,8 +1091,6 @@ fn rail_row(
         .child(subject.shrink())
 }
 
-/// The file a call touched, by name, on the desktop's soft badge with the
-/// file type's colour icon.
 fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
     let name = path
         .rsplit(['/', '\\'])
@@ -1193,13 +1130,10 @@ fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
         )
 }
 
-/// `text` on one line, its runs of whitespace (newlines too) one space each.
 fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The dialog pi waits on, as its kind asks: pick an option, confirm, or
-/// type an answer.
 fn question(k: &Kit, form: &QuestionForm) -> El {
     let t = tones(k);
     let d = &form.dialog;

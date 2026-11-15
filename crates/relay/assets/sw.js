@@ -1,4 +1,3 @@
-// Service worker: push notifications, and the app shell for when the relay is away.
 "use strict";
 
 importScripts("/seal.js");
@@ -18,7 +17,6 @@ self.addEventListener("activate", event => {
   })());
 });
 
-// Network first: the relay serves the newest app; the cache covers it being away.
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
   // The API is live data, and a followed chat's stream never ends.
@@ -37,9 +35,7 @@ self.addEventListener("fetch", event => {
   })());
 });
 
-/** What a push says, as the app shows it: a Mac's notice opened with this
- * phone's link to it, or a test. A notice that doesn't open still shows, since
- * a push must, but without what the relay can't read either. */
+// A push must show a notification even if no linked key can open it; omit the sealed details.
 async function noticeOf(payload) {
   if (payload?.type !== "notice") return { kind: "test", title: payload?.title || "Ludolph", body: payload?.body || "" };
   const { machine, mac, sealed } = payload;
@@ -58,7 +54,6 @@ self.addEventListener("push", event => {
     const notice = await noticeOf(event.data?.json());
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const visible = windows.filter(w => w.visibilityState === "visible");
-    // The app is on screen: it shows its own banner instead of a system one.
     if (visible.length && notice.kind !== "test") {
       for (const w of visible) w.postMessage({ type: "notice", notice });
       return;
@@ -90,7 +85,6 @@ self.addEventListener("notificationclick", event => {
   })());
 });
 
-// The push service rotated the subscription: hand the new one to the relay.
 self.addEventListener("pushsubscriptionchange", event => {
   event.waitUntil((async () => {
     const post = (path, body) => fetch(path, {

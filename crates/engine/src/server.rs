@@ -1,25 +1,3 @@
-//! The engine's Unix socket: JSON lines carrying tool calls and their
-//! answers, and pushed notices that something changed.
-//!
-//! A call is `{"id": …, "call": "list_chats", "args": {…}}`, answered with
-//! `{"id": …, "ok": …}` or `{"id": …, "error": "…"}`. Calls on one connection
-//! run at the same time, so their answers can come in any order.
-//!
-//! A subscription is answered the same way, and then pushes records that
-//! name it by its request's id in `subscription`, so a client can follow
-//! one chat in two windows:
-//!
-//! - `{"id": …, "subscribe": "chats"}` pushes `{"event": "chats",
-//!   "revision": n}` when the chat list changes.
-//! - `{"id": …, "subscribe": "chat", "args": {"chat": …, "thinking"?: bool}}`
-//!   pushes the chat's [`Feed`] frames as `{"event": "chat", "chatId": …, …}`:
-//!   its latest messages, then those that change, at most one frame per
-//!   [`FRAME`]. A chat that can't be read any more pushes
-//!   `{"event": "chat", "chatId": …, "error": …}` and ends the subscription.
-//!
-//! Changes that come faster than the client reads merge into one push.
-//! `{"id": …, "unsubscribe": <the subscription's id>}` ends one.
-
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
@@ -39,27 +17,17 @@ use crate::engine::Engine;
 use crate::feed::{self, Feed};
 use crate::tools::{self, Tool};
 
-/// The shortest time between two frames of a chat's feed. A streaming reply
-/// changes the chat with each token, and each frame costs the window a
-/// layout of the page: about 7 frames a second still reads as smooth text.
+/// Throttle layouts to about seven frames per second while replies stream.
 pub const FRAME: Duration = Duration::from_millis(150);
 
-/// Records waiting to be written to one client.
 const OUT_QUEUE: usize = 64;
 
-/// The longest request line, with room for a message's screenshots.
 pub const MAX_LINE: u64 = 64 << 20;
 
-/// Listen on `path`, readable and writable only by the user.
-///
-/// # Errors
-///
-/// Fails if another engine is listening there, or the socket can't be made.
 pub fn bind(path: &Path) -> Result<UnixListener> {
     match std::os::unix::net::UnixStream::connect(path) {
         Ok(_) => bail!("an engine is already running at {}", path.display()),
         Err(e) if e.kind() == ErrorKind::NotFound => {}
-        // A socket left by an engine that stopped.
         Err(_) => {
             std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?
         }
@@ -70,11 +38,6 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-/// Answer clients on `listener` until it fails.
-///
-/// # Errors
-///
-/// Fails if accepting a connection fails.
 pub async fn serve(engine: Engine, listener: UnixListener) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await.context("accepting a client")?;
@@ -106,12 +69,11 @@ async fn connection(engine: Engine, stream: UnixStream) {
     });
     let mut calls = JoinSet::new();
     let mut subscriptions = JoinSet::new();
-    // By the subscribing request's id, in its JSON form.
     let mut handles: HashMap<String, AbortHandle> = HashMap::new();
     let mut reader = BufReader::new(read);
     let mut line = Vec::new();
     loop {
-        // A client can stay for hours, so finished tasks don't pile up.
+        // Reap finished requests on long-lived connections.
         while calls.try_join_next().is_some() {}
         while subscriptions.try_join_next().is_some() {}
         line.clear();
@@ -123,7 +85,7 @@ async fn connection(engine: Engine, stream: UnixStream) {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        // There's no telling where the next request starts.
+        // An oversized line destroys request framing; close rather than keep reading.
         if !line.ends_with(b"\n") && line.len() as u64 > MAX_LINE {
             let refused =
                 json!({"id": null, "error": format!("a request longer than {MAX_LINE} bytes")});
@@ -183,11 +145,9 @@ async fn connection(engine: Engine, stream: UnixStream) {
     while calls.join_next().await.is_some() {}
     subscriptions.abort_all();
     drop(out);
-    // Done once every answer is written, or the client left.
     let _ = writer.await;
 }
 
-/// Run one tool call and queue its answer.
 async fn call(engine: Engine, id: Value, name: String, args: Value, out: mpsc::Sender<Value>) {
     let answer = match name.parse::<Tool>() {
         Ok(tool) => tools::call(&engine, tool, args).await,
@@ -197,15 +157,11 @@ async fn call(engine: Engine, id: Value, name: String, args: Value, out: mpsc::S
         Ok(value) => json!({"id": id, "ok": value}),
         Err(e) => json!({"id": id, "error": format!("{e:#}")}),
     };
-    // A client that left doesn't need its answer.
     let _ = out.send(record).await;
 }
 
-/// A task pushing what a subscription to `topic` follows to `out`.
 type Pushing = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-/// The task that pushes what `topic` follows to `out`, for the
-/// subscription with request id `id`.
 fn subscription(
     engine: &Engine,
     topic: &str,
@@ -253,8 +209,6 @@ fn subscription(
     }
 }
 
-/// Send `event` with the latest revision whenever `changes` moves, until
-/// the client leaves.
 async fn push(mut changes: watch::Receiver<u64>, event: Value, out: mpsc::Sender<Value>) {
     changes.mark_unchanged();
     while changes.changed().await.is_ok() {

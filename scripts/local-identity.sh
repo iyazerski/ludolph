@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Make the self-signed "Ludolph Local" signing identity on first use, unlock its
-# keychain, and print the keychain's path. `make install` signs every build with
-# it: one stable identity lets macOS keep the microphone and speech grants across
-# reinstalls, which an ad-hoc signature can't.
+# Reuse a stable local signing identity so macOS preserves microphone and speech grants.
 #
 # The identity lives in its own keychain, out of the search list, so nothing
 # else sees it. That keychain's random password is in the login keychain.

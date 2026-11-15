@@ -1,7 +1,3 @@
-//! The chat list, as the phone shows it: chats grouped by project, most
-//! recently active first, with a search over titles, projects and previews
-//! and a filter by status.
-
 use chrono::{DateTime, TimeDelta, Utc};
 use rune::{El, TextEdit, TextStyle, Tx, col, icon, row, text};
 use rune_kit::{
@@ -14,15 +10,12 @@ use crate::app::{GROUP_CHATS, ListFilter, State, Window, project_drop_key};
 use crate::data::{Chat, Status};
 use crate::labels::{ago, short_model};
 
-/// The search field's height; its ends are fully round, as on the phone.
 const SEARCH_HEIGHT: f32 = 32.0;
-/// How long ago a chat may have been active to count as recent.
 const RECENT: TimeDelta = TimeDelta::minutes(15);
 
 pub fn view(s: &State, k: &Kit) -> El {
     let header = head("list-head")
         .child(
-            // The inset keeps the title in line with the search field below.
             head_titles().pl(4.0).child(
                 text("Chats")
                     .font(TextStyle {
@@ -94,8 +87,6 @@ pub fn view(s: &State, k: &Kit) -> El {
         )
 }
 
-/// The search over titles, projects and previews; Return opens the first
-/// match, and Escape clears it. In the main window, Escape also leaves it.
 pub(super) fn search_field(s: &State, k: &Kit) -> El {
     TextInput::new(&s.list.query)
         .width(None)
@@ -113,14 +104,12 @@ pub(super) fn search_field(s: &State, k: &Kit) -> El {
             if key.key == rune::Key::Escape {
                 let cleared = !s.list.query.text.is_empty();
                 s.list.query = TextEdit::default();
-                // The quick window's Escape puts the window away once there's nothing to clear.
                 if s.window == Window::Main {
                     tx.blur();
                     return true;
                 }
                 return cleared;
             }
-            // Return opens the first match.
             if key.key != rune::Key::Enter {
                 return false;
             }
@@ -137,7 +126,6 @@ pub(super) fn search_field(s: &State, k: &Kit) -> El {
         .key("search")
 }
 
-/// The filter by status.
 pub(super) fn filter_control(s: &State, k: &Kit) -> El {
     let labels = ListFilter::ALL.map(ListFilter::label);
     let picked = ListFilter::ALL.iter().position(|f| *f == s.list.filter);
@@ -157,7 +145,6 @@ pub(super) fn empty(k: &Kit, why: &str) -> El {
         .child(text(why).font(k.ty.ui).color(k.c.text_muted).wrap())
 }
 
-/// The chats the search and the filter keep, in list order.
 pub(super) fn filtered(s: &State) -> Vec<&Chat> {
     let q = s.list.query.text.trim().to_lowercase();
     let now = Utc::now();
@@ -178,7 +165,6 @@ fn keeps(s: &State, c: &Chat, now: DateTime<Utc>) -> bool {
     }
 }
 
-/// Whether `c` finished a turn since it was last opened.
 pub(super) fn is_done(s: &State, c: &Chat) -> bool {
     matches!(c.status, Status::Idle) && s.prefs.borrow().unseen(c)
 }
@@ -193,8 +179,6 @@ fn matches(c: &Chat, q: &str) -> bool {
     hay.iter().any(|h| h.to_lowercase().contains(q))
 }
 
-/// Why the list shows no chats, if it shows none: `chats` loaded, of which
-/// the search and filter keep `shown`.
 pub(super) fn none_shown(s: &State, chats: &[Chat], shown: &[&Chat]) -> Option<&'static str> {
     if !shown.is_empty() {
         return None;
@@ -213,8 +197,6 @@ pub(super) fn none_shown(s: &State, chats: &[Chat], shown: &[&Chat]) -> Option<&
     })
 }
 
-/// `chats` by project, keyed by project id (`home` for none), each
-/// project where its most recently active chat is.
 pub(super) fn groups(chats: Vec<&Chat>) -> Vec<(String, Vec<&Chat>)> {
     let mut groups: Vec<(String, Vec<&Chat>)> = Vec::new();
     for c in chats {

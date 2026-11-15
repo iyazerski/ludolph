@@ -1,19 +1,3 @@
-//! The link to the relay, which brings the phone's calls to this Mac
-//! (`docs/design.md`, "Phone and relay").
-//!
-//! The engine keeps one outgoing WebSocket to the relay, and answers its
-//! calls with the same tools the app uses. Only those tools exist, so the
-//! relay can't reach anything else on the Mac. It streams the chats the phone
-//! has open as their feeds' frames. It also passes the chats'
-//! alerts on, so the phone can notify you, and the battery, which the
-//! phone shows.
-//!
-//! A phone links by scanning a QR code from Settings: [`pair`] waits on the
-//! relay for a phone to claim its code, and gets this Mac's token if the
-//! relay didn't know it yet. The QR code also gives the phone a secret that
-//! only it and this Mac know, and everything they say is sealed with it
-//! ([`crate::seal`]), so the relay only routes.
-
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -49,73 +33,44 @@ use crate::text::one_line;
 use crate::tools::{self, Tool};
 use crate::transcript::{self, Part, Window};
 
-/// How often to ping the relay. Proxies drop idle sockets, and any frame
-/// back proves the link still works.
 const PING_EVERY: Duration = Duration::from_secs(25);
-/// Reconnect if nothing came from the relay for this long.
 const SILENCE_LIMIT: Duration = Duration::from_secs(70);
-/// The first wait before reconnecting. It doubles after each quick failure.
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
-/// A connection that lasted this long worked, so the next reconnect starts
-/// fast again. A shorter one, like a relay refusing the protocol right
-/// after hello, keeps backing off.
+/// Back off across short-lived connections too, such as protocol refusals after hello.
 const STABLE_AFTER: Duration = Duration::from_secs(60);
-/// How long a call may run: under the relay's 30 s, so the error still
-/// reaches the phone. A call that timed out may still have happened.
+/// Shorter than the relay's 30 s deadline; a timed-out call may still have executed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(25);
-/// How long a phone may ask again for a call it tagged with an op id.
 const OP_KEPT: Duration = Duration::from_secs(10 * 60);
-/// The most op results kept per phone; older ones go first.
 const MAX_OPS: usize = 256;
-/// Calls running at once; more wait.
 const MAX_CALLS: usize = 16;
-/// Calls running or waiting on one connection; more are refused.
 const MAX_QUEUED_CALLS: usize = 64;
-/// Chats followed at once on one connection; more are refused.
 const MAX_WATCHES: usize = 32;
-/// The shortest time between two frames of a chat the phone follows: slower
-/// than on the Mac, since each goes over the network.
 const PHONE_FRAME: Duration = Duration::from_millis(200);
-/// Frames waiting to be sent; a followed chat waits when they're full.
 const FRAME_QUEUE: usize = 16;
-/// The Mac counts as in use if it had keyboard or mouse input this recently.
 const AWAY_AFTER: Duration = Duration::from_secs(120);
-/// How long building one notice (reading its chat) may take.
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(15);
 const BODY_CHARS: usize = 240;
-/// How long the relay has to confirm an unlink.
 const FORGET_TIMEOUT: Duration = Duration::from_secs(10);
-/// The largest message the relay sends. A call with a message's photos is
-/// up to about 16 MiB once sealed, and the relay takes up to 20 MiB.
 const MAX_MESSAGE: usize = 24 << 20;
 
-/// The relay a phone links through unless Settings names another.
 pub const DEFAULT_RELAY: &str = "https://ludolph.iyazerski.dev";
 
-/// The Keychain item's service; its account is the engine's folder, so a
-/// throwaway engine can't change the installed one's secrets.
+/// Namespace Keychain accounts by engine folder to isolate development engines.
 const KEYCHAIN_SERVICE: &str = "dev.iyazerski.ludolph.relay";
-/// `errSecItemNotFound`.
 const NOT_FOUND: i32 = -25300;
 
-/// Where this Mac's relay token and phone secrets are kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretStore {
-    /// The login keychain, beside `relay.json` with the relay's address.
     Keychain,
-    /// In `relay.json` itself, readable only by you, for tests that mustn't
-    /// touch the Mac's keychain.
+    /// Tests use the private state file instead of the user's Keychain.
     File,
 }
 
-/// The relay's address, this Mac's token, and the linked phones' secrets.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Link {
-    /// `https://…`, or `http://…` for a relay on this Mac.
     pub relay: String,
     pub token: String,
-    /// One per linked phone, which [`Keys::derive`] takes.
     pub phones: Vec<String>,
 }
 
@@ -130,7 +85,6 @@ impl fmt::Debug for Link {
     }
 }
 
-/// The linked phones' keys, by phone id, which seal and open what they say.
 pub struct Phones {
     linked: Mutex<HashMap<String, Arc<LinkedPhone>>>,
     replays_dir: PathBuf,
@@ -145,7 +99,6 @@ impl fmt::Debug for Phones {
     }
 }
 
-/// A linked phone's keys, and the calls it sent lately.
 struct LinkedPhone {
     keys: Keys,
     replays: Mutex<Replays>,
@@ -166,22 +119,15 @@ impl LinkedPhone {
     }
 }
 
-/// What a call ends with: its value, or why it failed.
 type Outcome = Result<Value, String>;
 
-/// When an op started, and its outcome once it ends.
 type Op = (Instant, watch::Receiver<Option<Outcome>>);
 
-/// A phone's calls tagged with an op id, by id. A call that changes
-/// something, like a send, runs once as its own task, however often the phone
-/// asks: the relay may give up on it while it runs, and the phone asks again
-/// rather than send twice.
+/// Keep operations alive across relay timeouts so retrying an id cannot repeat its mutation.
 #[derive(Default)]
 struct Ops(Mutex<HashMap<String, Op>>);
 
 impl Ops {
-    /// Start `run` as op `id`, unless it started already, and return what it
-    /// ends with, or `None` if it hasn't ended in `wait`.
     async fn run(
         &self,
         id: String,
@@ -212,7 +158,6 @@ impl Ops {
         let ended = tokio::time::timeout(wait, done.wait_for(Option::is_some)).await;
         match ended {
             Ok(Ok(outcome)) => outcome.clone(),
-            // The task can't end without sending.
             Ok(Err(_)) => Some(Err("the Mac dropped this call".into())),
             Err(_) => None,
         }
@@ -220,11 +165,7 @@ impl Ops {
 }
 
 impl Phones {
-    /// Keep accepted nonces in `replays_dir` before dispatching phone requests.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the replay folder cannot be created.
+    /// Persist accepted nonces before dispatch, including across engine restarts.
     pub fn new(replays_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&replays_dir)
             .with_context(|| format!("creating {}", replays_dir.display()))?;
@@ -234,11 +175,6 @@ impl Phones {
         })
     }
 
-    /// Use the phones with `secrets` from now on, in place of the others.
-    ///
-    /// # Errors
-    ///
-    /// Fails if a secret is malformed or its replay state cannot be loaded.
     pub fn set(&self, secrets: &[String]) -> Result<()> {
         let phones = secrets
             .iter()
@@ -251,11 +187,6 @@ impl Phones {
         Ok(())
     }
 
-    /// Add the phone with `secret`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the secret is malformed or its replay state cannot be loaded.
     pub fn add(&self, secret: &str) -> Result<()> {
         let phone = LinkedPhone::new(Keys::derive(secret)?, &self.replays_dir)?;
         self.lock()
@@ -263,7 +194,6 @@ impl Phones {
         Ok(())
     }
 
-    /// Open a call or a watch from a phone, once.
     async fn open(&self, sealed: Sealed, purpose: Purpose) -> Result<(Arc<LinkedPhone>, Opened)> {
         let phone = self.lock().get(&sealed.phone).cloned().context(
             "this phone isn't linked to this Mac: link it again from the Mac's Settings",
@@ -292,47 +222,37 @@ impl Phones {
     }
 }
 
-/// How this Mac's link to the relay stands, as Settings shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Phone {
     pub relay: String,
     pub status: LinkStatus,
-    /// Why the last try to connect failed, while it tries again.
     pub error: Option<String>,
 }
 
-/// A phone linking through this Mac, as Settings shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum Pairing {
-    /// Getting a code from the relay.
     Starting,
-    /// Waiting for a phone to open `url`, until `expires_at` (Unix ms).
     #[serde(rename_all = "camelCase")]
     Waiting {
         url: String,
         expires_at: i64,
     },
-    /// A phone linked.
     Linked,
     Failed {
         error: String,
     },
 }
 
-/// Whether the engine is connected to the relay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LinkStatus {
     Connecting,
     Connected,
-    /// The relay refused the token, so a phone must link again.
     Rejected,
 }
 
-/// `relay.json`: the relay's address, and the secrets when they aren't in
-/// the keychain.
 #[derive(Serialize, Deserialize)]
 struct Saved {
     relay: String,
@@ -340,7 +260,6 @@ struct Saved {
     secrets: Option<Secrets>,
 }
 
-/// This Mac's token and its phones' secrets, as the keychain item keeps them.
 #[derive(Serialize, Deserialize)]
 struct Secrets {
     token: String,
@@ -348,16 +267,10 @@ struct Secrets {
 }
 
 impl Link {
-    /// Where the link is kept in the engine's folder.
     pub fn path(state_dir: &Path) -> PathBuf {
         state_dir.join("relay.json")
     }
 
-    /// The saved link, if this Mac has one with its secrets.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file or the keychain can't be read.
     pub fn load(state_dir: &Path, store: SecretStore) -> Result<Option<Self>> {
         let Some(saved) = ludolph_json_file::load::<Saved>(&Self::path(state_dir))? else {
             return Ok(None);
@@ -382,11 +295,6 @@ impl Link {
         }))
     }
 
-    /// Save the link, with the secrets where `store` keeps them.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file or the keychain can't be written.
     pub fn save(&self, state_dir: &Path, store: SecretStore) -> Result<()> {
         let secrets = Secrets {
             token: self.token.clone(),
@@ -408,11 +316,6 @@ impl Link {
         ludolph_json_file::save(&Self::path(state_dir), &saved)
     }
 
-    /// Forget the saved link and its secrets.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file or the keychain item can't be removed.
     pub fn remove(state_dir: &Path, store: SecretStore) -> Result<()> {
         let path = Self::path(state_dir);
         match std::fs::remove_file(&path) {
@@ -433,15 +336,11 @@ impl Link {
     }
 }
 
-/// The keychain account of the engine whose folder is `state_dir`.
 fn keychain_account(state_dir: &Path) -> String {
     state_dir.display().to_string()
 }
 
-/// Stay connected to the relay, answer its calls, and pass alerts on as
-/// the settings allow, reconnecting when the link drops, and keep `phone`
-/// up to date. It returns only when the relay rejects the token, since
-/// trying again can't help then.
+/// Reconnect until the relay rejects the token; retrying a rejected token cannot help.
 pub(crate) async fn run(
     engine: Engine,
     link: Link,
@@ -501,15 +400,6 @@ pub(crate) async fn run(
     }
 }
 
-/// Wait on `relay` for a phone to link through this Mac, calling `shown`
-/// with the page the QR code opens, which gives the phone `secret`, and the
-/// seconds it works for. `token` is this Mac's, if the relay knows it.
-/// Returns the token the relay gives a Mac it didn't know.
-///
-/// # Errors
-///
-/// Fails if the relay can't be reached, refuses `token` ([`is_rejected`]),
-/// or closes before a phone links, as when the code expires.
 pub async fn pair(
     relay: &str,
     token: Option<&str>,
@@ -540,11 +430,6 @@ pub async fn pair(
     bail!("the relay closed the link before a phone linked")
 }
 
-/// Tell the relay to forget this Mac and its token.
-///
-/// # Errors
-///
-/// Fails if the relay can't be reached or doesn't confirm in time.
 pub async fn forget(link: &Link) -> Result<()> {
     let url = socket_url(&link.relay, CONNECT_PATH)?;
     let confirmed = async {
@@ -564,7 +449,6 @@ pub async fn forget(link: &Link) -> Result<()> {
         .context("the relay didn't answer")?
 }
 
-/// The Mac's name, as Sharing settings has it, which the phone shows.
 fn mac_name() -> String {
     let name = std::process::Command::new("/usr/sbin/scutil")
         .args(["--get", "ComputerName"])
@@ -572,7 +456,6 @@ fn mac_name() -> String {
         .ok()
         .filter(|out| out.status.success())
         .and_then(|out| String::from_utf8(out.stdout).ok());
-    // The relay takes up to 60 characters.
     let name: String = name
         .as_deref()
         .map(str::trim)
@@ -590,10 +473,6 @@ fn mac_name() -> String {
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Serve one connection until it ends. `Ok` means the relay closed it.
-///
-/// Alerts from before it began are dropped: a late notice would only be
-/// noise (`docs/design.md`, "Phone and relay").
 async fn serve(
     socket: Socket,
     engine: &Engine,
@@ -606,11 +485,7 @@ async fn serve(
     sink.send(encode(&hello())?).await?;
     let mut battery = power::battery();
     sink.send(encode(&Up::Power { battery })?).await?;
-    // Calls and notices being built. Dropping the set when the connection
-    // ends stops them, since they have nowhere to go.
     let mut calls: JoinSet<Option<Up>> = JoinSet::new();
-    // The chats the phone follows, by watch id. Their tasks end with the
-    // connection, like the calls.
     let mut watches: JoinSet<()> = JoinSet::new();
     let mut watching: HashMap<u64, AbortHandle> = HashMap::new();
     let (frames_tx, mut frames) = mpsc::channel::<Up>(FRAME_QUEUE);
@@ -664,7 +539,6 @@ async fn serve(
                                 handle.abort();
                             }
                         }
-                        // The relay times out the call it holds.
                         Err(e) => eprintln!("relay: skipped a bad message: {e}"),
                     },
                     Some(Ok(Message::Close(_))) | None => return Ok(()),
@@ -704,27 +578,20 @@ async fn serve(
     }
 }
 
-/// A phone's tool call, as it seals it.
 #[derive(Deserialize)]
 struct Call {
     tool: String,
     #[serde(default)]
     args: Value,
-    /// The phone's id for a call it may ask for again, which then runs once
-    /// (see [`Ops`]).
     op: Option<String>,
 }
 
-/// A phone's request to follow a chat, as it seals it.
 #[derive(Deserialize)]
 struct WatchRequest {
     chat: String,
 }
 
-/// Run `phone`'s `call` and return its reply, sealed for the phone as
-/// `{"ok": …}`, `{"error": …}`, or `{"pending": true}` for an op still
-/// running. Waiting for a slot counts toward [`CALL_TIMEOUT`], so the reply
-/// still reaches the relay in time.
+/// Include slot queueing in CALL_TIMEOUT so even a busy response reaches the relay in time.
 async fn answer(
     engine: Engine,
     slots: Arc<Semaphore>,
@@ -763,8 +630,6 @@ async fn answer(
     sealed.map(|(data, _)| data).map_err(|e| format!("{e:#}"))
 }
 
-/// Follow the chat `phone` asked for in `request`, sending its frames to
-/// `out` as watch `id`'s until the relay stops it or the connection ends.
 async fn watch(
     engine: Engine,
     id: u64,
@@ -774,7 +639,6 @@ async fn watch(
 ) {
     let watch_nonce = request.nonce;
     let mut sent = 0;
-    // Numbered from 0, so the phone sees a frame dropped or sent twice.
     let mut send = move |frame: Value| {
         let n = sent;
         sent += 1;
@@ -802,7 +666,6 @@ async fn watch(
     }
 }
 
-/// Wait for the battery to change; forever without a way to tell.
 async fn power_change(power: &mut Option<power::Changes>) -> Result<()> {
     match power {
         Some(changes) => changes.next().await,
@@ -810,32 +673,23 @@ async fn power_change(power: &mut Option<power::Changes>) -> Result<()> {
     }
 }
 
-/// A notification about one chat, which the phone shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct Notice {
     kind: NoticeKind,
-    /// The chat's id, which the notification opens.
     chat: String,
     title: String,
     body: String,
 }
 
-/// What happened to the chat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum NoticeKind {
-    /// Its run ended.
     Finished,
-    /// The agent waits on an answer.
     Input,
-    /// Its run failed.
     Failed,
-    /// Its run was cut off: pi exited in the middle of it.
     Interrupted,
 }
 
-/// The notice for `alert`, sealed for each linked phone, if the settings
-/// allow one now and it's still news.
 async fn tell(engine: Engine, phones: Arc<Phones>, alert: Alert) -> Option<Up> {
     if engine.settings().notify == Notify::Away && !away() {
         return None;
@@ -871,9 +725,6 @@ async fn tell(engine: Engine, phones: Arc<Phones>, alert: Alert) -> Option<Up> {
     }
 }
 
-/// Build the notice for `alert` from the chat as it is now: its last
-/// message, or the question it asks. `None` if the question is answered
-/// already.
 async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
     let view = engine.view(&alert.chat, Window::Latest(1)).await?;
     let last = view.page.messages.last();
@@ -899,7 +750,6 @@ async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
             (NoticeKind::Input, format!("Needs your answer: {asked}"))
         }
     };
-    // Like the list, the first prompt stands in until there's a title.
     let first = view.chat.summary.and_then(|s| s.first_prompt);
     let title = view
         .chat
@@ -914,7 +764,6 @@ async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
     }))
 }
 
-/// A message's text, without its tool calls.
 fn text(message: &transcript::Message) -> String {
     let parts = message.parts.iter().filter_map(|part| match part {
         Part::Text { text } => Some(text.as_str()),
@@ -930,10 +779,8 @@ fn error(message: &transcript::Message) -> Option<String> {
     })
 }
 
-/// Whether nobody has touched the Mac's keyboard or mouse for [`AWAY_AFTER`].
-/// If idle time can't be read, assume away: a missed notice is worse.
+/// Assume away if input idle time is unavailable; prefer an extra notice to a missed one.
 fn away() -> bool {
-    // `kCGAnyInputEventType` (`~0`), a C macro the bindings leave out.
     let any_input = CGEventType(u32::MAX);
     let idle = CGEventSource::seconds_since_last_event_type(
         CGEventSourceStateID::HIDSystemState,
@@ -965,11 +812,6 @@ fn hello() -> Up {
     }
 }
 
-/// The WebSocket URL of `path` on an `https://`, or local `http://`, relay.
-///
-/// # Errors
-///
-/// Fails for any other address.
 pub fn socket_url(relay: &str, path: &str) -> Result<String> {
     let base = relay.trim_end_matches('/');
     let rest = if let Some(rest) = base.strip_prefix("https://") {
@@ -984,8 +826,7 @@ pub fn socket_url(relay: &str, path: &str) -> Result<String> {
     Ok(format!("{rest}{path}"))
 }
 
-/// Whether `address` points at this Mac, the only place the token can go
-/// without TLS and not be overheard.
+/// Permit plaintext tokens only on loopback.
 fn on_this_mac(address: &str) -> bool {
     let Some(host) = address
         .parse::<Uri>()
@@ -1001,7 +842,6 @@ fn on_this_mac(address: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Whether the relay refused the token.
 pub fn is_rejected(error: &anyhow::Error) -> bool {
     use tokio_tungstenite::tungstenite::Error;
     matches!(

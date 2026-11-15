@@ -1,8 +1,3 @@
-//! The bridge from a window to the engine: calls and subscriptions run on
-//! a tokio runtime and hand their results back to the UI thread through
-//! the window's handle. The windows share one connection and one prefs
-//! writer ([`Shared`]).
-
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,12 +13,8 @@ use crate::State;
 use crate::client::{Client, Subscription};
 use crate::prefs::Prefs;
 
-/// How often the UI checks what's due while it ticks: the working clock,
-/// a toast's end.
 const TICK: Duration = Duration::from_secs(1);
 
-/// What the windows share: the runtime, the engine connection and the
-/// prefs writer.
 #[derive(Clone)]
 pub struct Shared {
     rt: Handle,
@@ -33,8 +24,6 @@ pub struct Shared {
 }
 
 impl Shared {
-    /// Connect to the engine at `socket` and write the prefs to
-    /// `prefs_path`, both on `rt`. Pasted images are saved under `uploads`.
     pub fn start(rt: Handle, socket: PathBuf, prefs_path: PathBuf, uploads: PathBuf) -> Self {
         let client = {
             let _entered = rt.enter();
@@ -54,8 +43,6 @@ pub struct Api {
     rt: Handle,
     client: Client,
     app: AppHandle<State>,
-    /// The other window, for handing it a chat and redrawing it after the
-    /// prefs it shows change.
     peer: AppHandle<State>,
     prefs: Arc<watch::Sender<Value>>,
     ticking: watch::Sender<bool>,
@@ -63,8 +50,6 @@ pub struct Api {
 }
 
 impl Api {
-    /// Serve the window behind `app` over `shared`'s connection: tell it
-    /// when the engine comes and goes, and tick it while it asks.
     pub fn start(shared: &Shared, app: AppHandle<State>, peer: AppHandle<State>) -> Self {
         let Shared {
             rt,
@@ -85,7 +70,6 @@ impl Api {
         });
         let (ticking, mut wanted) = watch::channel(false);
         let ticks = app.clone();
-        // Nothing ticks while nothing on screen moves, as with the window hidden.
         rt.spawn(async move {
             loop {
                 if wanted.wait_for(|on| *on).await.is_err() {
@@ -112,20 +96,15 @@ impl Api {
         }
     }
 
-    /// Where pasted images are saved, so a message can link to them.
     pub fn uploads(&self) -> &Path {
         &self.uploads
     }
 
-    /// Tick each second, or stop.
     pub fn tick(&self, on: bool) {
         self.ticking
             .send_if_modified(|was| std::mem::replace(was, on) != on);
     }
 
-    /// Save the prefs off the UI thread, and redraw the other window, which
-    /// shows them too. Losing them only resets what the list shows as new
-    /// and the last picks.
     pub fn save_prefs(&self, prefs: &Prefs) {
         match serde_json::to_value(prefs) {
             Ok(prefs) => {
@@ -144,8 +123,6 @@ impl Api {
         &self.peer
     }
 
-    /// Call `tool` with `args`, then `done` with its parsed answer (or why
-    /// it failed) on the UI thread.
     pub fn call<T: DeserializeOwned + Send + 'static>(
         &self,
         tool: &'static str,
@@ -161,8 +138,6 @@ impl Api {
         );
     }
 
-    /// Run `work` on the runtime, then `done` with its result on the UI
-    /// thread: for work that isn't one call.
     pub fn run<R: Send + 'static, F: Future<Output = R> + Send + 'static>(
         &self,
         work: impl FnOnce(Client) -> F,
@@ -176,8 +151,6 @@ impl Api {
         });
     }
 
-    /// Follow `topic` with `args`, with `on` getting each push on the UI
-    /// thread, until the handle drops.
     pub fn subscribe(
         &self,
         topic: &'static str,
@@ -196,8 +169,7 @@ impl Api {
     }
 }
 
-/// Write the newest prefs sent to `path`, one write at a time: saves made
-/// during a slow write collapse into one.
+/// Collapse pending prefs writes to the latest value while one save is in progress.
 fn write_prefs(rt: &Handle, path: PathBuf) -> watch::Sender<Value> {
     let (saves, mut latest) = watch::channel(Value::Null);
     rt.spawn(async move {

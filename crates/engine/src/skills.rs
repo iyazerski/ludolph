@@ -1,5 +1,3 @@
-//! Discover pi skills, load inline mentions, and keep their source text in chat views.
-
 use std::borrow::Cow;
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -7,7 +5,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-/// One skill pi can run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     pub name: String,
@@ -16,13 +13,11 @@ pub struct Skill {
 }
 
 impl Skill {
-    /// Return the inline reference the composer inserts.
     pub fn reference(&self) -> String {
         format!("${}", self.name)
     }
 }
 
-/// Read skills and their instruction paths from pi's command discovery.
 pub fn from_commands(answer: &Value) -> Vec<Skill> {
     let commands = answer["commands"].as_array().map_or(&[][..], Vec::as_slice);
     commands
@@ -39,9 +34,6 @@ pub fn from_commands(answer: &Value) -> Vec<Skill> {
         .collect()
 }
 
-/// Load each known inline mention without moving any surrounding text.
-///
-/// Fail if a referenced skill's instructions cannot be read.
 pub fn expand(text: &str, skills: &[Skill]) -> Result<String> {
     let mut out = String::new();
     for (piece, mention) in ludolph_prompt::skill_words(text) {
@@ -70,7 +62,6 @@ pub fn expand(text: &str, skills: &[Skill]) -> Result<String> {
     Ok(out)
 }
 
-/// Collapse expanded skill instructions to inline mentions, preserving surrounding text.
 pub fn as_typed(text: &str) -> Cow<'_, str> {
     let mut rest = text;
     let mut out = String::new();
@@ -96,7 +87,6 @@ pub fn as_typed(text: &str) -> Cow<'_, str> {
     }
 }
 
-/// Read a pi-style instruction block and its end offset.
 fn expanded(text: &str) -> Option<(&str, usize)> {
     let (head, body) = text.split_once('\n')?;
     let attributes = head.strip_prefix("<skill name=\"")?.strip_suffix("\">")?;

@@ -1,5 +1,3 @@
-# state.json (passkeys, sessions, Mac tokens), the VAPID key, and push
-# subscriptions: a few KB.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

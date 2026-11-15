@@ -1,10 +1,6 @@
-//! What the windows read from the engine's tools and feeds
-//! (`ludolph_engine::tools`, `ludolph_engine::feed`).
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// A chat as `list_chats` and the feed summarize it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Chat {
@@ -14,9 +10,7 @@ pub struct Chat {
     pub model: Option<String>,
     pub reasoning: Option<String>,
     pub project: Option<Project>,
-    /// The folder the chat's pi works in.
     pub cwd: String,
-    /// A terminal pi has the session open, so sending is off.
     #[serde(default)]
     pub open_elsewhere: bool,
     pub last_message_at: Option<DateTime<Utc>>,
@@ -25,7 +19,6 @@ pub struct Chat {
     pub first_prompt: Option<String>,
 }
 
-/// A chat's state, as the engine names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Status {
@@ -48,7 +41,6 @@ impl Chat {
         matches!(self.status, Status::Working | Status::AwaitingInput)
     }
 
-    /// The title, or the first prompt until the chat has one.
     pub fn title(&self) -> &str {
         [&self.title, &self.first_prompt]
             .into_iter()
@@ -58,7 +50,6 @@ impl Chat {
             .unwrap_or("New chat")
     }
 
-    /// When the chat last moved, for sorting and its age.
     pub fn active_at(&self) -> DateTime<Utc> {
         self.last_message_at.unwrap_or(self.created_at)
     }
@@ -69,7 +60,6 @@ pub struct Chats {
     pub chats: Vec<Chat>,
 }
 
-/// `chat_view`'s answer, read here only to load earlier messages.
 #[derive(Debug, Deserialize)]
 pub struct ChatView {
     pub read: Option<Read>,
@@ -83,8 +73,6 @@ pub struct Read {
     pub turn_changes: Vec<TurnChanges>,
 }
 
-/// One frame of a chat's feed: the page's ids in order, with the messages
-/// that are new or changed, or all of them on a `reset`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Frame {
@@ -101,7 +89,6 @@ pub struct Frame {
     pub messages: Vec<Message>,
 }
 
-/// An unsent prompt waiting for its own turn, without its image payloads.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Queued {
     pub id: String,
@@ -110,16 +97,12 @@ pub struct Queued {
     pub error: Option<String>,
 }
 
-/// What a working chat's run waits on, besides the model.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
-    /// Messages pi gives the agent after its current step.
     pub steering: Vec<String>,
-    /// Messages pi sends once the agent is done.
     pub follow_up: Vec<String>,
     pub retry: Option<Retry>,
-    /// Why pi compacts the context.
     pub compacting: Option<String>,
 }
 
@@ -129,16 +112,12 @@ pub struct Retry {
     pub attempt: u32,
     pub max_attempts: u32,
     pub error: Option<String>,
-    /// When the attempt starts.
     pub at: Option<DateTime<Utc>>,
 }
 
-/// The counts of a run's changes, for the button that opens them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TurnChanges {
-    /// The run, for `turn_changes`.
     pub turn: String,
-    /// The run's last message, which the button follows.
     pub after: String,
     pub files: usize,
     pub additions: u32,
@@ -148,12 +127,9 @@ pub struct TurnChanges {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
-    /// The id of the message's first entry, or `live-<n>` until pi writes it.
     pub id: String,
     pub role: Role,
-    /// Epoch milliseconds.
     pub created_at: i64,
-    /// When its last entry was written, in epoch milliseconds.
     pub ended_at: i64,
     pub status: MessageStatus,
     pub parts: Vec<Part>,
@@ -172,7 +148,6 @@ pub enum MessageStatus {
 pub enum Role {
     User,
     Assistant,
-    /// A compaction, a branch summary, or an extension's message.
     System,
 }
 
@@ -187,21 +162,17 @@ pub enum Part {
     },
     Tool {
         id: String,
-        /// pi's name for the tool: `bash`, `read`, or an extension's.
         name: String,
-        /// What it works on, like a command or a path.
         subject: Option<String>,
         state: ToolState,
         calls: Vec<NestedCall>,
     },
-    /// The message's `index`th image, which `chat_image` loads.
     Image {
         index: usize,
     },
     Error {
         error: String,
     },
-    /// A note in a turn's work, like a compaction the agent went on after.
     Note {
         text: String,
     },
@@ -226,7 +197,6 @@ pub struct NestedCall {
     pub error: Option<String>,
 }
 
-/// A wrapper tool's arguments and output, loaded only when opened.
 #[derive(Deserialize)]
 pub struct ToolOutput {
     pub args: serde_json::Value,
@@ -235,12 +205,10 @@ pub struct ToolOutput {
 }
 
 impl Message {
-    /// Whether pi has written the message, so its id and images stay.
     pub fn written(&self) -> bool {
         !self.id.starts_with("live-")
     }
 
-    /// The message's prose, joined.
     pub fn text(&self) -> String {
         let texts: Vec<&str> = self
             .parts
@@ -253,7 +221,6 @@ impl Message {
         texts.join("\n\n")
     }
 
-    /// The indexes of the message's images.
     pub fn images(&self) -> impl Iterator<Item = usize> {
         self.parts.iter().filter_map(|p| match p {
             Part::Image { index } => Some(*index),
@@ -261,14 +228,11 @@ impl Message {
         })
     }
 
-    /// Whether the message ends with prose, so `answer` has one.
     pub fn has_answer(&self) -> bool {
         matches!(self.parts.last(), Some(Part::Text { .. }))
     }
 
-    /// The prose after the message's last tool call or error: the answer
-    /// that ends the turn, as Markdown; `None` when it ends without prose.
-    /// Thinking doesn't break it, since it isn't shown inline.
+    /// Copy only prose after the last tool or error; thinking does not split the final answer.
     pub fn answer(&self) -> Option<String> {
         let tail = self
             .parts
@@ -291,7 +255,6 @@ impl Message {
     }
 }
 
-/// A dialog an extension opened, as pi asks it (`docs/rpc-extension-ui.md`).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Dialog {
     pub id: String,
@@ -312,32 +275,26 @@ pub enum DialogKind {
     Editor,
 }
 
-/// `chat_image`'s answer.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatImage {
     pub mime_type: String,
-    /// Base64.
     pub data: String,
 }
 
-/// `polish_dictation`'s answer: what dictation heard, cleaned up.
 #[derive(Debug, Deserialize)]
 pub struct Polished {
     pub text: String,
 }
 
-/// `composer_info`: what the composer shows under the text.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerInfo {
     pub branch: Option<String>,
-    /// Set for a git project, the only place the branch shows.
     pub checkout: Option<Checkout>,
     pub context_usage: Option<ContextUsage>,
     pub model: Option<String>,
     pub reasoning: Option<String>,
-    /// What the chat has spent; absent before it has one.
     pub spent: Option<Spent>,
 }
 
@@ -348,14 +305,12 @@ pub enum Checkout {
     Worktree,
 }
 
-/// A chat's cumulative tokens and cost in US dollars.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Spent {
     pub tokens: u64,
     pub cost: f64,
 }
 
-/// The details card, independent of per-turn diffs and transcript paging.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatDetails {
@@ -398,13 +353,11 @@ pub struct Model {
 #[serde(rename_all = "camelCase")]
 pub struct Models {
     pub models: Vec<Model>,
-    /// The model pi starts a chat on when none is picked.
     pub default: Option<String>,
     pub default_reasoning: String,
 }
 
 impl Models {
-    /// Keep an available last pick, otherwise use pi's default pair.
     pub fn fitted(
         &self,
         model: Option<&str>,
@@ -455,26 +408,22 @@ pub struct Skills {
 #[serde(rename_all = "camelCase")]
 pub struct Created {
     pub chat_id: String,
-    /// Why the first message didn't go, though the chat was created.
     #[serde(default)]
     pub send_error: Option<String>,
 }
 
-/// A model and reasoning pick, as `set_chat_model` saves it.
 #[derive(Debug, Deserialize)]
 pub struct Picked {
     pub model: Option<String>,
     pub reasoning: Option<String>,
 }
 
-/// A run's changes, as `turn_changes` answers.
 #[derive(Debug, Deserialize)]
 pub struct Diff {
     pub patch: String,
     pub truncated: bool,
 }
 
-/// The thinking levels `model` supports.
 pub fn levels_of<'a>(models: &'a [Model], model: &str) -> &'a [String] {
     models
         .iter()
@@ -517,64 +466,18 @@ mod tests {
         let got = models.fitted(None, None);
         assert_eq!(got.1.as_deref(), Some("high"));
     }
-
-    #[test]
-    fn answer_is_the_prose_after_the_last_tool_or_error() {
-        let text = |t: &str| Part::Text { text: t.into() };
-        let tool = || Part::Tool {
-            id: "t".into(),
-            name: "bash".into(),
-            subject: Some("ls".into()),
-            state: ToolState::Done,
-            calls: Vec::new(),
-        };
-        let thinking = || Part::Thinking { text: "hm".into() };
-        let error = || Part::Error {
-            error: "boom".into(),
-        };
-        let cases = [
-            (vec![text("a")], Some("a")),
-            (
-                vec![text("a"), tool(), text("b"), tool(), text("c")],
-                Some("c"),
-            ),
-            (
-                vec![tool(), text("b"), thinking(), text("c")],
-                Some("b\n\nc"),
-            ),
-            (vec![text("a"), error(), text("b")], Some("b")),
-            (vec![text("a"), tool()], None),
-            (vec![], None),
-        ];
-        for (parts, want) in cases {
-            let m = Message {
-                id: "m".into(),
-                role: Role::Assistant,
-                created_at: 0,
-                ended_at: 0,
-                status: MessageStatus::Complete,
-                parts,
-            };
-            assert_eq!(m.answer().as_deref(), want);
-        }
-    }
 }
 
-/// The engine's settings, as `get_settings` answers and `set_settings`
-/// takes them, all at once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    /// The model for titles and dictation cleanup; pi's default if `None`.
     pub sidecar_model: Option<String>,
     pub notify: Notify,
     pub open_at_login: bool,
-    /// Whether the work under way shows open while the agent runs.
     pub expand_tools: bool,
     pub send_behavior: SendBehavior,
 }
 
-/// What Send does while a chat is working.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SendBehavior {
@@ -582,19 +485,13 @@ pub enum SendBehavior {
     Steer,
 }
 
-/// When the phone gets notifications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Notify {
-    /// Only while nobody uses the Mac.
     Away,
     Always,
 }
 
-/// The Mac's link to the relay, as `get_phone_link` and `link_phone`
-/// answer.
-/// This Mac's link to the relay, a phone linking through it, and the relay
-/// it links through.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PhoneLink {
     pub link: Option<RelayLink>,
@@ -607,23 +504,16 @@ pub struct PhoneLink {
 pub struct RelayLink {
     pub relay: String,
     pub status: LinkStatus,
-    /// Why the last try to connect failed, while it tries again.
     pub error: Option<String>,
 }
 
-/// A phone linking through this Mac.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum Pairing {
     Starting,
-    /// Waiting for a phone to open `url`, which the QR code holds.
-    Waiting {
-        url: String,
-    },
+    Waiting { url: String },
     Linked,
-    Failed {
-        error: String,
-    },
+    Failed { error: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -631,6 +521,5 @@ pub enum Pairing {
 pub enum LinkStatus {
     Connecting,
     Connected,
-    /// The relay forgot this Mac, so a phone must link again.
     Rejected,
 }

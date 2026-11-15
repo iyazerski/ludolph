@@ -1,18 +1,3 @@
-//! Linking a phone from a Mac's QR code.
-//!
-//! The Mac opens a WebSocket on [`PAIR_PATH`] and gets a code, which it shows
-//! as a QR code for the phone's [`pair_url`]. The phone opens that page,
-//! signs in or creates a passkey, and claims the code. A Mac new to the
-//! relay is added then, and gets its token over the same socket.
-//!
-//! Codes live in memory for a few minutes and are single-use. Who may claim
-//! one keeps the relay to one person: a phone that's signed in, or one that
-//! creates a passkey through a Mac the relay already trusts. The very first
-//! passkey, on a relay with none, comes from any Mac's code.
-//!
-//! [`pair_url`]: ludolph_relay_proto::pair_url
-//! [`PAIR_PATH`]: ludolph_relay_proto::PAIR_PATH
-
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -30,34 +15,25 @@ use tokio::time::Instant;
 use crate::hub::close;
 use crate::store::Machine;
 
-/// How long a code works.
 pub const CODE_TTL: Duration = Duration::from_secs(600);
-/// Codes waiting at once; a new one past this drops the oldest.
 const MAX_CODES: usize = 32;
-/// How long the Mac has to say who it is.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
-/// How often to ping the waiting Mac, so proxies keep the socket open.
 const PING_EVERY: Duration = Duration::from_secs(25);
 const MAX_NAME: usize = 60;
 
-/// A code waiting for a phone.
 struct Waiting {
-    /// The Mac's name.
     name: String,
-    /// The Mac, if the relay knows it already.
     machine: Option<Machine>,
     at: Instant,
     /// Hands the Mac its new token, or `None` if it has one.
     linked: oneshot::Sender<Option<String>>,
 }
 
-/// What the phone's pairing page shows about a code.
 pub struct Code {
     pub name: String,
     pub known: bool,
 }
 
-/// A claimed code: the Mac it came from, and how to tell it.
 pub struct Claim {
     pub name: String,
     pub machine: Option<Machine>,
@@ -65,14 +41,11 @@ pub struct Claim {
 }
 
 impl Claim {
-    /// Tell the waiting Mac it's linked, with its new token if it had none.
-    /// Returns whether it was still waiting.
     pub fn finish(self, token: Option<String>) -> bool {
         self.linked.send(token).is_ok()
     }
 }
 
-/// The codes waiting for a phone.
 pub struct Pairings {
     codes: Mutex<HashMap<String, Waiting>>,
     rng: SystemRandom,
@@ -88,7 +61,6 @@ impl Default for Pairings {
 }
 
 impl Pairings {
-    /// The code's Mac, if the code is waiting.
     pub fn code(&self, code: &str) -> Option<Code> {
         let codes = self.lock();
         let waiting = codes.get(code).filter(|w| live(w))?;
@@ -98,7 +70,6 @@ impl Pairings {
         })
     }
 
-    /// Take the code, once, if it's waiting.
     pub fn claim(&self, code: &str) -> Option<Claim> {
         let waiting = self.lock().remove(code).filter(live)?;
         Some(Claim {
@@ -108,9 +79,6 @@ impl Pairings {
         })
     }
 
-    /// Serve one Mac's pairing socket: give it a code, then tell it when a
-    /// phone claims the code, or close when the code expires. `machine` is
-    /// the Mac, if its token said which.
     pub async fn serve(&self, mut socket: WebSocket, machine: Option<Machine>) {
         if let Err(e) = self.serve_inner(&mut socket, machine).await {
             eprintln!("pairing: {e:#}");
@@ -150,13 +118,11 @@ impl Pairings {
                         let _ = socket.send(Message::Close(None)).await;
                         break Ok(());
                     }
-                    // Pushed out by newer codes, or the claim failed.
                     Err(_) => break Err(anyhow!("the link didn't finish; try again")),
                 },
                 () = tokio::time::sleep_until(deadline) => break Err(anyhow!("the code expired")),
                 _ = ping.tick() => socket.send(Message::Ping(Default::default())).await?,
                 frame = socket.next() => match frame {
-                    // The Mac stopped waiting.
                     Some(Ok(Message::Close(_)) | Err(_)) | None => break Ok(()),
                     Some(Ok(_)) => {}
                 },
@@ -166,7 +132,6 @@ impl Pairings {
         result
     }
 
-    /// Make a code for the Mac `name`, dropping expired and excess codes.
     fn start(
         &self,
         name: &str,
@@ -207,7 +172,6 @@ impl Pairings {
     }
 }
 
-/// Whether the code still works: in time, and its Mac still waits.
 fn live(waiting: &Waiting) -> bool {
     waiting.at.elapsed() < CODE_TTL && !waiting.linked.is_closed()
 }
@@ -230,7 +194,6 @@ mod tests {
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >;
 
-    /// Serve `pairings` on a local relay, and start pairing a Mac named `name`.
     async fn start(pairings: &Arc<Pairings>, name: &str) -> MacSocket {
         let serve = pairings.clone();
         let app = axum::Router::new().route(

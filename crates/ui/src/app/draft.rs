@@ -1,6 +1,3 @@
-//! A new chat until its first message creates it: its project, model and
-//! thinking level, and pi's catalog of models to pick from.
-
 use std::path::PathBuf;
 
 use rune::{FileDialogOptions, TextEdit, Tx};
@@ -12,7 +9,6 @@ use crate::data::{Created, Model, Models, Picked, Project, Projects};
 use crate::labels::short_model;
 use crate::prefs::{NewChat, ProjectPick};
 
-/// The picks of a chat that isn't created yet.
 pub struct Draft {
     pub projects: Vec<Project>,
     pub project: Option<String>,
@@ -24,7 +20,6 @@ pub struct Draft {
     saved_project: ProjectPick,
 }
 
-/// The project popover's search and keyboard selection.
 #[derive(Default)]
 pub struct ProjectMenu {
     pub open: bool,
@@ -32,23 +27,19 @@ pub struct ProjectMenu {
     pub active: usize,
 }
 
-/// Where loading a draft's projects is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Load {
     Loading,
     Ready,
-    /// A load failed; it runs again when the engine comes back.
     Failed,
 }
 
-/// The model and thinking level the composer shows.
 #[derive(Clone, Copy, Default)]
 pub struct Config<'a> {
     pub model: Option<&'a str>,
     pub reasoning: Option<&'a str>,
 }
 
-/// One pick in the model sheet.
 pub enum Pick {
     Model(String),
     Reasoning(String),
@@ -56,19 +47,16 @@ pub enum Pick {
 
 #[derive(Default)]
 pub enum Catalog {
-    /// Not asked for yet.
     #[default]
     Unloaded,
     Loading {
         stale: bool,
     },
     Ready(Models),
-    /// Loading failed; the next [`State::load_catalog`] call tries again.
     Failed(String),
 }
 
 impl Draft {
-    /// A draft with the last new chat's picks, kept if they're still valid once loaded.
     pub(super) fn new(saved: NewChat) -> Self {
         let NewChat {
             project,
@@ -99,7 +87,6 @@ impl Catalog {
         }
     }
 
-    /// Model `id`'s name, as pi labels it, or a short form of its id.
     pub fn label(&self, id: &str) -> String {
         self.ready()
             .and_then(|models| models.iter().find(|m| m.id == id))
@@ -107,7 +94,6 @@ impl Catalog {
             .unwrap_or_else(|| short_model(id).to_owned())
     }
 
-    /// The model pi starts a chat on, once loaded.
     pub fn default_model(&self) -> Option<&str> {
         match self {
             Self::Ready(got) => got.default.as_deref(),
@@ -117,7 +103,6 @@ impl Catalog {
 }
 
 impl State {
-    /// Load a new chat's projects, keeping a valid pick, and the models.
     pub(super) fn load_draft(&mut self) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
@@ -174,7 +159,6 @@ impl State {
         );
     }
 
-    /// Create the chat with the first message, then show it in place of the draft.
     pub(super) fn create(&mut self, text: String, images: Vec<Payload>) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
@@ -218,7 +202,6 @@ impl State {
                         return;
                     }
                 };
-                // The chat exists, so there's no text to keep for the next new chat.
                 let left = std::mem::take(&mut page.composer.text);
                 // Also resets the caret, history, and marks.
                 page.composer.clear();
@@ -226,7 +209,6 @@ impl State {
                 s.prefs.borrow_mut().new_chat = pick;
                 s.save_prefs();
                 if let Some(why) = made.send_error {
-                    // Open it with the message back in its composer.
                     s.drafts.insert(made.chat_id.clone(), left);
                     s.open_chat(made.chat_id);
                     s.fail("Chat started, but the message wasn't sent", why);
@@ -244,7 +226,6 @@ impl State {
         );
     }
 
-    /// Refresh the catalog after a sign-in, settings change, or window reopen.
     pub(super) fn refresh_catalog(&mut self) {
         if let Catalog::Loading { stale } = &mut self.catalog {
             *stale = true;
@@ -254,7 +235,6 @@ impl State {
         self.load_catalog();
     }
 
-    /// Load pi's models unless they're loaded or loading.
     pub fn load_catalog(&mut self) {
         if matches!(self.catalog, Catalog::Loading { .. } | Catalog::Ready(_)) {
             return;
@@ -281,8 +261,6 @@ impl State {
         );
     }
 
-    /// The model and thinking level the composer shows: a new chat's
-    /// picks, else the chat's.
     pub fn config(&self) -> Config<'_> {
         let Some(page) = self.chat() else {
             return Config::default();
@@ -308,7 +286,6 @@ impl State {
         }
     }
 
-    /// Pick a model or thinking level for the next turns.
     pub fn pick(&mut self, pick: Pick) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
@@ -352,7 +329,6 @@ impl State {
         self.fit_draft();
     }
 
-    /// Keep a new chat's model among pi's and its thinking level on the model's.
     fn fit_draft(&mut self) {
         let Page::Chat(page) = &mut self.page else {
             return;
@@ -367,7 +343,6 @@ impl State {
             models.fitted(draft.model.as_deref(), draft.reasoning.as_deref());
     }
 
-    /// Choose a folder without creating a chat until the first message.
     pub fn new_project(&mut self, tx: &mut Tx) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
@@ -393,7 +368,6 @@ impl State {
         });
     }
 
-    /// Add and select a folder in the current draft's project list.
     pub fn add_project(&mut self, path: PathBuf) {
         let Some(draft) = self.chat_mut().and_then(|page| page.draft_mut()) else {
             return;
@@ -413,7 +387,6 @@ impl State {
         self.pick_project(Some(id));
     }
 
-    /// Select a draft's folder and refresh its branch and skills.
     pub fn pick_project(&mut self, project: Option<String>) {
         let Some(page) = self.chat_mut() else { return };
         let Some(draft) = page.draft_mut() else {

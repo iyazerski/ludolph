@@ -1,5 +1,3 @@
-//! The new-chat folder popover, anchored to its composer chip.
-
 use rune::{El, Key, KeyEvent, TextEdit, Tx, col, icon, row, text};
 use rune_kit::{Kit, Placement, Popover, TextInput};
 
@@ -11,7 +9,6 @@ use crate::data::Project;
 const NEW: &str = "new-project";
 const NONE: &str = "no-project";
 
-/// Show searchable folders with actions that remain visible while filtering.
 pub fn picker(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let Some(draft) = page.draft() else {
         return rune::el();
@@ -178,7 +175,6 @@ pub fn picker(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     popover.child(body).build(k, layer)
 }
 
-/// Match names and full paths without changing the saved project order.
 fn matching(draft: &Draft) -> Vec<&Project> {
     let query = draft.project_menu.search.text.trim().to_lowercase();
     draft

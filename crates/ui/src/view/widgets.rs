@@ -1,5 +1,3 @@
-//! Small pieces the list and the chat share: tones, tiles, dots, notes.
-
 use std::sync::LazyLock;
 
 use rune::color::hex;
@@ -12,8 +10,6 @@ use crate::data::{Model, Project};
 use crate::labels::{short_model, tone_index};
 use crate::markup::{self, Shade};
 
-/// The desktop's project tones (`project_icon.rs`): slate, blue, violet,
-/// rose, amber, emerald, teal, orange.
 const TONES_DARK: [&str; 8] = [
     "#94a3b8", "#93c5fd", "#c4b5fd", "#fda4af", "#fcd34d", "#6ee7b7", "#5eead4", "#fdba74",
 ];
@@ -21,13 +17,8 @@ const TONES_LIGHT: [&str; 8] = [
     "#475569", "#2563eb", "#7c3aed", "#be123c", "#a16207", "#047857", "#0f766e", "#c2410c",
 ];
 
-/// The height of a page header's title block: a chat's title over its
-/// subtitle. Both pages use it, so the header buttons sit in the same place.
 const HEAD_TITLES_HEIGHT: f32 = 39.0;
 
-/// How Markdown source you write draws: in the composer and in your sent
-/// messages, its headings and bold heavier, its syntax faint, links and
-/// code coloured.
 pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
     markup::shades(text)
         .into_iter()
@@ -45,7 +36,6 @@ pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
         .collect()
 }
 
-/// Label models the same way in settings and the composer, with their provider below.
 pub fn model_options(models: &[Model]) -> Vec<ComboboxOption> {
     models
         .iter()
@@ -77,7 +67,6 @@ pub fn head(key: &'static str) -> El {
         .window_drag()
 }
 
-/// A page header's title block, between its leading and trailing buttons.
 pub fn head_titles() -> El {
     col()
         .grow(1.0)
@@ -86,7 +75,6 @@ pub fn head_titles() -> El {
         .justify_center()
 }
 
-/// Hides the window; the shortcut brings it back.
 pub fn hide_button(k: &Kit) -> El {
     IconButton::new(&icons::CLOSE)
         .variant(IconButtonVariant::GhostMuted)
@@ -101,7 +89,6 @@ static TONES: LazyLock<[[Color; 8]; 2]> = LazyLock::new(|| {
         .map(|tones| tones.map(|t| hex(t).unwrap_or_else(|| panic!("bad tone {t}"))))
 });
 
-/// The status tones the phone app uses: working, input, failed, done.
 pub struct Tones {
     pub working: Color,
     pub input: Color,
@@ -118,7 +105,6 @@ pub fn tones(k: &Kit) -> Tones {
     }
 }
 
-/// The project monogram tile; chats without a project read "H" (Home).
 pub fn tile(k: &Kit, project: Option<&Project>, size: f32) -> El {
     let index = project.map_or(6, |p| {
         tone_index(if p.path.is_empty() { &p.name } else { &p.path })
@@ -144,14 +130,10 @@ pub fn dot(color: Color) -> El {
     el().size(7.0, 7.0).radius(3.5).fill(color)
 }
 
-/// Seconds each of `busy`'s dots stays lit.
 const BUSY_STEP: f32 = 0.4;
-/// Each dot's opacity over a `busy` loop: lit for its third, dim for the rest.
 const BUSY_STOPS: &[(f32, f32)] = &[(0.0, 1.0), (0.333, 1.0), (0.334, 0.3), (1.0, 0.3)];
 
-/// An in-progress mark in a `size`-point square: three dots lit in turn.
-/// It steps instead of fading, so while only it moves the window redraws
-/// twice a step rather than at rune-kit `Spinner`'s 60 frames a second.
+/// Stepped dots avoid the kit spinner's 60 Hz redraw loop.
 pub fn busy(size: f32, k: &Kit) -> El {
     let side = size / 3.6;
     let dots = (0..3).map(|i| {
@@ -184,7 +166,6 @@ pub fn faint(k: &Kit, s: impl Into<String>) -> El {
         .truncate()
 }
 
-/// That the engine isn't running, with how to start it, or nothing while it runs.
 pub fn engine_note(s: &State, k: &Kit) -> Option<El> {
     if s.engine_up {
         return None;
