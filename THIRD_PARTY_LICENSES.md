@@ -9050,8 +9050,8 @@ Apache License
 ## Apache License 2.0
 
 Used by:
-- dpi 0.1.2
 - winit 0.30.13
+- dpi 0.1.2
 
 ```text
 Apache License
@@ -9541,10 +9541,12 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
+- accesskit_macos 0.27.2
+- parley_engine 0.12.0
+- wgpu-hal 30.0.1
 - accesskit 0.25.2
 - accesskit_atspi_common 0.21.1
 - accesskit_consumer 0.39.2
-- accesskit_macos 0.27.2
 - accesskit_unix 0.24.1
 - allocator-api2 0.2.21
 - anyhow 1.0.104
@@ -9586,13 +9588,12 @@ Used by:
 - objc2-metal 0.3.2
 - objc2-quartz-core 0.3.2
 - objc2-speech 0.3.2
-- parley_engine 0.12.0
 - pin-project-lite 0.2.17
 - portable-atomic 1.15.0
 - proc-macro2 1.0.107
 - profiling 1.0.18
 - quote 1.0.47
-- rand 0.10.3
+- rand 0.10.4
 - rand 0.9.5
 - rand_chacha 0.10.0
 - rand_chacha 0.9.0
@@ -9627,7 +9628,6 @@ Used by:
 - wgpu-core-deps-apple 30.0.2
 - wgpu-core-deps-windows-linux-android 30.0.2
 - wgpu-core 30.0.2
-- wgpu-hal 30.0.2
 - wgpu-naga-bridge 30.0.2
 - wgpu-types 30.0.2
 - wgpu 30.0.2
@@ -10097,6 +10097,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## BSD 3-Clause "New" or "Revised" License
 
 Used by:
+- tiny-skia-path 0.11.4
 - tiny-skia-path 0.11.4
 - tiny-skia 0.11.4
 
@@ -11075,7 +11076,7 @@ third-party/chromium/LICENSE.
 ## MIT License
 
 Used by:
-- mio 1.2.4
+- mio 1.2.5
 
 ```text
 Copyright (c) 2014 Carl Lerche and other MIO contributors

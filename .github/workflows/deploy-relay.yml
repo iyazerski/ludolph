@@ -62,7 +62,7 @@ jobs:
 
       - uses: azure/setup-kubectl@v5
         with:
-          version: v1.37.1
+          version: v1.37.2
 
       - name: Configure kubeconfig
         env:
