@@ -3,7 +3,7 @@
 //!
 //! Each Mac dials out to `/connect` ([`hub`]), the phone signs in with a
 //! passkey ([`auth`]), and its calls are routed to the chosen Mac. A phone
-//! links by scanning a Mac's QR code ([`pair`]). What the phone and a Mac
+//! links by scanning a Mac's QR code ([`mod@pair`]). What the phone and a Mac
 //! say is sealed with a key the relay never sees, so it routes it unread.
 //!
 //! It serves plain HTTP behind a TLS-terminating proxy. API calls must be
@@ -129,7 +129,7 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
 #[derive(Parser)]
 #[command(version, about)]
 struct Opts {
-    /// The address people open, like https://ludolph.example.com (passkeys
+    /// The address people open, like <https://ludolph.example.com> (passkeys
     /// are bound to its host)
     #[arg(long, env = "PUBLIC_URL")]
     public_url: Url,
