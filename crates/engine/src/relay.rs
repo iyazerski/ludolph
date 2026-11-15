@@ -131,8 +131,10 @@ impl fmt::Debug for Link {
 }
 
 /// The linked phones' keys, by phone id, which seal and open what they say.
-#[derive(Default)]
-pub struct Phones(Mutex<HashMap<String, Arc<LinkedPhone>>>);
+pub struct Phones {
+    linked: Mutex<HashMap<String, Arc<LinkedPhone>>>,
+    replays_dir: PathBuf,
+}
 
 // By hand, so logs never show a key.
 impl fmt::Debug for Phones {
@@ -147,16 +149,20 @@ impl fmt::Debug for Phones {
 struct LinkedPhone {
     keys: Keys,
     replays: Mutex<Replays>,
+    replays_path: PathBuf,
     ops: Ops,
 }
 
 impl LinkedPhone {
-    fn new(keys: Keys) -> Self {
-        Self {
+    fn new(keys: Keys, replays_dir: &Path) -> Result<Self> {
+        let replays_path = replays_dir.join(format!("{}.json", keys.phone));
+        let replays = ludolph_json_file::load(&replays_path)?.unwrap_or_default();
+        Ok(Self {
             keys,
-            replays: Mutex::default(),
+            replays: Mutex::new(replays),
+            replays_path,
             ops: Ops::default(),
-        }
+        })
     }
 }
 
@@ -214,16 +220,30 @@ impl Ops {
 }
 
 impl Phones {
+    /// Keep accepted nonces in `replays_dir` before dispatching phone requests.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the replay folder cannot be created.
+    pub fn new(replays_dir: PathBuf) -> Result<Self> {
+        std::fs::create_dir_all(&replays_dir)
+            .with_context(|| format!("creating {}", replays_dir.display()))?;
+        Ok(Self {
+            linked: Mutex::default(),
+            replays_dir,
+        })
+    }
+
     /// Use the phones with `secrets` from now on, in place of the others.
     ///
     /// # Errors
     ///
-    /// Fails if a secret is malformed.
+    /// Fails if a secret is malformed or its replay state cannot be loaded.
     pub fn set(&self, secrets: &[String]) -> Result<()> {
         let phones = secrets
             .iter()
             .map(|secret| {
-                let phone = LinkedPhone::new(Keys::derive(secret)?);
+                let phone = LinkedPhone::new(Keys::derive(secret)?, &self.replays_dir)?;
                 Ok((phone.keys.phone.clone(), Arc::new(phone)))
             })
             .collect::<Result<_>>()?;
@@ -235,26 +255,32 @@ impl Phones {
     ///
     /// # Errors
     ///
-    /// Fails if the secret is malformed.
+    /// Fails if the secret is malformed or its replay state cannot be loaded.
     pub fn add(&self, secret: &str) -> Result<()> {
-        let phone = LinkedPhone::new(Keys::derive(secret)?);
+        let phone = LinkedPhone::new(Keys::derive(secret)?, &self.replays_dir)?;
         self.lock()
             .insert(phone.keys.phone.clone(), Arc::new(phone));
         Ok(())
     }
 
     /// Open a call or a watch from a phone, once.
-    fn open(&self, sealed: &Sealed, purpose: Purpose) -> Result<(Arc<LinkedPhone>, Opened)> {
+    async fn open(&self, sealed: Sealed, purpose: Purpose) -> Result<(Arc<LinkedPhone>, Opened)> {
         let phone = self.lock().get(&sealed.phone).cloned().context(
             "this phone isn't linked to this Mac: link it again from the Mac's Settings",
         )?;
-        let opened = phone.keys.open(purpose, &sealed.data)?;
-        phone
-            .replays
-            .lock()
-            .expect("the replays lock isn't poisoned")
-            .check(&opened, seal::now_ms())?;
-        Ok((phone, opened))
+        tokio::task::spawn_blocking(move || {
+            let opened = phone.keys.open(purpose, &sealed.data)?;
+            {
+                let mut replays = phone
+                    .replays
+                    .lock()
+                    .expect("the replays lock isn't poisoned");
+                replays.check(&opened, seal::now_ms())?;
+                ludolph_json_file::save(&phone.replays_path, &*replays)?;
+            }
+            Ok((phone, opened))
+        })
+        .await?
     }
 
     fn all(&self) -> Vec<Arc<LinkedPhone>> {
@@ -262,7 +288,7 @@ impl Phones {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<LinkedPhone>>> {
-        self.0.lock().expect("the phones lock isn't poisoned")
+        self.linked.lock().expect("the phones lock isn't poisoned")
     }
 }
 
@@ -601,7 +627,7 @@ async fn serve(
                             sink.send(encode(&busy)?).await?;
                         }
                         Ok(Down::Call { id, sealed }) => {
-                            let reply = match phones.open(&sealed, Purpose::Call) {
+                            let reply = match phones.open(sealed, Purpose::Call).await {
                                 Ok((phone, call)) => {
                                     let reply = answer(engine.clone(), slots.clone(), phone, call);
                                     calls.spawn(async move { Some(Up::Reply { id, result: reply.await }) });
@@ -617,7 +643,7 @@ async fn serve(
                             let opened = if watching.len() >= MAX_WATCHES {
                                 Err(anyhow!("this Mac follows too many chats; close some"))
                             } else {
-                                phones.open(&sealed, Purpose::Watch)
+                                phones.open(sealed, Purpose::Watch).await
                             };
                             let (phone, request) = match opened {
                                 Ok(opened) => opened,

@@ -263,7 +263,31 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     until(&engine, |c| c[0].elsewhere).await;
     all_exited(dir.path()).await;
 
+    let copy = dir.path().join("sessions/--fallback--/s1.jsonl");
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    std::fs::copy(&path, &copy).unwrap();
+    append(&path, &user("d", Some("c"), "latest", 4));
+    until(&engine, |c| last_prompt(&c[0]) == Some("latest")).await;
+    let mut feed = ludolph_engine::feed::Feed::new(engine.clone(), "s1".into(), true);
+    let frame = feed.frame().await.unwrap();
+    assert!(frame["ids"].as_array().unwrap().contains(&json!("d")));
+    changes.borrow_and_update();
     std::fs::remove_file(&path).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .expect("deleting the winning copy must update the chat feed")
+        .unwrap();
+    let frame = feed.frame().await.unwrap();
+    assert!(!frame["ids"].as_array().unwrap().contains(&json!("d")));
+    assert_eq!(last_prompt(&engine.chats()[0]), Some("theirs"));
+
+    changes.borrow_and_update();
+    std::fs::remove_file(&copy).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .expect("deleting the last copy must end the chat feed")
+        .unwrap();
+    assert!(feed.frame().await.is_err());
     until(&engine, <[ChatInfo]>::is_empty).await;
     engine.shutdown().await.unwrap();
 }
@@ -920,6 +944,7 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         (&json!(2), &json!(2), &json!(0))
     );
     assert_eq!(run["after"], messages.last().unwrap()["id"]);
+    until(&engine, |chats| chats[0].title.is_some()).await;
     append(
         &dir.path().join(format!("sessions/--fake--/{id}.jsonl")),
         &json!({
@@ -1509,6 +1534,50 @@ async fn a_skill_runs_from_wherever_it_was_typed() {
     assert!(
         error.to_string().contains("reading skill review"),
         "{error:#}"
+    );
+
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = dir.path().join(".pi/skills/review/SKILL.md");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (sending, chat) = (engine.clone(), id.clone());
+    let send = tokio::spawn(async move { sending.send(&chat, "cancel $review", Vec::new()).await });
+    let mut writer = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)
+            {
+                Ok(writer) => break writer,
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("opening the skill pipe: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("the send never started reading the skill");
+    engine.interrupt(&id).await.unwrap();
+    writer.write_all(b"Read the diff.").unwrap();
+    drop(writer);
+    let error = send.await.unwrap().unwrap_err();
+    assert!(
+        error.to_string().contains("stopped before it was sent"),
+        "{error:#}"
+    );
+    assert_eq!(
+        last_prompt(&engine.chats()[0]),
+        Some("please $review next"),
+        "Stop must cancel a send still loading its skill"
     );
     engine.shutdown().await.unwrap();
 }
@@ -2108,6 +2177,37 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         ("/connect", Some("Bearer t0ken"))
     );
     assert_eq!(from_mac(&mut socket).await["type"], "hello");
+    to_mac(&mut socket, create).await;
+    let replay = until_from_mac(&mut socket, |m| m["id"] == 9).await;
+    assert!(
+        replay["result"]["Err"]
+            .as_str()
+            .is_some_and(|error| error.contains("replay")),
+        "an accepted create must not run again after restart: {replay}"
+    );
+    let (list, nonce) = sealed_call(&phone, 22, "list_chats", json!({}));
+    to_mac(&mut socket, list).await;
+    let listed = until_from_mac(&mut socket, |m| m["id"] == 22).await;
+    assert_eq!(opened_reply(&phone, nonce, &listed)["ok"]["total"], 1);
+
+    let replay_path = dir
+        .path()
+        .join("state/relay-replays")
+        .join(format!("{}.json", phone.phone));
+    let saved_replays = std::fs::read(&replay_path).unwrap();
+    std::fs::remove_file(&replay_path).unwrap();
+    std::fs::create_dir(&replay_path).unwrap();
+    let (blocked, _) = sealed_call(&phone, 23, "create_chat", project.clone());
+    to_mac(&mut socket, blocked).await;
+    let blocked = until_from_mac(&mut socket, |m| m["id"] == 23).await;
+    assert!(blocked["result"]["Err"].is_string(), "{blocked}");
+    assert_eq!(
+        engine.chats().len(),
+        1,
+        "a failed replay save must block dispatch"
+    );
+    std::fs::remove_dir(&replay_path).unwrap();
+    std::fs::write(&replay_path, saved_replays).unwrap();
 
     // Unlinking drops the connection, forgets the link, and has the relay
     // forget the Mac.

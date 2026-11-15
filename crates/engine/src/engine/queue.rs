@@ -63,7 +63,13 @@ impl Engine {
     }
 
     /// Hold a prompt until the agent finishes, without handing it to pi yet.
-    pub(super) fn enqueue(&self, id: &str, text: &str, images: Vec<Image>) -> Result<()> {
+    pub(super) fn enqueue(
+        &self,
+        id: &str,
+        text: &str,
+        images: Vec<Image>,
+        stops: u64,
+    ) -> Result<()> {
         let draft = Waiting {
             id: uuid::Uuid::new_v4().to_string(),
             text: text.to_owned(),
@@ -72,6 +78,9 @@ impl Engine {
         };
         let mut state = self.state();
         let chat = state.chats.get_mut(id).context("the chat is gone")?;
+        if chat.stops != stops {
+            bail!("stopped before it was sent");
+        }
         let bytes = chat.waiting.iter().map(Waiting::bytes).sum::<usize>() + draft.bytes();
         if chat.waiting.len() >= MAX_MESSAGES || bytes > MAX_BYTES {
             bail!("the message queue is full (32 messages or 12 MiB)");

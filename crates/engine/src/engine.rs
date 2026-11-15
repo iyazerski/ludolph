@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
@@ -437,6 +437,7 @@ impl Engine {
             agent,
             config.grace,
         )?;
+        let phones = Arc::new(Phones::new(config.state_dir.join("relay-replays"))?);
         let engine = Self(Arc::new_cyclic(|inner| Inner {
             turns,
             catalog,
@@ -448,7 +449,7 @@ impl Engine {
             titler: Arc::new(Titler::new(config.pi.clone())),
             settings: Mutex::new(settings),
             relay: Mutex::default(),
-            phones: Arc::default(),
+            phones,
             phone: watch::channel(None).0,
             pairing_task: Mutex::default(),
             pairing: watch::channel(None).0,
@@ -705,7 +706,7 @@ impl Engine {
             })
         };
         if hold {
-            self.enqueue(id, text, images)?;
+            self.enqueue(id, text, images, stops)?;
             return Ok(Delivery::Queued);
         }
         self.send_locked(id, text, images, stops).await
@@ -752,13 +753,7 @@ impl Engine {
             }
         }
         let settled = self.live_of(id, &pi, |live| live.settled());
-        // Stop can come while pi starts or the tree is taken, before there's
-        // a run to abort.
-        let delivery = if self.stops(id) == stops {
-            self.prompt(&pi, text, images).await
-        } else {
-            Err(anyhow!("stopped before it was sent"))
-        };
+        let delivery = self.prompt(id, &pi, text, images, stops).await;
         if let (Ok(Delivery::Started), Some(settled)) = (&delivery, settled)
             && self.live_of(id, &pi, |live| live.started(settled)) == Some(true)
         {
@@ -788,7 +783,14 @@ impl Engine {
     }
 
     /// Send `text` to `pi` as a prompt, and return what pi did with it.
-    async fn prompt(&self, pi: &Pi, text: &str, images: Vec<Image>) -> Result<Delivery> {
+    async fn prompt(
+        &self,
+        id: &str,
+        pi: &Pi,
+        text: &str,
+        images: Vec<Image>,
+        stops: u64,
+    ) -> Result<Delivery> {
         // pi ignores `steer` when no run is going, so the answer says which
         // happened, even if a run started or ended meanwhile.
         let expanded = if ludolph_prompt::skill_words(text)
@@ -810,7 +812,14 @@ impl Engine {
             );
             command["images"] = Value::Array(images.collect());
         }
-        let answer = pi.call(command).await?;
+        let answer = pi
+            .call_checked(command, || {
+                if self.stops(id) != stops {
+                    bail!("stopped before it was sent");
+                }
+                Ok(())
+            })
+            .await?;
         match answer["disposition"].as_str() {
             Some("started") => Ok(Delivery::Started),
             Some("queued") => Ok(Delivery::Queued),
@@ -2023,14 +2032,22 @@ impl Engine {
     fn sync(&self, changes: Changes) {
         let sessions_dir = &self.0.config.sessions_dir;
         let mut state = self.state();
-        let prompts: HashMap<PathBuf, Option<i64>> = if changes.rescan {
-            let rows = state.index.iter();
-            rows.map(|(path, summary)| (path.to_owned(), summary.last_user_at))
+        let previous: HashMap<PathBuf, (String, Option<i64>)> = if changes.rescan {
+            state
+                .index
+                .iter()
+                .map(|(path, summary)| {
+                    (path.to_owned(), (summary.id.clone(), summary.last_user_at))
+                })
                 .collect()
         } else {
-            let paths = changes.paths.iter();
-            let rows = paths.map(|path| (path.clone(), state.index.get(path)));
-            rows.map(|(path, summary)| (path, summary.and_then(|s| s.last_user_at)))
+            changes
+                .paths
+                .iter()
+                .filter_map(|path| {
+                    let summary = state.index.get(path)?;
+                    Some((path.clone(), (summary.id.clone(), summary.last_user_at)))
+                })
                 .collect()
         };
         let changed = if changes.rescan {
@@ -2055,11 +2072,19 @@ impl Engine {
         let mut unreported = Vec::new();
         let State { index, chats, .. } = &mut *state;
         for path in &changed {
-            let Some(summary) = index.get(path) else {
+            let summary = index.get(path);
+            if let Some((id, _)) = previous.get(path)
+                && summary.is_none_or(|summary| &summary.id != id)
+                && let Some(chat) = chats.get(id)
+            {
+                chat.changed();
+            }
+            let Some(summary) = summary else {
                 continue;
             };
             let prompt = summary.last_user_at;
-            let new_prompt = prompt.filter(|at| prompts.get(path) != Some(&Some(*at)));
+            let new_prompt = prompt
+                .filter(|at| previous.get(path).and_then(|(_, previous)| *previous) != Some(*at));
             match (new_prompt, chats.get_mut(&summary.id)) {
                 (Some(at), Some(chat)) if !chat.sent.contains(&at) => {
                     if chat.process.is_some() {
