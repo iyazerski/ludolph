@@ -252,9 +252,7 @@ fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
             out.push(compact(
                 k,
                 &format!("Linked phones ({})", state.phones.len()),
-                Some(
-                    "Each phone has its own access to this Mac. Phone online status isn't tracked.",
-                ),
+                None,
                 Button::new("Link new phone")
                     .variant(ButtonVariant::Neutral)
                     .help("Show a QR code to scan with another phone")
@@ -337,21 +335,12 @@ fn linked_phone(k: &Kit, id: &str, confirm: bool) -> El {
     } else {
         name
     };
-    let info = col()
+    let info = text(label)
+        .font(k.ty.ui)
+        .color(k.c.text_base)
+        .truncate()
         .grow(1.0)
-        .min_w(0.0)
-        .gap(2.0)
-        .child(text(label).font(k.ty.ui).color(k.c.text_base).truncate())
-        .child(
-            text(if confirm {
-                "Only this phone loses access. Link it again to reconnect."
-            } else {
-                "Linked to this Mac"
-            })
-            .font(k.ty.text_small)
-            .color(k.c.text_muted)
-            .wrap(),
-        );
+        .min_w(0.0);
     let phone = id.to_owned();
     let buttons = if confirm {
         row()
