@@ -495,6 +495,7 @@ pub enum Notify {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PhoneLink {
     pub link: Option<RelayLink>,
+    pub phones: Vec<String>,
     pub pairing: Option<Pairing>,
     pub relay: String,
 }

@@ -193,7 +193,7 @@ async function post(path, body = {}) {
 }
 let links = new Map();
 async function loadLinks() { links = new Map((await Seal.links()).map(l => [l.machine, l])); }
-const NOT_LINKED = "This phone can't open this Mac's chats yet. On the Mac, open Ludolph's Settings, choose Link a phone, and scan the code.";
+const NOT_LINKED = "This phone can't open this Mac's chats yet. On the Mac, open Ludolph's Settings, choose Link new phone, and scan the code.";
 
 // Reuse operation ids across retries so a lost reply cannot repeat a mutation.
 const ONCE = new Set(["send_message", "create_chat", "respond_to_input", "edit_queued_message", "delete_queued_message", "resume_queue"]);
@@ -712,7 +712,7 @@ function solidOnScroll(scroll, bar, at = 8) {
   return update;
 }
 
-const LINK_HINT = "On your Mac, open Ludolph's Settings, choose Link a phone, and scan the QR code with this phone's camera.";
+const LINK_HINT = "On your Mac, open Ludolph's Settings, choose Link new phone, and scan the QR code with this phone's camera.";
 
 function signInView(hasPasskey = true) {
   const btn = h("button", { class: "btn solid" }, icon("key"), "Sign in with passkey");
@@ -2328,7 +2328,7 @@ function settingsSheet() {
       h("h2", {}, "Settings"),
       h("div", { class: "group" }, pushRow, testRow), pushNote,
       macRows.length ? h("div", { class: "group" }, macRows) : "",
-      h("div", { class: "note" }, "To add a Mac, open Ludolph's Settings on it and choose Link a phone."),
+      h("div", { class: "note" }, "To add a Mac, open Ludolph's Settings on it and choose Link new phone."),
       h("div", { class: "group" }, itemRow({ iconName: "logout", label: "Sign out", cls: "danger", onclick: async () => {
         await post("/auth/logout").catch(() => {});
         close();
