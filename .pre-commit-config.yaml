@@ -13,11 +13,11 @@ repos:
   - repo: local
     hooks:
       - id: phone-tests
-        name: phone request tests
+        name: phone UI and request tests
         entry: bun test crates/relay/tests
         language: system
         pass_filenames: false
-        files: ^crates/relay/(assets/.*\.js|tests/.*\.test\.js)$
+        files: ^(package\.json|bun\.lock|crates/relay/(assets/.*\.js|tests/.*\.test\.js))$
 
       - id: cargo-fmt
         name: cargo fmt

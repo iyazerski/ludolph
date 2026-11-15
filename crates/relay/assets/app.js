@@ -1165,6 +1165,8 @@ function chatView(machine, id, fromList) {
     sendBtn.replaceChildren(icon(stop ? "stop" : "send"));
     sendBtn.disabled = Boolean(dictation) || polishing || (isDraft ? creating || !text || !machine : !text && !stop);
     sendBtn.setAttribute("aria-label", stop ? "Stop" : "Send");
+    textarea.disabled = attachBtn.disabled = isDraft && creating;
+    if (micBtn) micBtn.disabled = polishing || (isDraft && creating);
   }
   textarea.addEventListener("input", () => {
     textarea.style.height = "auto";
@@ -1935,6 +1937,16 @@ function chatView(machine, id, fromList) {
     const target = machine;
     const picks = { machine: target, project: draft.project, model: draft.model, reasoning: draft.reasoning };
     const images = takeImages();
+    textarea.value = "";
+    textarea.style.height = "auto";
+    drawSkills();
+    const bubble = userBubble({ parts: [...(text ? [{ kind: "text", text }] : []), ...images.parts] }, true);
+    msgs.classList.remove("blank");
+    $(".hero", msgs).classList.add("hide");
+    msgs.insertBefore(bubble, working);
+    workLabel.textContent = "Starting chat…";
+    working.classList.remove("hide");
+    toBottom(true);
     const args = { prompt: text };
     if (images.images.length) args.images = images.images;
     if (draft.project) args.project = draft.project;
@@ -1955,9 +1967,14 @@ function chatView(machine, id, fromList) {
       location.replace(chatHash(target, made.chatId));
     } catch (e) {
       toast({ title: "Couldn't start the chat", body: e.message, kind: "error" });
-      images.restore();
+      bubble.remove();
+      working.classList.add("hide");
+      msgs.classList.add("blank");
+      $(".hero", msgs).classList.remove("hide");
       creating = false;
-      updateComposer();
+      textarea.value = typed;
+      images.restore();
+      textarea.dispatchEvent(new Event("input"));
     }
   }
 
