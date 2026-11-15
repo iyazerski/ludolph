@@ -2108,6 +2108,37 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         ("/connect", Some("Bearer t0ken"))
     );
     assert_eq!(from_mac(&mut socket).await["type"], "hello");
+    to_mac(&mut socket, create).await;
+    let replay = until_from_mac(&mut socket, |m| m["id"] == 9).await;
+    assert!(
+        replay["result"]["Err"]
+            .as_str()
+            .is_some_and(|error| error.contains("replay")),
+        "an accepted create must not run again after restart: {replay}"
+    );
+    let (list, nonce) = sealed_call(&phone, 22, "list_chats", json!({}));
+    to_mac(&mut socket, list).await;
+    let listed = until_from_mac(&mut socket, |m| m["id"] == 22).await;
+    assert_eq!(opened_reply(&phone, nonce, &listed)["ok"]["total"], 1);
+
+    let replay_path = dir
+        .path()
+        .join("state/relay-replays")
+        .join(format!("{}.json", phone.phone));
+    let saved_replays = std::fs::read(&replay_path).unwrap();
+    std::fs::remove_file(&replay_path).unwrap();
+    std::fs::create_dir(&replay_path).unwrap();
+    let (blocked, _) = sealed_call(&phone, 23, "create_chat", project.clone());
+    to_mac(&mut socket, blocked).await;
+    let blocked = until_from_mac(&mut socket, |m| m["id"] == 23).await;
+    assert!(blocked["result"]["Err"].is_string(), "{blocked}");
+    assert_eq!(
+        engine.chats().len(),
+        1,
+        "a failed replay save must block dispatch"
+    );
+    std::fs::remove_dir(&replay_path).unwrap();
+    std::fs::write(&replay_path, saved_replays).unwrap();
 
     // Unlinking drops the connection, forgets the link, and has the relay
     // forget the Mac.

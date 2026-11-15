@@ -20,6 +20,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use ring::hmac;
 use ring::rand::SystemRandom;
+use serde::{Deserialize, Serialize};
 
 /// The secret's length in bytes.
 const SECRET_LEN: usize = 32;
@@ -80,7 +81,7 @@ pub struct Opened {
 }
 
 /// The calls opened lately, so that none runs twice.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Replays(Vec<(u64, [u8; NONCE_LEN])>);
 
 /// Make a new random secret, in base64url.

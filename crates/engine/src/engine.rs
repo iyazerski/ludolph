@@ -437,6 +437,7 @@ impl Engine {
             agent,
             config.grace,
         )?;
+        let phones = Arc::new(Phones::new(config.state_dir.join("relay-replays"))?);
         let engine = Self(Arc::new_cyclic(|inner| Inner {
             turns,
             catalog,
@@ -448,7 +449,7 @@ impl Engine {
             titler: Arc::new(Titler::new(config.pi.clone())),
             settings: Mutex::new(settings),
             relay: Mutex::default(),
-            phones: Arc::default(),
+            phones,
             phone: watch::channel(None).0,
             pairing_task: Mutex::default(),
             pairing: watch::channel(None).0,
