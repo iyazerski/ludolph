@@ -267,7 +267,20 @@ impl Pi {
     ///
     /// Fails with pi's error if pi refuses the command, and fails if pi exits
     /// before it answers.
-    pub async fn call(&self, mut command: Value) -> Result<Value> {
+    pub async fn call(&self, command: Value) -> Result<Value> {
+        self.call_checked(command, || Ok(())).await
+    }
+
+    /// Run `check` under the stdin lock immediately before writing a command.
+    ///
+    /// # Errors
+    ///
+    /// Fail if the check fails, pi refuses the command, or pi exits before answering.
+    pub(crate) async fn call_checked(
+        &self,
+        mut command: Value,
+        check: impl FnOnce() -> Result<()>,
+    ) -> Result<Value> {
         let id = format!("l{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let kind = command["type"].as_str().unwrap_or("command").to_owned();
         command["id"] = json!(id);
@@ -278,7 +291,7 @@ impl Pi {
             .as_mut()
             .ok_or_else(|| anyhow!("pi exited"))?
             .insert(id.clone(), sender);
-        if let Err(e) = self.send(&command).await {
+        if let Err(e) = self.send_checked(&command, check).await {
             if let Some(pending) = self.pending.lock().expect("lock poisoned").as_mut() {
                 pending.remove(&id);
             }
@@ -300,10 +313,16 @@ impl Pi {
     ///
     /// Fails if pi has exited or is being stopped.
     pub async fn send(&self, record: &Value) -> Result<()> {
+        self.send_checked(record, || Ok(())).await
+    }
+
+    /// Check permission to write after earlier stdin writes have finished.
+    async fn send_checked(&self, record: &Value, check: impl FnOnce() -> Result<()>) -> Result<()> {
         let mut line = serde_json::to_vec(record)?;
         line.push(b'\n');
         let mut stdin = self.stdin.lock().await;
         let stdin = stdin.as_mut().ok_or_else(|| anyhow!("pi is stopping"))?;
+        check()?;
         stdin.write_all(&line).await.context("writing to pi")?;
         stdin.flush().await.context("writing to pi")
     }

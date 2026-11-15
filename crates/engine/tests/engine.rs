@@ -1510,6 +1510,50 @@ async fn a_skill_runs_from_wherever_it_was_typed() {
         error.to_string().contains("reading skill review"),
         "{error:#}"
     );
+
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = dir.path().join(".pi/skills/review/SKILL.md");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (sending, chat) = (engine.clone(), id.clone());
+    let send = tokio::spawn(async move { sending.send(&chat, "cancel $review", Vec::new()).await });
+    let mut writer = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)
+            {
+                Ok(writer) => break writer,
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("opening the skill pipe: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("the send never started reading the skill");
+    engine.interrupt(&id).await.unwrap();
+    writer.write_all(b"Read the diff.").unwrap();
+    drop(writer);
+    let error = send.await.unwrap().unwrap_err();
+    assert!(
+        error.to_string().contains("stopped before it was sent"),
+        "{error:#}"
+    );
+    assert_eq!(
+        last_prompt(&engine.chats()[0]),
+        Some("please $review next"),
+        "Stop must cancel a send still loading its skill"
+    );
     engine.shutdown().await.unwrap();
 }
 

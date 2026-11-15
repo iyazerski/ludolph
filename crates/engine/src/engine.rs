@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
@@ -706,7 +706,7 @@ impl Engine {
             })
         };
         if hold {
-            self.enqueue(id, text, images)?;
+            self.enqueue(id, text, images, stops)?;
             return Ok(Delivery::Queued);
         }
         self.send_locked(id, text, images, stops).await
@@ -753,13 +753,7 @@ impl Engine {
             }
         }
         let settled = self.live_of(id, &pi, |live| live.settled());
-        // Stop can come while pi starts or the tree is taken, before there's
-        // a run to abort.
-        let delivery = if self.stops(id) == stops {
-            self.prompt(&pi, text, images).await
-        } else {
-            Err(anyhow!("stopped before it was sent"))
-        };
+        let delivery = self.prompt(id, &pi, text, images, stops).await;
         if let (Ok(Delivery::Started), Some(settled)) = (&delivery, settled)
             && self.live_of(id, &pi, |live| live.started(settled)) == Some(true)
         {
@@ -789,7 +783,14 @@ impl Engine {
     }
 
     /// Send `text` to `pi` as a prompt, and return what pi did with it.
-    async fn prompt(&self, pi: &Pi, text: &str, images: Vec<Image>) -> Result<Delivery> {
+    async fn prompt(
+        &self,
+        id: &str,
+        pi: &Pi,
+        text: &str,
+        images: Vec<Image>,
+        stops: u64,
+    ) -> Result<Delivery> {
         // pi ignores `steer` when no run is going, so the answer says which
         // happened, even if a run started or ended meanwhile.
         let expanded = if ludolph_prompt::skill_words(text)
@@ -811,7 +812,14 @@ impl Engine {
             );
             command["images"] = Value::Array(images.collect());
         }
-        let answer = pi.call(command).await?;
+        let answer = pi
+            .call_checked(command, || {
+                if self.stops(id) != stops {
+                    bail!("stopped before it was sent");
+                }
+                Ok(())
+            })
+            .await?;
         match answer["disposition"].as_str() {
             Some("started") => Ok(Delivery::Started),
             Some("queued") => Ok(Delivery::Queued),
