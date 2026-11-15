@@ -275,7 +275,7 @@ pub enum DialogKind {
     Editor,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatImage {
     pub mime_type: String,
@@ -408,6 +408,7 @@ pub struct Skills {
 #[serde(rename_all = "camelCase")]
 pub struct Created {
     pub chat_id: String,
+    pub text: String,
     #[serde(default)]
     pub send_error: Option<String>,
 }

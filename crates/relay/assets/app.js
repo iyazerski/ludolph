@@ -1360,7 +1360,7 @@ function chatView(machine, id, fromList) {
     attached = [];
     drawAttachments();
     return {
-      images: taken.map(({ mimeType, data }) => ({ mimeType, data })),
+      images: taken.map(({ mimeType, data }) => ({ mimeType, data, file: { id: crypto.randomUUID() } })),
       parts: taken.map((_, index) => ({ kind: "image", index })),
       restore: () => { if (!attached.length) { attached = taken; drawAttachments(); } },
       done: () => taken.forEach(image => URL.revokeObjectURL(image.url)),
@@ -1385,6 +1385,7 @@ function chatView(machine, id, fromList) {
     toBottom(true);
     try {
       const sent = await api("send_message", images.images.length ? { text, images: images.images } : { text });
+      for (const item of pending) if (item.el === bubble) item.text = sent.text;
       if (sent.delivery === "queued" || sent.delivery === "handled") {
         bubble.remove();
         pending = pending.filter(p => p.el !== bubble);
@@ -1962,7 +1963,7 @@ function chatView(machine, id, fromList) {
         drafts[made.chatId] = typed;
         toast({ title: "Chat started, but the message wasn't sent", body: made.sendError, kind: "error" });
       } else {
-        handoff = { chat: made.chatId, text };
+        handoff = { chat: made.chatId, text: made.text };
       }
       location.replace(chatHash(target, made.chatId));
     } catch (e) {

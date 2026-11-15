@@ -36,6 +36,12 @@ const LIST_LIMIT: usize = 200;
 pub const GROUP_CHATS: usize = 5;
 const TOAST_FOR: Duration = Duration::from_millis(3800);
 
+#[derive(Default)]
+struct MessageDraft {
+    text: String,
+    attached: Vec<attach::Attached>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Window {
     Quick,
@@ -59,8 +65,10 @@ pub struct State {
     scratch_title: TextEdit,
     pub catalog: Catalog,
     pub images: Option<ImageCache>,
-    /// Unsent text per chat (`new` for a new chat), kept while moving between chats.
-    drafts: HashMap<String, String>,
+    /// Unsent drafts (`new` for a new chat), kept while moving between chats.
+    drafts: HashMap<String, MessageDraft>,
+    /// Unique across pages so an image finishing preparation can find its saved draft.
+    next_attached: u64,
     /// Page generation: discard replies for pages the user has left.
     nav: u64,
     /// What the diff view reads and changes once its page is gone.
@@ -164,6 +172,7 @@ impl State {
             catalog: Catalog::default(),
             images: None,
             drafts: HashMap::new(),
+            next_attached: 0,
             nav: 0,
             scratch_diff: DiffState::default(),
             list_feed: None,
@@ -559,10 +568,13 @@ impl State {
     fn show(&mut self, target: Target) {
         self.leave_page();
         self.nav += 1;
-        let mut composer = TextEdit::new(self.drafts.remove(target.key()).unwrap_or_default());
+        let saved = self.drafts.remove(target.key()).unwrap_or_default();
+        let mut composer = TextEdit::new(saved.text);
         composer.set_caret(composer.text.len());
         composer.focused = true;
-        self.page = Page::Chat(Box::new(ChatPage::new(self.nav, target, composer)));
+        let mut page = ChatPage::new(self.nav, target, composer);
+        page.attached = saved.attached;
+        self.page = Page::Chat(Box::new(page));
     }
 
     fn leave_page(&mut self) {
@@ -571,11 +583,17 @@ impl State {
         };
         page.cancel_queue_edit();
         let key = page.target.key();
-        if page.composer.text.trim().is_empty() {
+        if page.composer.text.trim().is_empty() && page.attached.is_empty() {
             self.drafts.remove(key);
         } else {
             let text = std::mem::take(&mut page.composer.text);
-            self.drafts.insert(key.to_owned(), text);
+            self.drafts.insert(
+                key.to_owned(),
+                MessageDraft {
+                    text,
+                    attached: page.attached,
+                },
+            );
         }
     }
 }

@@ -10,7 +10,7 @@ use rune::{ClipboardContent, Image, TextEdit, Tx};
 use serde::Serialize;
 use serde_json::json;
 
-use super::{ChatPage, State};
+use super::{ChatPage, Page, State};
 use crate::data::{ChatImage, Role};
 use crate::markup;
 
@@ -26,6 +26,14 @@ const MAX_FILE: u64 = 64 << 20;
 pub struct Payload {
     pub mime_type: String,
     pub data: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<Upload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Upload {
+    pub id: String,
+    pub original: ChatImage,
 }
 
 pub struct Attached {
@@ -33,7 +41,7 @@ pub struct Attached {
     pub number: usize,
     pub thumb: Option<Image>,
     pub image: Prep,
-    pub link: Option<String>,
+    pub link: String,
 }
 
 pub enum Prep {
@@ -43,7 +51,7 @@ pub enum Prep {
 }
 
 enum Source {
-    Pasted(Arc<[u8]>, PathBuf),
+    Pasted(Arc<[u8]>, String),
     File(PathBuf),
 }
 
@@ -65,13 +73,10 @@ impl State {
         // Office apps put a picture of the copied text beside it.
         match content.image() {
             Some(image) if content.text().trim().is_empty() => {
-                let millis = chrono::Utc::now().timestamp_millis();
-                let number = self.chat().map_or(1, ChatPage::next_image_number);
-                let path = self
-                    .api
-                    .uploads()
-                    .join(format!("{millis}-image-{number}.png"));
-                self.attach(Source::Pasted(image.png().into(), path));
+                self.attach(Source::Pasted(
+                    image.png().into(),
+                    uuid::Uuid::new_v4().to_string(),
+                ));
                 true
             }
             _ => false,
@@ -79,11 +84,13 @@ impl State {
     }
 
     fn attach(&mut self, source: Source) {
+        self.next_attached += 1;
+        let id = self.next_attached;
         let Some(page) = self.chat_mut() else { return };
-        let (id, nav) = (page.attached_id(), page.nav);
         let number = page.next_image_number();
         let target = match &source {
-            Source::Pasted(_, path) | Source::File(path) => path.to_string_lossy(),
+            Source::Pasted(_, id) => format!("attachment:{id}").into(),
+            Source::File(path) => path.to_string_lossy(),
         };
         let link = markup::link(&format!("Image {number}"), &target);
         insert_spaced(&mut page.composer, &link);
@@ -92,7 +99,7 @@ impl State {
             number,
             thumb: None,
             image: Prep::Reading,
-            link: Some(link),
+            link,
         });
         self.api.run(
             move |_| async move { tokio::task::spawn_blocking(move || prepare(&source)).await },
@@ -105,10 +112,7 @@ impl State {
                     }),
                     Err(_) => None,
                 };
-                let Some(attached) = s
-                    .page_at(nav)
-                    .and_then(|p| p.attached.iter_mut().find(|a| a.id == id))
-                else {
+                let Some(attached) = s.attachment_mut(id) else {
                     return;
                 };
                 attached.thumb = thumb;
@@ -123,21 +127,25 @@ impl State {
         );
     }
 
-    pub fn reattach(&mut self, nav: u64, images: Vec<(Payload, Option<Image>)>) {
-        let Some(page) = self.page_at(nav) else {
-            return;
+    fn attachment_mut(&mut self, id: u64) -> Option<&mut Attached> {
+        let page = match &mut self.page {
+            Page::Chat(page) => Some(page),
+            _ => None,
         };
-        for (payload, thumb) in images {
-            let id = page.attached_id();
-            let number = page.next_image_number();
-            page.attached.push(Attached {
-                id,
-                number,
-                thumb,
-                image: Prep::Ready(payload),
-                link: None,
-            });
-        }
+        let current = page.into_iter().flat_map(|page| {
+            page.attached.iter_mut().chain(
+                page.queue_edit
+                    .iter_mut()
+                    .flat_map(|edit| &mut edit.attached),
+            )
+        });
+        current
+            .chain(
+                self.drafts
+                    .values_mut()
+                    .flat_map(|draft| &mut draft.attached),
+            )
+            .find(|image| image.id == id)
     }
 
     pub fn detach(&mut self, id: u64) {
@@ -145,9 +153,7 @@ impl State {
         let Some(at) = page.attached.iter().position(|a| a.id == id) else {
             return;
         };
-        let Some(link) = page.attached.remove(at).link else {
-            return;
-        };
+        let link = page.attached.remove(at).link;
         let edit = &mut page.composer;
         if let Some(start) = edit.text.find(&link) {
             let end = start + link.len();
@@ -235,15 +241,22 @@ impl State {
 }
 
 fn prepare(source: &Source) -> Result<(Payload, RgbaImage), String> {
+    let (mut payload, thumb) = prepare_image(source)?;
+    if let Source::Pasted(bytes, id) = source {
+        payload.file = Some(Upload {
+            id: id.clone(),
+            original: ChatImage {
+                mime_type: "image/png".to_owned(),
+                data: BASE64.encode(bytes),
+            },
+        });
+    }
+    Ok((payload, thumb))
+}
+
+fn prepare_image(source: &Source) -> Result<(Payload, RgbaImage), String> {
     let bytes: Arc<[u8]> = match source {
-        Source::Pasted(bytes, save) => {
-            let shown = save.display();
-            if let Some(dir) = save.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| format!("creating {shown}: {e}"))?;
-            }
-            std::fs::write(save, bytes).map_err(|e| format!("writing {shown}: {e}"))?;
-            bytes.clone()
-        }
+        Source::Pasted(bytes, _) => bytes.clone(),
         Source::File(path) => {
             let shown = path.display();
             let size = std::fs::metadata(path)
@@ -277,6 +290,7 @@ fn prepare(source: &Source) -> Result<(Payload, RgbaImage), String> {
         let keep = Payload {
             mime_type: mime.to_owned(),
             data: BASE64.encode(&bytes),
+            file: None,
         };
         match decoded {
             Ok(image) if small(&image) => return Ok((keep, thumbnail(&image)?)),
@@ -301,6 +315,7 @@ fn prepare(source: &Source) -> Result<(Payload, RgbaImage), String> {
         Payload {
             mime_type: "image/jpeg".to_owned(),
             data: BASE64.encode(&jpeg),
+            file: None,
         },
         thumb,
     ))

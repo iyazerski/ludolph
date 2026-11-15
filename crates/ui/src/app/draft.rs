@@ -4,7 +4,7 @@ use rune::{FileDialogOptions, TextEdit, Tx};
 use serde_json::json;
 
 use super::attach::Payload;
-use super::{Page, Pending, State, Target};
+use super::{MessageDraft, Page, Pending, State, Target};
 use crate::data::{Created, Model, Models, Picked, Project, Projects};
 use crate::labels::short_model;
 use crate::prefs::{NewChat, ProjectPick};
@@ -162,7 +162,6 @@ impl State {
     pub(super) fn create(&mut self, text: String, images: Vec<Payload>) {
         let Some(page) = self.chat_mut() else { return };
         let nav = page.nav;
-        let typed = page.composer.text.trim().to_owned();
         let thumbs: Vec<_> = page.attached.iter().map(|a| a.thumb.clone()).collect();
         let Some(draft) = page.draft_mut() else {
             return;
@@ -205,11 +204,17 @@ impl State {
                 let left = std::mem::take(&mut page.composer.text);
                 // Also resets the caret, history, and marks.
                 page.composer.clear();
-                page.attached.clear();
+                let attached = std::mem::take(&mut page.attached);
                 s.prefs.borrow_mut().new_chat = pick;
                 s.save_prefs();
                 if let Some(why) = made.send_error {
-                    s.drafts.insert(made.chat_id.clone(), left);
+                    s.drafts.insert(
+                        made.chat_id.clone(),
+                        MessageDraft {
+                            text: left,
+                            attached,
+                        },
+                    );
                     s.open_chat(made.chat_id);
                     s.fail("Chat started, but the message wasn't sent", why);
                     return;
@@ -217,7 +222,7 @@ impl State {
                 s.open_chat(made.chat_id);
                 if let Some(chat) = s.chat_mut().and_then(|p| p.existing_mut()) {
                     chat.pending.push(Pending {
-                        text: typed,
+                        text: made.text,
                         images: thumbs,
                         at,
                     });

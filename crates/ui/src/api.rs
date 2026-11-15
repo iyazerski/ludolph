@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,22 +20,16 @@ pub struct Shared {
     rt: Handle,
     client: Client,
     prefs: Arc<watch::Sender<Value>>,
-    uploads: Arc<Path>,
 }
 
 impl Shared {
-    pub fn start(rt: Handle, socket: PathBuf, prefs_path: PathBuf, uploads: PathBuf) -> Self {
+    pub fn start(rt: Handle, socket: PathBuf, prefs_path: PathBuf) -> Self {
         let client = {
             let _entered = rt.enter();
             Client::start(socket)
         };
         let prefs = Arc::new(write_prefs(&rt, prefs_path));
-        Self {
-            rt,
-            client,
-            prefs,
-            uploads: uploads.into(),
-        }
+        Self { rt, client, prefs }
     }
 }
 
@@ -46,17 +40,11 @@ pub struct Api {
     peer: AppHandle<State>,
     prefs: Arc<watch::Sender<Value>>,
     ticking: watch::Sender<bool>,
-    uploads: Arc<Path>,
 }
 
 impl Api {
     pub fn start(shared: &Shared, app: AppHandle<State>, peer: AppHandle<State>) -> Self {
-        let Shared {
-            rt,
-            client,
-            prefs,
-            uploads,
-        } = shared.clone();
+        let Shared { rt, client, prefs } = shared.clone();
         let mut up = client.up();
         let to_ui = app.clone();
         rt.spawn(async move {
@@ -92,12 +80,7 @@ impl Api {
             peer,
             prefs,
             ticking,
-            uploads,
         }
-    }
-
-    pub fn uploads(&self) -> &Path {
-        &self.uploads
     }
 
     pub fn tick(&self, on: bool) {

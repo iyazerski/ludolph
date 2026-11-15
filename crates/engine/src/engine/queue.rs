@@ -2,8 +2,8 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use super::{Chat, Engine};
+use crate::attachments::Attachment;
 use crate::skills;
-use crate::transcript::Image;
 
 /// Include image payloads in the queue's memory budget.
 const MAX_BYTES: usize = 12 * 1024 * 1024;
@@ -23,18 +23,13 @@ pub struct Queued {
 pub(super) struct Waiting {
     pub id: String,
     pub text: String,
-    pub images: Vec<Image>,
+    pub images: Vec<Attachment>,
     pub error: Option<String>,
 }
 
 impl Waiting {
     fn bytes(&self) -> usize {
-        self.text.len()
-            + self
-                .images
-                .iter()
-                .map(|image| image.data.len())
-                .sum::<usize>()
+        self.text.len() + self.images.iter().map(Attachment::bytes).sum::<usize>()
     }
 
     fn view(&self) -> Queued {
@@ -59,7 +54,7 @@ impl Engine {
         &self,
         id: &str,
         text: &str,
-        images: Vec<Image>,
+        images: Vec<Attachment>,
         stops: u64,
     ) -> Result<()> {
         let draft = Waiting {

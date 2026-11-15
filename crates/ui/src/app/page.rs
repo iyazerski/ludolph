@@ -36,8 +36,6 @@ pub struct ChatPage {
     pub voice: Voice,
     /// Edits aimed at a field that's gone (an answered question) land here.
     pub(super) scratch: TextEdit,
-    /// Never reuse ids: a late upload must not attach to a newer image.
-    next_attached: u64,
     pub(super) next_dictation: u64,
 }
 
@@ -186,7 +184,6 @@ impl ChatPage {
             far_from_bottom: false,
             voice: Voice::Idle,
             scratch: TextEdit::default(),
-            next_attached: 0,
             next_dictation: 0,
         }
     }
@@ -237,11 +234,6 @@ impl ChatPage {
             self.composer = edit.draft;
             self.attached = edit.attached;
         }
-    }
-
-    pub(super) fn attached_id(&mut self) -> u64 {
-        self.next_attached += 1;
-        self.next_attached
     }
 }
 
@@ -337,14 +329,20 @@ impl Existing {
             .map(|t| t.trim())
             .collect();
         self.pending.retain(|p| {
-            let arrived = page.iter().any(|m| {
-                m.role == Role::User
-                    && m.created_at >= p.at - CLOCK_SLACK_MS
-                    && m.text().trim() == p.text
-                    && m.images().count() == p.images.len()
-            });
+            let arrived = p.written(page);
             !arrived && !(p.images.is_empty() && queued.contains(&p.text.as_str()))
         });
+    }
+}
+
+impl Pending {
+    pub(super) fn written(&self, page: &[Message]) -> bool {
+        page.iter().any(|m| {
+            m.role == Role::User
+                && m.created_at >= self.at - CLOCK_SLACK_MS
+                && m.text().trim() == self.text
+                && m.images().count() == self.images.len()
+        })
     }
 }
 

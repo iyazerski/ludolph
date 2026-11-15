@@ -7,12 +7,13 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use crate::attachments::Attachment;
 use crate::engine::{
     ChatInfo, Composer, Config, Delivery, Dialog, Engine, Question, Reply, Status,
 };
 use crate::models::Model;
 use crate::repo;
-use crate::transcript::{Image, LATEST, Message, Part, Role, Window};
+use crate::transcript::{LATEST, Message, Part, Role, Window};
 use crate::turns::Counts;
 
 const DEFAULT_CHATS: usize = 50;
@@ -592,7 +593,7 @@ struct SendArgs {
     #[serde(default)]
     text: String,
     #[serde(default)]
-    images: Vec<Image>,
+    images: Vec<Attachment>,
 }
 
 async fn send_message(engine: &Engine, args: SendArgs) -> Result<Value> {
@@ -602,8 +603,8 @@ async fn send_message(engine: &Engine, args: SendArgs) -> Result<Value> {
         bail!("the message is empty");
     }
     find(engine, &args.chat)?;
-    let delivery = engine.send(&args.chat, text, images).await?;
-    Ok(json!({"chatId": args.chat, "delivery": delivery_name(delivery)}))
+    let (delivery, text) = engine.send(&args.chat, text, images).await?;
+    Ok(json!({"chatId": args.chat, "delivery": delivery_name(delivery), "text": text}))
 }
 
 #[derive(Deserialize)]
@@ -612,7 +613,7 @@ struct CreateChatArgs {
     project: Option<PathBuf>,
     prompt: Option<String>,
     #[serde(default)]
-    images: Vec<Image>,
+    images: Vec<Attachment>,
     model: Option<String>,
     reasoning: Option<String>,
 }
@@ -634,6 +635,7 @@ async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
     let mut answer = json!({
         "chatId": id,
         "project": args.project.as_deref().map(project),
+        "text": args.prompt.as_deref().map_or("", str::trim),
     });
     if args.model.is_some() || args.reasoning.is_some() {
         let (model, reasoning) = (args.model.as_deref(), args.reasoning.as_deref());
@@ -645,7 +647,10 @@ async fn create_chat(engine: &Engine, args: CreateChatArgs) -> Result<Value> {
     let prompt = args.prompt.as_deref().map_or("", str::trim);
     if !prompt.is_empty() || !images.is_empty() {
         match engine.send(&id, prompt, images).await {
-            Ok(delivery) => answer["delivery"] = json!(delivery_name(delivery)),
+            Ok((delivery, text)) => {
+                answer["delivery"] = json!(delivery_name(delivery));
+                answer["text"] = json!(text);
+            }
             Err(e) => answer["sendError"] = json!(format!("{e:#}")),
         }
     }
@@ -778,15 +783,15 @@ fn project(path: &Path) -> Value {
     json!({"id": path, "name": name, "path": path})
 }
 
-fn checked(images: Vec<Image>) -> Result<Vec<Image>> {
+fn checked(images: Vec<Attachment>) -> Result<Vec<Attachment>> {
     if images.len() > MAX_IMAGES {
         bail!("a message takes at most {MAX_IMAGES} images");
     }
     if let Some(image) = images
         .iter()
-        .find(|image| !IMAGE_TYPES.contains(&image.mime_type.as_str()))
+        .find(|image| !IMAGE_TYPES.contains(&image.image.mime_type.as_str()))
     {
-        bail!("models don't take {} images", image.mime_type);
+        bail!("models don't take {} images", image.image.mime_type);
     }
     Ok(images)
 }

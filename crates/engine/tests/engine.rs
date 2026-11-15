@@ -123,7 +123,7 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
     );
 
     assert_eq!(
-        engine.send(&id, "hi", Vec::new()).await.unwrap(),
+        engine.send(&id, "hi", Vec::new()).await.unwrap().0,
         Delivery::Started
     );
     let chats = until(&engine, |c| {
@@ -568,7 +568,8 @@ async fn queued_prompts_can_be_edited_deleted_and_sent_in_order() {
         engine
             .send(&id, "change direction", Vec::new())
             .await
-            .unwrap(),
+            .unwrap()
+            .0,
         Delivery::Queued
     );
     let mut changes = engine.subscribe_chat(&id).unwrap();
@@ -1391,6 +1392,185 @@ async fn a_message_can_carry_images() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn attachment_files_belong_to_sessions_and_survive_terminal_forks() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("pi data ü");
+    std::fs::create_dir(&home).unwrap();
+    let app = engine(&home, Duration::from_secs(60)).await;
+    let image_id = uuid::Uuid::new_v4().to_string();
+    let image = json!({
+        "mimeType": "image/jpeg", "data": "aGk=",
+        "file": {"id": image_id, "original": {"mimeType": "image/png", "data": "b3JpZ2luYWw="}}
+    });
+    let prompt = format!("before [Image 1](attachment:{image_id}) after");
+    let first = tool(
+        &app,
+        "create_chat",
+        json!({"project": home, "prompt": prompt, "images": [image]}),
+    )
+    .await
+    .unwrap();
+    let id = first["chatId"].as_str().unwrap();
+    let folder = home.join("attachments").join(id);
+    let path = folder.join(format!("{image_id}.png"));
+    assert_eq!(
+        first["text"],
+        format!("before [Image 1](<{}>) after", path.display())
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"original");
+    assert_eq!(
+        std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    until(&app, |chats| {
+        chats
+            .iter()
+            .all(|c| c.status == Status::Idle && c.summary.is_some())
+    })
+    .await;
+    let view = app.view(id, Window::Latest(40)).await.unwrap();
+    let user = view
+        .page
+        .messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .unwrap();
+    let saved_image = app.image(id, &user.id, 0).await.unwrap();
+    assert_eq!(
+        saved_image.data, "aGk=",
+        "pi keeps the model image, not the original PNG"
+    );
+
+    let second = tool(
+        &app,
+        "create_chat",
+        json!({"project": home, "images": [image]}),
+    )
+    .await
+    .unwrap();
+    let second_id = second["chatId"].as_str().unwrap();
+    let second_path = home
+        .join("attachments")
+        .join(second_id)
+        .join(format!("{image_id}.png"));
+    assert_ne!(path, second_path);
+    assert_eq!(std::fs::read(&second_path).unwrap(), b"original");
+    until(&app, |chats| {
+        chats
+            .iter()
+            .all(|c| c.status == Status::Idle && c.summary.is_some())
+    })
+    .await;
+    app.shutdown().await.unwrap();
+    drop(app);
+    assert!(
+        path.exists(),
+        "attachments do not need a running GUI or engine"
+    );
+
+    let fork = uuid::Uuid::new_v4().to_string();
+    let sessions = home.join("sessions/--fake--");
+    let original = std::fs::read_to_string(sessions.join(format!("{id}.jsonl"))).unwrap();
+    let (header, entries) = original.split_once('\n').unwrap();
+    let mut header: Value = serde_json::from_str(header).unwrap();
+    header["id"] = json!(fork);
+    // The copied attachment is on an inactive branch, and another writer escapes Unicode.
+    let branch = json!({"type": "message", "id": "new-leaf", "parentId": null,
+        "timestamp": "2026-05-02T10:00:00.000Z", "message": {"role": "user", "content": "another branch", "timestamp": 1777716000000_i64}});
+    let contents = format!("{header}\n{entries}{branch}\n").replace('ü', "\\u00fc");
+    std::fs::write(sessions.join(format!("{fork}.jsonl")), contents).unwrap();
+    let app = engine(&home, Duration::from_secs(60)).await;
+    app.delete(id).await.unwrap();
+    assert!(
+        path.exists(),
+        "the terminal fork still references this image"
+    );
+    app.delete(&fork).await.unwrap();
+    assert!(!folder.exists(), "the last referencing session was deleted");
+    assert!(second_path.exists(), "another chat owns its own copy");
+    app.delete(second_id).await.unwrap();
+    assert!(!second_path.exists());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn queued_attachments_are_only_written_when_dispatched() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = engine(dir.path(), Duration::from_secs(60)).await;
+    let id = app.create(dir.path()).await.unwrap();
+    app.send(&id, "ask", Vec::new()).await.unwrap();
+    until(&app, |chats| chats[0].status == Status::AwaitingInput).await;
+    let image_id = uuid::Uuid::new_v4().to_string();
+    let image = json!({"mimeType": "image/png", "data": "aGk=", "file": {"id": image_id}});
+    let sent = tool(
+        &app,
+        "send_message",
+        json!({"chat": id, "text": "queued", "images": [image]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sent["delivery"], "queued");
+    let path = dir
+        .path()
+        .join("attachments")
+        .join(&id)
+        .join(format!("{image_id}.png"));
+    assert!(!path.exists());
+    let view = app.view(&id, Window::Latest(40)).await.unwrap();
+    app.delete_queued(&id, &view.queued[0].id).await.unwrap();
+    assert!(!path.exists(), "discarding a queued image leaves no files");
+    tool(
+        &app,
+        "send_message",
+        json!({"chat": id, "text": "queued", "images": [image]}),
+    )
+    .await
+    .unwrap();
+    tool(
+        &app,
+        "respond_to_input",
+        json!({"chat": id, "id": "d1", "value": "blue"}),
+    )
+    .await
+    .unwrap();
+    view_until(&app, &id, |v| {
+        v.chat.status == Status::Idle
+            && v.queued.is_empty()
+            && v.page.messages.iter().any(|m| {
+                m.parts.iter().any(
+                    |p| matches!(p, Part::Text { text } if text.contains(path.to_str().unwrap())),
+                )
+            })
+    })
+    .await;
+    assert_eq!(std::fs::read(&path).unwrap(), b"hi");
+
+    let external = dir.path().join("external.png");
+    std::fs::write(&external, b"external").unwrap();
+    tool(
+        &app,
+        "send_message",
+        json!({"chat": id, "text": format!("[Image 1](<{}>)", external.display()),
+        "images": [{"mimeType": "image/png", "data": "aGk="}]}),
+    )
+    .await
+    .unwrap();
+    until(&app, |chats| chats[0].status == Status::Idle).await;
+    app.delete(&id).await.unwrap();
+    assert!(!path.exists());
+    assert_eq!(
+        std::fs::read(&external).unwrap(),
+        b"external",
+        "Finder originals are not owned attachments"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_skill_runs_from_wherever_it_was_typed() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
@@ -1451,7 +1631,11 @@ async fn a_skill_runs_from_wherever_it_was_typed() {
     })
     .await;
     assert_eq!(
-        engine.send(&id, "later $review", Vec::new()).await.unwrap(),
+        engine
+            .send(&id, "later $review", Vec::new())
+            .await
+            .unwrap()
+            .0,
         Delivery::Queued
     );
     let queued = engine.view(&id, Window::Latest(40)).await.unwrap().queued;

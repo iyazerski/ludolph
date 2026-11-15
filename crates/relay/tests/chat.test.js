@@ -17,7 +17,7 @@ for (const fails of [false, true]) {
       matchMedia: window.matchMedia.bind(window),
       setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
       setInterval: () => 0, clearInterval() {},
-      crypto, TextEncoder, TextDecoder, btoa, atob, AbortSignal,
+      crypto, TextEncoder, TextDecoder, btoa, atob, AbortSignal, AbortController,
       PROVIDER_MARKS: {},
     });
     runInContext(sealing, context);
@@ -66,7 +66,7 @@ for (const fails of [false, true]) {
         });
         observer.observe(document.body, { childList: true, subtree: true });
       });
-      creation.resolve(fails ? { error: "pi couldn't start" } : { ok: { chatId: "chat" } });
+      creation.resolve(fails ? { error: "pi couldn't start" } : { ok: { chatId: "chat", text: "Build a clock" } });
       await finished;
 
       expect(calls.filter(c => c.tool === "create_chat")).toHaveLength(1);

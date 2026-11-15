@@ -35,3 +35,4 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 unicode-segmentation.workspace = true
+uuid.workspace = true
