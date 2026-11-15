@@ -2032,14 +2032,22 @@ impl Engine {
     fn sync(&self, changes: Changes) {
         let sessions_dir = &self.0.config.sessions_dir;
         let mut state = self.state();
-        let prompts: HashMap<PathBuf, Option<i64>> = if changes.rescan {
-            let rows = state.index.iter();
-            rows.map(|(path, summary)| (path.to_owned(), summary.last_user_at))
+        let previous: HashMap<PathBuf, (String, Option<i64>)> = if changes.rescan {
+            state
+                .index
+                .iter()
+                .map(|(path, summary)| {
+                    (path.to_owned(), (summary.id.clone(), summary.last_user_at))
+                })
                 .collect()
         } else {
-            let paths = changes.paths.iter();
-            let rows = paths.map(|path| (path.clone(), state.index.get(path)));
-            rows.map(|(path, summary)| (path, summary.and_then(|s| s.last_user_at)))
+            changes
+                .paths
+                .iter()
+                .filter_map(|path| {
+                    let summary = state.index.get(path)?;
+                    Some((path.clone(), (summary.id.clone(), summary.last_user_at)))
+                })
                 .collect()
         };
         let changed = if changes.rescan {
@@ -2064,11 +2072,19 @@ impl Engine {
         let mut unreported = Vec::new();
         let State { index, chats, .. } = &mut *state;
         for path in &changed {
-            let Some(summary) = index.get(path) else {
+            let summary = index.get(path);
+            if let Some((id, _)) = previous.get(path)
+                && summary.is_none_or(|summary| &summary.id != id)
+                && let Some(chat) = chats.get(id)
+            {
+                chat.changed();
+            }
+            let Some(summary) = summary else {
                 continue;
             };
             let prompt = summary.last_user_at;
-            let new_prompt = prompt.filter(|at| prompts.get(path) != Some(&Some(*at)));
+            let new_prompt = prompt
+                .filter(|at| previous.get(path).and_then(|(_, previous)| *previous) != Some(*at));
             match (new_prompt, chats.get_mut(&summary.id)) {
                 (Some(at), Some(chat)) if !chat.sent.contains(&at) => {
                     if chat.process.is_some() {

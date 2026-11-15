@@ -263,7 +263,31 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     until(&engine, |c| c[0].elsewhere).await;
     all_exited(dir.path()).await;
 
+    let copy = dir.path().join("sessions/--fallback--/s1.jsonl");
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    std::fs::copy(&path, &copy).unwrap();
+    append(&path, &user("d", Some("c"), "latest", 4));
+    until(&engine, |c| last_prompt(&c[0]) == Some("latest")).await;
+    let mut feed = ludolph_engine::feed::Feed::new(engine.clone(), "s1".into(), true);
+    let frame = feed.frame().await.unwrap();
+    assert!(frame["ids"].as_array().unwrap().contains(&json!("d")));
+    changes.borrow_and_update();
     std::fs::remove_file(&path).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .expect("deleting the winning copy must update the chat feed")
+        .unwrap();
+    let frame = feed.frame().await.unwrap();
+    assert!(!frame["ids"].as_array().unwrap().contains(&json!("d")));
+    assert_eq!(last_prompt(&engine.chats()[0]), Some("theirs"));
+
+    changes.borrow_and_update();
+    std::fs::remove_file(&copy).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .expect("deleting the last copy must end the chat feed")
+        .unwrap();
+    assert!(feed.frame().await.is_err());
     until(&engine, <[ChatInfo]>::is_empty).await;
     engine.shutdown().await.unwrap();
 }
@@ -920,6 +944,7 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         (&json!(2), &json!(2), &json!(0))
     );
     assert_eq!(run["after"], messages.last().unwrap()["id"]);
+    until(&engine, |chats| chats[0].title.is_some()).await;
     append(
         &dir.path().join(format!("sessions/--fake--/{id}.jsonl")),
         &json!({
