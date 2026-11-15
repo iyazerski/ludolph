@@ -342,17 +342,19 @@ impl State {
             return;
         };
         let id = chat.id.clone();
+        let at = chrono::Utc::now().timestamp_millis();
+        chat.top_message = Some(at);
         chat.pending.push(Pending {
             text: typed.clone(),
             images: thumbs,
-            at: chrono::Utc::now().timestamp_millis(),
+            at,
         });
         if matches!(page.voice, Voice::Listening(_)) {
             page.voice = Voice::Idle;
         }
         page.composer.clear();
         let attached = std::mem::take(&mut page.attached);
-        tx.scroll_to_bottom("transcript");
+        tx.scroll_key_to("sent-turn", 10.0);
         let mut args = json!({ "chat": id, "text": typed });
         if !payloads.is_empty() {
             args["images"] = json!(payloads);
@@ -374,6 +376,9 @@ impl State {
                         .as_ref()
                         .is_ok_and(|sent| matches!(sent.delivery.as_str(), "handled" | "queued"));
                 if let Some(chat) = page.existing_mut() {
+                    if gone && chat.top_message == Some(at) {
+                        chat.top_message = None;
+                    }
                     chat.pending.retain_mut(|p| {
                         if p.text == typed {
                             if gone {
@@ -383,8 +388,11 @@ impl State {
                                 p.text.clone_from(&sent.text);
                             }
                         }
-                        !p.written(chat.page.as_deref().unwrap_or_default())
+                        true
                     });
+                    let written = chat.page.take();
+                    chat.confirm_pending(written.as_deref().unwrap_or_default(), None);
+                    chat.page = written;
                 }
                 let Err(e) = result else { return };
                 if page.composer.text.trim().is_empty() && page.attached.is_empty() {

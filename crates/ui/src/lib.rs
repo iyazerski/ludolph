@@ -33,11 +33,12 @@ const MIN_SIZE: (f32, f32) = (340.0, 420.0);
 const MAIN_SIZE: (f32, f32) = (1120.0, 760.0);
 const MAIN_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 
-fn top_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
+fn bottom_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     let display = displays.iter().find(|d| d.primary).or(displays.first())?;
     let px = |points: f32| (f64::from(points) * display.scale).round() as i32;
     let right = display.position.0 + i32::try_from(display.size.0).ok()?;
-    Some((right - px(SIZE.0 + 24.0), display.position.1 + px(56.0)))
+    let bottom = display.position.1 + i32::try_from(display.size.1).ok()?;
+    Some((right - px(SIZE.0 + 24.0), bottom - px(SIZE.1 + 24.0)))
 }
 
 fn saved_frame(prefs: &Prefs, displays: &[rune::Display]) -> Option<Frame> {
@@ -170,7 +171,7 @@ pub fn run(opts: Opts) -> Result<()> {
             always_on_top: true,
             resizable: true,
             visible: false,
-            position: top_right(displays),
+            position: bottom_right(displays),
             min_size: Some(MIN_SIZE),
             ..Default::default()
         }
