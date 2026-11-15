@@ -323,6 +323,7 @@ The engine keeps most of them, since it's the one using them and it runs while t
 - Send while working (`sendBehavior`: `queue`, the default, or `steer`), shared by Mac and phone
 - Phone: link a phone with a QR code, see whether the link is connected, or unlink (`link_phone`, `stop_linking_phone`, `get_phone_link`, `unlink_phone`; see "Phone and relay")
 - Tool calls collapsed or expanded (`expandTools`): the engine's, so both windows and the phone draw them alike. A reply's work between two texts, its tool calls and thinking, is one group on a rail. The setting only decides whether the group under way shows open while the agent works; a group folds once the agent writes again, and a click opens or closes one group either way. Once a turn ends, everything before its last text folds under **Worked for 6m 56s** over a rule, whatever the setting.
+- Accent color: blue (default), purple, pink, orange, green or gray, saved in `ui.json` and shared by both Mac windows. It tints user-message bubbles and colors links and inline code, including the composer. Light and dark appearances use separate link inks, with at least 4.5:1 contrast for body text, links and code on the chat and bubble surfaces. Fenced code keeps its syntax palette.
 - Global shortcut: the app's own, since it registers it, so it's in `ui.json`. The recorder registers the new chord before it lets the old one go, so a chord another app holds is refused and the old one stays. If the saved one is taken when the app starts, the page says so.
 
 ## Phone and relay

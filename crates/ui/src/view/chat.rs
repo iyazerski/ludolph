@@ -461,7 +461,7 @@ fn user_bubble(k: &Kit, text_in: &str, images: Vec<Tile>, shade: Shade) -> El {
                 .px(12.0)
                 .py(8.0)
                 .radius(14.0)
-                .fill(k.c.layer_03)
+                .fill(super::theme::message_bg(k))
                 .opacity(opacity)
                 .child(body),
         );

@@ -17,6 +17,7 @@ pub struct Prefs {
     pub shortcut: Option<String>,
     pub main_frame: Option<Frame>,
     pub show_details: bool,
+    pub accent: Accent,
 }
 
 /// A window's place, in physical pixels, as Rune reads and takes it.
@@ -35,6 +36,41 @@ impl Default for Prefs {
             shortcut: Some(SHORTCUT.to_owned()),
             main_frame: None,
             show_details: true,
+            accent: Accent::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accent {
+    #[default]
+    Blue,
+    Purple,
+    Pink,
+    Orange,
+    Green,
+    Gray,
+}
+
+impl Accent {
+    pub const ALL: [Self; 6] = [
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+        Self::Orange,
+        Self::Green,
+        Self::Gray,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Blue => "Blue",
+            Self::Purple => "Purple",
+            Self::Pink => "Pink",
+            Self::Orange => "Orange",
+            Self::Green => "Green",
+            Self::Gray => "Gray",
         }
     }
 }

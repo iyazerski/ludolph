@@ -67,7 +67,7 @@ pub fn inline_code_marks(
     src: &str,
     link: impl Fn(&str) -> Option<String>,
 ) -> Vec<(Range<usize>, Highlight)> {
-    let color = palette(k)[0].1;
+    let color = super::theme::inline_code(k);
     inline_code(src)
         .into_iter()
         .filter(|r| link(src[r.clone()].trim_matches('`').trim()).is_none())
