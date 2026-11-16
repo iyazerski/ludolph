@@ -15,7 +15,7 @@ mod sidebar;
 mod theme;
 mod widgets;
 
-use rune::{Color, Cx, Edge, El, Key, KeyEvent, SystemMaterial, Transition, Tx, col};
+use rune::{Cx, Edge, El, Key, KeyEvent, SystemMaterial, Transition, Tx, col};
 use rune_kit::Toast;
 
 use rune_kit::Kit;
@@ -26,13 +26,13 @@ pub const CORNER: f32 = 14.0;
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     match s.window {
-        Window::Quick => quick(s, cx),
+        Window::Quick => quick(s),
         Window::Main => main_window::view(s, cx),
     }
 }
 
-fn quick(s: &State, cx: &mut Cx<State>) -> El {
-    let theme = theme::get(cx.system_dark(), s.prefs.borrow().accent);
+fn quick(s: &State) -> El {
+    let theme = theme::get(s.prefs.borrow().accent);
     let k = &theme.base;
     let mut layer = Vec::new();
     let page = match &s.page {
@@ -41,12 +41,6 @@ fn quick(s: &State, cx: &mut Cx<State>) -> El {
     };
     dialogs::chat_dialog(s, k, &mut layer);
     layer.extend(toast(s, k));
-    let (tint, edge) = if k.dark {
-        // macOS draws dark windows' rims itself; a light line on top reads as a seam.
-        (k.c.bg_base.alpha(0.65), Color::TRANSPARENT)
-    } else {
-        (Color::WHITE.alpha(0.75), k.c.border_base.alpha(0.6))
-    };
     // Rune drops the fill of an element that hosts a native material, so the tint goes on a child.
     let body = col()
         .key("window")
@@ -59,8 +53,7 @@ fn quick(s: &State, cx: &mut Cx<State>) -> El {
                 .w_full()
                 .h_full()
                 .radius(CORNER)
-                .fill(tint)
-                .border(1.0, edge)
+                .fill(k.c.bg_base.alpha(0.65))
                 .child(page),
         );
     rune_kit::root(body, layer)

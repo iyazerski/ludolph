@@ -10,11 +10,8 @@ use crate::data::{Model, Project};
 use crate::labels::{short_model, tone_index};
 use crate::markup::{self, Shade};
 
-const TONES_DARK: [&str; 8] = [
+const TONES: [&str; 8] = [
     "#94a3b8", "#93c5fd", "#c4b5fd", "#fda4af", "#fcd34d", "#6ee7b7", "#5eead4", "#fdba74",
-];
-const TONES_LIGHT: [&str; 8] = [
-    "#475569", "#2563eb", "#7c3aed", "#be123c", "#a16207", "#047857", "#0f766e", "#c2410c",
 ];
 
 const HEAD_TITLES_HEIGHT: f32 = 39.0;
@@ -114,10 +111,8 @@ pub fn hide_button(k: &Kit) -> El {
         .build(k)
 }
 
-static TONES: LazyLock<[[Color; 8]; 2]> = LazyLock::new(|| {
-    [TONES_DARK, TONES_LIGHT]
-        .map(|tones| tones.map(|t| hex(t).unwrap_or_else(|| panic!("bad tone {t}"))))
-});
+static TONE_COLORS: LazyLock<[Color; 8]> =
+    LazyLock::new(|| TONES.map(|t| hex(t).unwrap_or_else(|| panic!("bad tone {t}"))));
 
 pub struct Tones {
     pub working: Color,
@@ -135,11 +130,11 @@ pub fn tones(k: &Kit) -> Tones {
     }
 }
 
-pub fn tile(k: &Kit, project: Option<&Project>, size: f32) -> El {
+pub fn tile(project: Option<&Project>, size: f32) -> El {
     let index = project.map_or(6, |p| {
         tone_index(if p.path.is_empty() { &p.name } else { &p.path })
     });
-    let tone = TONES[usize::from(!k.dark)][index];
+    let tone = TONE_COLORS[index];
     let name = project.map_or("Home", |p| p.name.trim());
     let letter = name
         .chars()

@@ -72,7 +72,7 @@ fn accents(s: &State, k: &Kit) -> El {
         .label("Accent color")
         .gap(8.0)
         .children(Accent::ALL.map(|accent| {
-            let color = theme::get(k.dark, accent).base.c.bg_accent;
+            let color = theme::get(accent).base.c.bg_accent;
             el().key(accent.name())
                 .role("radio")
                 .label(accent.name())

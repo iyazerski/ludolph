@@ -265,7 +265,7 @@ fn section(s: &State, k: &Kit, key: &str, items: &[&Chat], collapsed: bool) -> E
         .pt(10.0)
         .pb(4.0)
         .center_y()
-        .child(tile(k, project, 16.0))
+        .child(tile(project, 16.0))
         .child(
             text(project.map_or("No project", |p| p.name.as_str()))
                 .font(k.ty.small_medium)
@@ -346,7 +346,7 @@ fn chat_row(s: &State, k: &Kit, c: &Chat, with_project: bool) -> El {
                 .gap(5.0)
                 .pl(22.0)
                 .center_y()
-                .child(tile(k, c.project.as_ref(), 12.0))
+                .child(tile(c.project.as_ref(), 12.0))
                 .child(faint(
                     k,
                     c.project.as_ref().map_or("No project", |p| p.name.as_str()),

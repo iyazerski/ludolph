@@ -41,6 +41,23 @@ fn bottom_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     Some((right - px(SIZE.0), bottom - px(SIZE.1)))
 }
 
+/// Ludolph has only a dark look. Setting it on NSApp also makes native surfaces, such as the
+/// quick window's popover material, and Rune's `system_dark` dark under a light system.
+fn use_dark_appearance() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::ns_string;
+
+    // SAFETY: called on the main thread once winit has made NSApp. `appearanceNamed:` returns
+    // an autoreleased NSAppearance, which `setAppearance:` retains.
+    unsafe {
+        let name = ns_string!("NSAppearanceNameDarkAqua");
+        let appearance: *mut AnyObject = msg_send![class!(NSAppearance), appearanceNamed: name];
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![app, setAppearance: appearance];
+    }
+}
+
 fn saved_frame(prefs: &Prefs, displays: &[rune::Display]) -> Option<Frame> {
     let frame = prefs.main_frame?;
     let (x, y) = frame.position;
@@ -165,6 +182,7 @@ pub fn run(opts: Opts) -> Result<()> {
         })
     };
     rune::run_windows_with_args(RunOptions { accessory: true }, [], move |displays| {
+        use_dark_appearance();
         let options = WindowOptions {
             transparent: true,
             borderless: true,

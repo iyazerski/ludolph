@@ -1191,7 +1191,7 @@ fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
         .rsplit(['/', '\\'])
         .find(|s| !s.is_empty())
         .unwrap_or(path);
-    let well = if k.dark { Color::BLACK } else { Color::WHITE }.alpha(0.16);
+    let well = Color::BLACK.alpha(0.16);
     row()
         .h(22.0)
         .gap(6.0)

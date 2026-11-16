@@ -20,47 +20,28 @@ pub const MARKDOWN: Options = Options::ENABLE_STRIKETHROUGH
     .union(Options::ENABLE_TABLES)
     .union(Options::ENABLE_TASKLISTS);
 
-const PALETTE: [[(Syntax, &str); 10]; 2] = [
-    [
-        (Syntax::Keyword, "#c678dd"),
-        (Syntax::String, "#98c379"),
-        (Syntax::Regex, "#98c379"),
-        (Syntax::Number, "#d19a66"),
-        (Syntax::Comment, "#7f848e"),
-        (Syntax::Type, "#e5c07b"),
-        (Syntax::Function, "#61afef"),
-        (Syntax::Heading, "#61afef"),
-        (Syntax::Property, "#e06c75"),
-        (Syntax::Attribute, "#e06c75"),
-    ],
-    [
-        (Syntax::Keyword, "#a626a4"),
-        (Syntax::String, "#50a14f"),
-        (Syntax::Regex, "#50a14f"),
-        (Syntax::Number, "#986801"),
-        (Syntax::Comment, "#a0a1a7"),
-        (Syntax::Type, "#c18401"),
-        (Syntax::Function, "#4078f2"),
-        (Syntax::Heading, "#4078f2"),
-        (Syntax::Property, "#e45649"),
-        (Syntax::Attribute, "#e45649"),
-    ],
+const PALETTE: [(Syntax, &str); 10] = [
+    (Syntax::Keyword, "#c678dd"),
+    (Syntax::String, "#98c379"),
+    (Syntax::Regex, "#98c379"),
+    (Syntax::Number, "#d19a66"),
+    (Syntax::Comment, "#7f848e"),
+    (Syntax::Type, "#e5c07b"),
+    (Syntax::Function, "#61afef"),
+    (Syntax::Heading, "#61afef"),
+    (Syntax::Property, "#e06c75"),
+    (Syntax::Attribute, "#e06c75"),
 ];
 
-static COLORS: LazyLock<[Vec<(Syntax, Color)>; 2]> = LazyLock::new(|| {
-    PALETTE.map(|tones| {
-        tones
-            .iter()
-            .map(|&(kind, c)| (kind, hex(c).unwrap_or_else(|| panic!("bad colour {c}"))))
-            .collect()
-    })
+static COLORS: LazyLock<[(Syntax, Color); 10]> = LazyLock::new(|| {
+    PALETTE.map(|(kind, c)| (kind, hex(c).unwrap_or_else(|| panic!("bad colour {c}"))))
 });
 
 pub fn markdown_style(k: &Kit) -> MarkdownStyle {
     let style = MarkdownStyle::from_kit(k)
         .inline_code_bg(Color::TRANSPARENT)
         .inline_code_pad(1.0);
-    palette(k)
+    COLORS
         .iter()
         .fold(style, |style, &(kind, c)| style.syntax(kind, c))
 }
@@ -196,7 +177,7 @@ fn card(k: &Kit, key: &str, language: Option<&str>, source: &str, wrap: bool, co
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_text(&copy_key, &copy, tx))
                 .build(k),
         );
-    let theme = palette(k)
+    let theme = COLORS
         .iter()
         .fold(SyntaxTheme::from_kit(k), |theme, &(kind, color)| {
             theme.with(kind, color)
@@ -301,10 +282,6 @@ fn file_link(code: &str, cwd: &Path) -> Option<String> {
     }
     let full = cwd.join(expand_home(path));
     full.exists().then(|| full.to_string_lossy().into_owned())
-}
-
-fn palette(k: &Kit) -> &'static [(Syntax, Color)] {
-    &COLORS[usize::from(!k.dark)]
 }
 
 fn inline_code(src: &str) -> Vec<Range<usize>> {
