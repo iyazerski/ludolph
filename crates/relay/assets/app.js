@@ -198,7 +198,7 @@ async function loadLinks() { links = new Map((await Seal.links()).map(l => [l.ma
 const NOT_LINKED = "This phone can't open this Mac's chats yet. On the Mac, open Ludolph's Settings, choose Link new phone, and scan the code.";
 
 // Reuse operation ids across retries so a lost reply cannot repeat a mutation.
-const ONCE = new Set(["send_message", "create_chat", "respond_to_input", "edit_queued_message", "delete_queued_message", "resume_queue"]);
+const ONCE = new Set(["send_message", "create_chat", "respond_to_input", "edit_queued_message", "delete_queued_message", "steer_queued_message", "resume_queue"]);
 const ONCE_PATIENCE = 3 * 60_000;
 const NOT_CONNECTED = "this Mac is offline";
 const BUSY = "this Mac is busy; try again";
@@ -1634,7 +1634,14 @@ function chatView(machine, id, fromList) {
           if (queueEdit?.id === message.id) closeQueueEditor();
           feed.now();
         } catch (e) { toast({ title: "Couldn't remove the queued message", body: e.message, kind: "error" }); }
-      } }, icon("trash")))));
+      } }, icon("trash")),
+      h("button", { "aria-label": "Send queued message now", onclick: async () => {
+        try {
+          await api("steer_queued_message", { id: message.id });
+          if (queueEdit?.id === message.id) closeQueueEditor();
+          feed.now();
+        } catch (e) { toast({ title: "Couldn't steer the queued message", body: e.message, kind: "error" }); }
+      } }, icon("send")))));
   }
 
   function closeQueueEditor() {
