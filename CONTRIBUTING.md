@@ -8,7 +8,7 @@ Thanks for helping with Ludolph. Bug reports, ideas and pull requests are all we
 
 ## Make a change
 
-You need macOS on Apple silicon and [Rust](https://rustup.rs). Ludolph is early, and [docs/design.md](docs/design.md) describes the plan.
+You need macOS on Apple silicon and [Rust](https://rustup.rs). Ludolph is early. [docs/architecture.md](docs/architecture.md) explains how it fits together.
 
 ```sh
 make test
