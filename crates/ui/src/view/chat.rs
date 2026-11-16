@@ -366,7 +366,8 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
                     .collect();
                 started = Some(m.created_at);
                 let bubble = user_bubble(page, k, &m.id, &m.text(), images, Shade::Sent)
-                    .child(footer(page, k, m));
+                    .hover_group()
+                    .child(footer(page, k, m).group_opacity(0.0, 1.0));
                 out.push(match held {
                     Some(held) => rise_held(bubble, held),
                     None => bubble.key(key),
