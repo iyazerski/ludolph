@@ -229,7 +229,7 @@ fn card(k: &Kit, key: &str, language: Option<&str>, source: &str, wrap: bool, co
         .w_full()
         .min_w(0.0)
         .radius(18.0)
-        .fill(k.c.bg_base.mix(k.c.text_base, 0.06))
+        .fill(k.c.bg_base.mix(Color::BLACK, 0.4))
         .border(0.5, k.c.border_muted)
         .child(header)
         .child(content)
