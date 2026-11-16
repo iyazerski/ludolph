@@ -325,3 +325,64 @@ fn notifications_are_rounded_and_centered_at_the_top_in_both_windows() {
         assert!(ui.state.toast.is_none());
     }
 }
+
+#[test]
+fn sent_prompts_rise_into_place_and_keep_their_bubble_once_written() {
+    let (_rt, mut ui) = runtime(1120.0, true, Window::Main);
+    ui.state.engine_up = true;
+    let mut chat = Existing::new("test".into(), None);
+    chat.page = Some(vec![Message {
+        id: "earlier".into(),
+        role: Role::Assistant,
+        created_at: 0,
+        ended_at: 0,
+        status: MessageStatus::Complete,
+        parts: vec![Part::Text {
+            text: "Earlier reply.\n\n".repeat(40),
+        }],
+    }]);
+    ui.state.page = Page::Chat(Box::new(ChatPage::new(
+        0,
+        Target::Existing(chat),
+        TextEdit::new("Next question"),
+    )));
+    settle(&mut ui);
+    ui.update(|s, tx| s.send(tx));
+    let prompt = |ui: &Runtime<State>| {
+        ui.elements()
+            .into_iter()
+            .find(|e| e.key.as_deref().is_some_and(|k| k.starts_with("prompt-")))
+            .map(|e| (e.rect[1], e.opacity))
+            .unwrap()
+    };
+    let mut path = Vec::new();
+    for _ in 0..6 {
+        ui.frame(1.0 / 120.0);
+        path.push(prompt(&ui));
+    }
+    let at = ui.state.chat().unwrap().existing().unwrap().pending[0].at;
+    ui.update(|s, tx| s.frame(0, serde_json::json!({
+        "chat": {"id":"test", "status":"working", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z"},
+        "ids":["earlier", "sent"],
+        "messages":[
+            {"id":"sent", "role":"user", "createdAt":at + 100, "endedAt":at + 100, "status":"complete", "parts":[{"kind":"text", "text":"Next question"}]}
+        ],
+        "queued":[], "turnChanges":[], "olderRemaining":0
+    }), tx));
+    ui.frame(1.0 / 120.0);
+    path.push(prompt(&ui));
+    settle(&mut ui);
+    let (top, opacity) = prompt(&ui);
+    assert_eq!(opacity, 1.0);
+    assert!(
+        path.windows(2)
+            .all(|w| w[1].0 <= w[0].0 && w[1].1 >= w[0].1),
+        "it rises and fades in without jumping back, pi's copy included: {path:?}"
+    );
+    let (start, faded) = path[1];
+    assert!(
+        start > top + 1.0 && faded < 1.0,
+        "it starts below and faded: {path:?}"
+    );
+    assert!(path[6].1 < 1.0, "pi's copy carries on the rise: {path:?}");
+}

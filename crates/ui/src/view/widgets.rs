@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use rune::color::hex;
-use rune::{Color, Cycle, El, Span, TextStyle, col, el, icon, row, text};
+use rune::{Color, Cycle, El, Span, TextStyle, Transition, col, el, icon, row, text};
 use rune_kit::{ComboboxOption, IconButton, IconButtonVariant, Kit};
 
 use super::icons;
@@ -18,6 +18,36 @@ const TONES_LIGHT: [&str; 8] = [
 ];
 
 const HEAD_TITLES_HEIGHT: f32 = 39.0;
+
+/// How far content rises as it comes in, in points.
+const RISE: f32 = 12.0;
+
+/// Rises into place and fades in, then only fades out, so leaving content doesn't drift.
+pub fn rise() -> Transition {
+    Transition::asymmetric(
+        Transition::offset(0.0, RISE).combined(Transition::opacity()),
+        Transition::opacity(),
+    )
+}
+
+/// Hides `el` until its first layout, then rises it in, for content that mounts out of sight
+/// in the commit that scrolls to it: Rune lands such an entrance before the scroll brings it
+/// in. `show` marks it shown and returns whether it wasn't already.
+pub fn rise_into_view(el: El, shown: bool, show: impl Fn(&mut State) -> bool + 'static) -> El {
+    if shown {
+        return el;
+    }
+    el.opacity(0.0)
+        .offset(0.0, RISE)
+        .on_layout_tx(move |s: &mut State, _, tx| {
+            if show(s) {
+                // A layout report isn't input, so Rune would land the change at once.
+                tx.animated();
+            } else {
+                tx.live_only();
+            }
+        })
+}
 
 pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
     markup::shades(text)

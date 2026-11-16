@@ -89,8 +89,8 @@ pub struct Existing {
     pub queued: Vec<Queued>,
     pub error: Option<String>,
     pub pending: Vec<Pending>,
-    /// The locally sent prompt held at the top, first by send time, then pi's timestamp.
-    pub top_message: Option<i64>,
+    /// The locally sent prompt held at the top.
+    pub top: Option<Top>,
     /// The folds the user opened (`true`) or closed, by key; the rest show
     /// as their kind does by default.
     pub open_groups: HashMap<String, bool>,
@@ -157,6 +157,26 @@ pub struct QueueEdit {
     pub saving: bool,
 }
 
+pub struct Top {
+    /// Matches the pending prompt's send time, then pi's timestamp once it's written.
+    pub at: i64,
+    /// The send time. It keys the prompt's bubble, so pi's copy takes the pending one's place.
+    pub sent: i64,
+    /// Whether the bubble has risen into view. It mounts hidden and rises after its first
+    /// layout: Rune lands entrances out of sight before the send's scroll jump brings them in.
+    pub shown: bool,
+}
+
+impl Top {
+    pub(super) fn new(at: i64) -> Self {
+        Self {
+            at,
+            sent: at,
+            shown: false,
+        }
+    }
+}
+
 pub struct Pending {
     pub text: String,
     pub images: Vec<Option<Image>>,
@@ -169,6 +189,8 @@ pub struct QuestionForm {
     pub dialog: Dialog,
     pub field: TextEdit,
     pub sending: bool,
+    /// Whether the card has risen into view (see `Top::shown`).
+    pub shown: bool,
 }
 
 impl ChatPage {
@@ -312,7 +334,7 @@ impl Existing {
             queued: Vec::new(),
             error: None,
             pending: Vec::new(),
-            top_message: None,
+            top: None,
             open_groups: HashMap::new(),
             wrapped_code: HashSet::new(),
             tool_outputs: HashMap::new(),
@@ -340,14 +362,16 @@ impl Existing {
             .flat_map(|r| r.steering.iter().chain(&r.follow_up))
             .map(|t| t.trim())
             .collect();
-        if let Some(pending) = self.pending.iter().find(|p| Some(p.at) == self.top_message) {
+        if let Some(top) = &mut self.top
+            && let Some(pending) = self.pending.iter().find(|p| p.at == top.at)
+        {
             if let Some(message) = page
                 .iter()
                 .find(|m| pending.written(std::slice::from_ref(m)))
             {
-                self.top_message = Some(message.created_at);
+                top.at = message.created_at;
             } else if pending.images.is_empty() && queued.contains(&pending.text.as_str()) {
-                self.top_message = None;
+                self.top = None;
             }
         }
         self.pending.retain(|p| {
@@ -378,6 +402,7 @@ impl QuestionForm {
             field: TextEdit::new(typed),
             dialog,
             sending: false,
+            shown: false,
         }
     }
 }

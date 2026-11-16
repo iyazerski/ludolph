@@ -4,7 +4,7 @@ use rune::{FileDialogOptions, TextEdit, Tx};
 use serde_json::json;
 
 use super::attach::Payload;
-use super::{MessageDraft, Page, Pending, State, Target};
+use super::{MessageDraft, Page, Pending, State, Target, Top};
 use crate::data::{Created, Model, Models, Picked, Project, Projects};
 use crate::labels::short_model;
 use crate::prefs::{NewChat, ProjectPick};
@@ -221,6 +221,7 @@ impl State {
                 }
                 s.open_chat(made.chat_id);
                 if let Some(chat) = s.chat_mut().and_then(|p| p.existing_mut()) {
+                    chat.top = Some(Top::new(at));
                     chat.pending.push(Pending {
                         text: made.text,
                         images: thumbs,
