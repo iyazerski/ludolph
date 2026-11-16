@@ -8,6 +8,7 @@ for (const [name, outcomes, accepted] of [
   ["a first offline answer fails immediately", ["this Mac is offline"], false],
   ["a disconnect stays uncertain while the Mac is offline", ["this Mac went offline", "this Mac is offline", "ok"], true],
   ["a network failure stays uncertain while the Mac is offline", ["network", "this Mac is offline", "ok"], true],
+  ["a proxy's gateway error stays uncertain", ["gateway", "ok"], true],
   ["a pending call keeps waiting while the Mac is offline", ["pending", "this Mac is offline", "ok"], true],
   ["a busy Mac has not accepted the call", ["this Mac is busy; try again", "this Mac is offline"], false],
 ]) {
@@ -33,6 +34,7 @@ for (const [name, outcomes, accepted] of [
       calls.push(JSON.parse(await seal.open(link.key, seal.aad.call(), data)));
       const outcome = outcomes[calls.length - 1];
       if (outcome === "network") throw new TypeError("connection lost");
+      if (outcome === "gateway") return new Response("Bad Gateway", { status: 502 });
       if (outcome !== "ok" && outcome !== "pending") {
         return Response.json({ error: outcome }, { status: 503 });
       }
