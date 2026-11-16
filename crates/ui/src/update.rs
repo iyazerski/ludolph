@@ -21,6 +21,9 @@ pub fn available() -> Result<Option<String>> {
     let body = curl(&[
         "-H",
         "Accept: application/vnd.github+json",
+        // Overrides curl()'s download limit: quitting waits for a stuck check.
+        "--max-time",
+        "30",
         &format!("https://api.github.com/repos/{REPO}/releases/latest"),
     ])?;
     let release: Release = serde_json::from_slice(&body).context("reading the latest release")?;

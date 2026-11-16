@@ -1,3 +1,4 @@
+use chrono::{TimeDelta, Utc};
 use qrcode::QrCode;
 use qrcode::render::svg;
 use rune::{Image, Shortcut, ShortcutError, TextEdit};
@@ -9,6 +10,7 @@ use crate::data::{LinkStatus, Pairing, PhoneLink, RelayLink, Settings};
 use crate::update;
 
 pub const QR_SIZE: f32 = 184.0;
+const RELEASE_CHECK_EVERY: TimeDelta = TimeDelta::days(1);
 
 pub struct SettingsPage {
     pub settings: Option<Settings>,
@@ -141,7 +143,11 @@ impl State {
         self.api.run(
             |_| async { tokio::task::spawn_blocking(update::available).await },
             |s, result, _| {
-                let Some(page) = s.settings_page_mut() else {
+                // The update notice may have started an install meanwhile.
+                let Some(page) = s
+                    .settings_page_mut()
+                    .filter(|p| !matches!(p.update, Update::Installing(_)))
+                else {
                     return;
                 };
                 page.update = match result.map_err(anyhow::Error::from).and_then(|r| r) {
@@ -151,6 +157,64 @@ impl State {
                 };
             },
         );
+    }
+
+    /// Runs when a window shows, at most once a day across both windows and restarts.
+    pub fn check_release(&mut self) {
+        let now = Utc::now();
+        let last = self.prefs.borrow().release_checked;
+        if last.is_some_and(|at| now - at < RELEASE_CHECK_EVERY) {
+            return;
+        }
+        self.prefs.borrow_mut().release_checked = Some(now);
+        self.save_prefs();
+        self.api.run(
+            |_| async { tokio::task::spawn_blocking(update::available).await },
+            move |s, result, _| match result.map_err(anyhow::Error::from).and_then(|r| r) {
+                Ok(Some(version)) => {
+                    if s.prefs.borrow().dismissed_release.as_ref() != Some(&version) {
+                        s.release_notice = Some(version.clone());
+                        s.api.peer().update(|s, _| s.release_notice = Some(version));
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("checking for updates: {e:#}");
+                    s.prefs.borrow_mut().release_checked = last;
+                    s.save_prefs();
+                }
+            },
+        );
+    }
+
+    pub fn dismiss_release(&mut self) {
+        let Some(version) = self.release_notice.take() else {
+            return;
+        };
+        self.prefs.borrow_mut().dismissed_release = Some(version);
+        self.save_prefs();
+        self.api.peer().update(|s, _| s.release_notice = None);
+    }
+
+    pub fn install_release(&mut self) {
+        let Some(version) = self.release_notice.take() else {
+            return;
+        };
+        if self.window == Window::Quick {
+            self.api.peer().update(|s, _| {
+                s.release_notice = Some(version);
+                s.install_release();
+            });
+            return self.hide();
+        }
+        self.api.peer().update(|s, _| s.release_notice = None);
+        self.open_settings();
+        if let Some(page) = self.settings_page_mut()
+            && !matches!(page.update, Update::Installing(_))
+        {
+            page.update = Update::Available(version);
+            self.install_update();
+        }
     }
 
     pub fn install_update(&mut self) {

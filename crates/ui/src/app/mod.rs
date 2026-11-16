@@ -62,6 +62,8 @@ pub struct State {
     pub sidebar: PaneState,
     pub list: ListState,
     pub toast: Option<Toast>,
+    /// A newer release to offer; it stays until updated or closed.
+    pub release_notice: Option<String>,
     pub chat_dialog: Option<ChatDialog>,
     /// Edits aimed at the rename field once its dialog is gone land here.
     scratch_title: TextEdit,
@@ -169,6 +171,7 @@ impl State {
             sidebar: PaneState::new(320.0).range(260.0, 480.0),
             list: ListState::default(),
             toast: None,
+            release_notice: None,
             chat_dialog: None,
             scratch_title: TextEdit::default(),
             catalog: Catalog::default(),
@@ -290,6 +293,7 @@ impl State {
             };
         }
         if shown {
+            self.check_release();
             self.follow();
             self.load_details();
             if self.settings_page().is_some() {
