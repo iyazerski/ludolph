@@ -1447,7 +1447,7 @@ function chatView(machine, id, fromList) {
       h("div", { class: "group" },
         isWorking() && itemRow({ iconName: "stop", label: "Stop the agent", cls: "danger", onclick: () => { close(); stop(); } }),
         itemRow({ iconName: "edit", label: "Rename", onclick: renameSheet }),
-        itemRow({ iconName: "copy", label: "Copy link", onclick: () => { close(); copyText(location.href); toast({ title: "Link copied", kind: "done", timeout: 1800 }); } }),
+        chat && itemRow({ iconName: "copy", label: "Copy Chat ID", onclick: () => { close(); copyText(chat.id); toast({ title: "Chat ID copied", kind: "done", timeout: 1800 }); } }),
         itemRow({ iconName: "trash", label: "Delete", cls: "danger", onclick: deleteSheet })),
     ]);
   }
