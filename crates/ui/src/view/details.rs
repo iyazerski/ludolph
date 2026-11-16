@@ -188,7 +188,7 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
     }
     body.child(rule(k)).child(
         text(format!(
-            "{} {} · {:.2}M · {}",
+            "{} {} · {:.2}M tokens · {}",
             details.compactions,
             if details.compactions == 1 {
                 "compaction"

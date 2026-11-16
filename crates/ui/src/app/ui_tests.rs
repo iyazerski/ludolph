@@ -7,7 +7,7 @@ use super::*;
 use crate::api::{Api, Shared};
 use crate::data::{Message, MessageStatus, Part, Role};
 
-fn runtime(width: f32, dark: bool, window: Window) -> (tokio::runtime::Runtime, Runtime<State>) {
+fn runtime(width: f32, window: Window) -> (tokio::runtime::Runtime, Runtime<State>) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -37,7 +37,7 @@ fn runtime(width: f32, dark: bool, window: Window) -> (tokio::runtime::Runtime, 
         state,
         crate::view::view,
         (width, 620.0),
-        Env::new(dark, 1.0),
+        Env::new(true, 1.0),
     );
     (rt, runtime)
 }
@@ -62,92 +62,90 @@ fn chat_code_cards_wrap_independently_and_copy_without_changing_source() {
         "x".repeat(100)
     );
     for (width, window) in [(420.0, Window::Quick), (1120.0, Window::Main)] {
-        for dark in [false, true] {
-            let mut prose_height = None;
-            for role in [Role::User, Role::Assistant] {
-                let (_rt, mut ui) = runtime(width, dark, window);
-                let mut chat = Existing::new("test".into(), None);
-                chat.page = Some(vec![Message {
-                    id: "message".into(),
-                    role,
-                    created_at: 0,
-                    ended_at: 0,
-                    status: MessageStatus::Complete,
-                    parts: vec![Part::Text {
-                        text: source.clone(),
-                    }],
-                }]);
-                ui.state.page = Page::Chat(Box::new(ChatPage::new(
-                    0,
-                    Target::Existing(chat),
-                    TextEdit::default(),
-                )));
-                settle(&mut ui);
-                let elements = ui.elements();
-                let card = elements.iter().find(|e| e.role == "code").unwrap();
-                assert_eq!(card.radius, 18.0);
+        let mut prose_height = None;
+        for role in [Role::User, Role::Assistant] {
+            let (_rt, mut ui) = runtime(width, window);
+            let mut chat = Existing::new("test".into(), None);
+            chat.page = Some(vec![Message {
+                id: "message".into(),
+                role,
+                created_at: 0,
+                ended_at: 0,
+                status: MessageStatus::Complete,
+                parts: vec![Part::Text {
+                    text: source.clone(),
+                }],
+            }]);
+            ui.state.page = Page::Chat(Box::new(ChatPage::new(
+                0,
+                Target::Existing(chat),
+                TextEdit::default(),
+            )));
+            settle(&mut ui);
+            let elements = ui.elements();
+            let card = elements.iter().find(|e| e.role == "code").unwrap();
+            assert_eq!(card.radius, 18.0);
+            assert!(
+                card.rect[0] >= 0.0 && card.rect[0] + card.rect[2] <= width,
+                "width={width}, role={role:?}, card={:?}",
+                card.rect
+            );
+            assert_eq!(elements.iter().filter(|e| e.role == "code").count(), 2);
+            assert!(elements.iter().any(|e| e.text.as_deref() == Some("Python")));
+            let before = elements
+                .iter()
+                .find(|e| e.text.as_deref() == Some("Before"))
+                .unwrap();
+            if let Some(height) = prose_height.replace(before.rect[3]) {
                 assert!(
-                    card.rect[0] >= 0.0 && card.rect[0] + card.rect[2] <= width,
-                    "width={width}, dark={dark}, role={role:?}, card={:?}",
-                    card.rect
+                    (height - before.rect[3]).abs() < 0.5,
+                    "user and agent prose should have the same line height"
                 );
-                assert_eq!(elements.iter().filter(|e| e.role == "code").count(), 2);
-                assert!(elements.iter().any(|e| e.text.as_deref() == Some("Python")));
-                let before = elements
-                    .iter()
-                    .find(|e| e.text.as_deref() == Some("Before"))
-                    .unwrap();
-                if let Some(height) = prose_height.replace(before.rect[3]) {
-                    assert!(
-                        (height - before.rect[3]).abs() < 0.5,
-                        "user and agent prose should have the same line height"
-                    );
-                }
-                assert!(elements.iter().any(|e| e.text.as_deref() == Some("After")));
-                let old_height = card.rect[3];
-                let clipboard = rune::clipboard::memory();
-                ui.use_clipboard(&clipboard);
-                let wrap = elements
-                    .iter()
-                    .find(|e| e.label.as_deref() == Some("Enable word wrap"))
-                    .unwrap();
-                click(&mut ui, wrap);
-                let elements = ui.elements();
-                assert!(
-                    elements
-                        .iter()
-                        .any(|e| e.label.as_deref() == Some("Disable word wrap"))
-                );
-                assert!(elements.iter().find(|e| e.role == "code").unwrap().rect[3] > old_height);
-                assert!(
-                    elements
-                        .iter()
-                        .any(|e| e.label.as_deref() == Some("Enable word wrap"))
-                );
-                let copy = elements
-                    .iter()
-                    .find(|e| e.label.as_deref() == Some("Copy code"))
-                    .unwrap();
-                click(&mut ui, copy);
-                assert!(
-                    ui.elements()
-                        .iter()
-                        .any(|e| e.label.as_deref() == Some("Copied"))
-                );
-                assert_eq!(
-                    clipboard.text().map(|text| text.to_string()),
-                    Some(format!("print('{}')", "x".repeat(100)))
-                );
-                let chat = ui.state.chat().unwrap().existing().unwrap();
-                assert_eq!(chat.messages().next().unwrap().text(), source);
             }
+            assert!(elements.iter().any(|e| e.text.as_deref() == Some("After")));
+            let old_height = card.rect[3];
+            let clipboard = rune::clipboard::memory();
+            ui.use_clipboard(&clipboard);
+            let wrap = elements
+                .iter()
+                .find(|e| e.label.as_deref() == Some("Enable word wrap"))
+                .unwrap();
+            click(&mut ui, wrap);
+            let elements = ui.elements();
+            assert!(
+                elements
+                    .iter()
+                    .any(|e| e.label.as_deref() == Some("Disable word wrap"))
+            );
+            assert!(elements.iter().find(|e| e.role == "code").unwrap().rect[3] > old_height);
+            assert!(
+                elements
+                    .iter()
+                    .any(|e| e.label.as_deref() == Some("Enable word wrap"))
+            );
+            let copy = elements
+                .iter()
+                .find(|e| e.label.as_deref() == Some("Copy code"))
+                .unwrap();
+            click(&mut ui, copy);
+            assert!(
+                ui.elements()
+                    .iter()
+                    .any(|e| e.label.as_deref() == Some("Copied"))
+            );
+            assert_eq!(
+                clipboard.text().map(|text| text.to_string()),
+                Some(format!("print('{}')", "x".repeat(100)))
+            );
+            let chat = ui.state.chat().unwrap().existing().unwrap();
+            assert_eq!(chat.messages().next().unwrap().text(), source);
         }
     }
 }
 
 #[test]
 fn reasoning_menu_fills_its_popup_and_stop_has_no_background() {
-    let (_rt, mut ui) = runtime(1120.0, true, Window::Main);
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
     ui.state.catalog = Catalog::Ready(serde_json::from_value(serde_json::json!({
         "models":[{"id":"test/model", "label":"Test", "reasoningLevels":["minimal", "low", "medium", "high", "xhigh", "max"]}],
         "default":"test/model", "defaultReasoning":"high"
@@ -216,7 +214,7 @@ fn reasoning_menu_fills_its_popup_and_stop_has_no_background() {
 #[test]
 fn sent_messages_start_at_the_top_and_hold_while_the_reply_grows() {
     for (width, window) in [(420.0, Window::Quick), (1120.0, Window::Main)] {
-        let (_rt, mut ui) = runtime(width, true, window);
+        let (_rt, mut ui) = runtime(width, window);
         ui.state.engine_up = true;
         let mut chat = Existing::new("test".into(), None);
         chat.page = Some(vec![Message {
@@ -306,7 +304,7 @@ fn sent_messages_start_at_the_top_and_hold_while_the_reply_grows() {
 #[test]
 fn notifications_are_rounded_and_centered_at_the_top_in_both_windows() {
     for (width, window) in [(340.0, Window::Quick), (1120.0, Window::Main)] {
-        let (_rt, mut ui) = runtime(width, true, window);
+        let (_rt, mut ui) = runtime(width, window);
         ui.state.notify("Copied");
         settle(&mut ui);
         let elements = ui.elements();
@@ -328,7 +326,7 @@ fn notifications_are_rounded_and_centered_at_the_top_in_both_windows() {
 
 #[test]
 fn closing_the_release_notice_keeps_that_release_from_being_offered_again() {
-    let (_rt, mut ui) = runtime(420.0, true, Window::Quick);
+    let (_rt, mut ui) = runtime(420.0, Window::Quick);
     ui.state.release_notice = Some("9.9.9".into());
     settle(&mut ui);
     let elements = ui.elements();
@@ -356,7 +354,7 @@ fn closing_the_release_notice_keeps_that_release_from_being_offered_again() {
 
 #[test]
 fn sent_prompts_rise_into_place_and_keep_their_bubble_once_written() {
-    let (_rt, mut ui) = runtime(1120.0, true, Window::Main);
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
     ui.state.engine_up = true;
     let mut chat = Existing::new("test".into(), None);
     chat.page = Some(vec![Message {

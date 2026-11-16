@@ -23,7 +23,7 @@ pub fn picker(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .py(3.0)
         .radius(7.0)
         .center_y()
-        .child(tile(k, selected, 13.0))
+        .child(tile(selected, 13.0))
         .child(
             text(selected.map_or("No project", |p| p.name.as_str()))
                 .font(k.ty.small)

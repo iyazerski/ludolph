@@ -6,7 +6,7 @@ use super::{chat, dialogs, icons, settings, sidebar, theme, toast};
 use crate::app::{ChatPage, Page, State};
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
-    let theme = theme::get(cx.system_dark(), s.prefs.borrow().accent);
+    let theme = theme::get(s.prefs.borrow().accent);
     let k = &theme.base;
     let panels = &theme.panels;
     let mut layer = Vec::new();

@@ -38,7 +38,24 @@ fn bottom_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     let px = |points: f32| (f64::from(points) * display.scale).round() as i32;
     let right = display.position.0 + i32::try_from(display.size.0).ok()?;
     let bottom = display.position.1 + i32::try_from(display.size.1).ok()?;
-    Some((right - px(SIZE.0 + 24.0), bottom - px(SIZE.1 + 24.0)))
+    Some((right - px(SIZE.0), bottom - px(SIZE.1)))
+}
+
+/// Ludolph has only a dark look. Setting it on NSApp also makes native surfaces, such as the
+/// quick window's popover material, and Rune's `system_dark` dark under a light system.
+fn use_dark_appearance() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::ns_string;
+
+    // SAFETY: called on the main thread once winit has made NSApp. `appearanceNamed:` returns
+    // an autoreleased NSAppearance, which `setAppearance:` retains.
+    unsafe {
+        let name = ns_string!("NSAppearanceNameDarkAqua");
+        let appearance: *mut AnyObject = msg_send![class!(NSAppearance), appearanceNamed: name];
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![app, setAppearance: appearance];
+    }
 }
 
 fn saved_frame(prefs: &Prefs, displays: &[rune::Display]) -> Option<Frame> {
@@ -165,6 +182,7 @@ pub fn run(opts: Opts) -> Result<()> {
         })
     };
     rune::run_windows_with_args(RunOptions { accessory: true }, [], move |displays| {
+        use_dark_appearance();
         let options = WindowOptions {
             transparent: true,
             borderless: true,
@@ -181,7 +199,9 @@ pub fn run(opts: Opts) -> Result<()> {
             MacWindowOptions::default()
                 .level(FLOATING)
                 .collection_behavior(ALL_SPACES | FULL_SCREEN_AUXILIARY)
-                .corner_radius(CORNER),
+                .corner_radius(CORNER)
+                // Keeps it out of screenshots and screen sharing, so it can stay open during a call.
+                .exclude_from_capture(true),
         );
         let mut saved = saved_frame(&prefs.borrow(), displays);
         let main_options = WindowOptions {
