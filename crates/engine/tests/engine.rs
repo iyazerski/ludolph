@@ -1483,18 +1483,23 @@ async fn attachment_files_belong_to_sessions_and_survive_terminal_forks() {
         "timestamp": "2026-05-02T10:00:00.000Z", "message": {"role": "user", "content": "another branch", "timestamp": 1777716000000_i64}});
     let contents = format!("{header}\n{entries}{branch}\n").replace('ü', "\\u00fc");
     std::fs::write(sessions.join(format!("{fork}.jsonl")), contents).unwrap();
+    // Cleanup runs after a delete answers; shutting down waits for it.
     let app = engine(&home, Duration::from_secs(60)).await;
     app.delete(id).await.unwrap();
+    app.shutdown().await.unwrap();
     assert!(
         path.exists(),
         "the terminal fork still references this image"
     );
+    let app = engine(&home, Duration::from_secs(60)).await;
     app.delete(&fork).await.unwrap();
+    app.shutdown().await.unwrap();
     assert!(!folder.exists(), "the last referencing session was deleted");
     assert!(second_path.exists(), "another chat owns its own copy");
+    let app = engine(&home, Duration::from_secs(60)).await;
     app.delete(second_id).await.unwrap();
-    assert!(!second_path.exists());
     app.shutdown().await.unwrap();
+    assert!(!second_path.exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1561,13 +1566,13 @@ async fn queued_attachments_are_only_written_when_dispatched() {
     .unwrap();
     until(&app, |chats| chats[0].status == Status::Idle).await;
     app.delete(&id).await.unwrap();
+    app.shutdown().await.unwrap();
     assert!(!path.exists());
     assert_eq!(
         std::fs::read(&external).unwrap(),
         b"external",
         "Finder originals are not owned attachments"
     );
-    app.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

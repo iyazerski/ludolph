@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::Instant;
 
 use crate::attachments::{self, Attachment};
@@ -89,6 +89,8 @@ struct Inner {
     phone: watch::Sender<Option<Phone>>,
     pairing_task: Mutex<Option<AbortHandle>>,
     pairing: watch::Sender<Option<Pairing>>,
+    /// The latest attachment cleanup; each waits for the one before, so they never race.
+    cleanup: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Drop for Inner {
@@ -352,6 +354,7 @@ impl Engine {
             phone: watch::channel(None).0,
             pairing_task: Mutex::default(),
             pairing: watch::channel(None).0,
+            cleanup: Mutex::default(),
             config,
         }));
         tokio::spawn(engine.clone().reconnect());
@@ -907,16 +910,25 @@ impl Engine {
             pi.stop(self.0.config.grace).await?;
             self.detach(id, &pi)?;
         }
-        {
-            let mut state = self.state();
+        let (source, copies) = {
+            let state = self.state();
             let (source, _) = state.index.find(id).context("the session is gone")?;
-            let target = crate::session::relocate(source, &self.0.config.sessions_dir, cwd)?;
             let copies: Vec<_> = state
                 .index
                 .iter()
                 .filter(|(_, summary)| summary.id == id)
                 .map(|(path, _)| path.to_owned())
                 .collect();
+            (source.to_owned(), copies)
+        };
+        // Copying a large session takes a while; other chats keep the state lock meanwhile.
+        let (sessions, dest) = (self.0.config.sessions_dir.clone(), cwd.to_owned());
+        let target = tokio::task::spawn_blocking(move || {
+            crate::session::relocate(&source, &sessions, &dest)
+        })
+        .await??;
+        {
+            let mut state = self.state();
             state.index.refresh_file(&target)?;
             for path in copies {
                 std::fs::remove_file(&path)
@@ -971,19 +983,39 @@ impl Engine {
             state.chats.remove(id);
         }
         self.0.turns.forget(id)?;
-        let root = self.0.config.attachments_dir();
-        let sessions = self.0.config.sessions_dir.clone();
-        let protected = self.state().chats.keys().cloned().collect();
-        if let Err(error) =
-            tokio::task::spawn_blocking(move || attachments::cleanup(&root, &sessions, protected))
-                .await
-                .context("cleaning up attachments")
-                .and_then(|result| result)
-        {
-            eprintln!("chat {id}: attachment cleanup: {error:#}");
-        }
         self.save_index()?;
         self.changed();
+        // Folders of live sessions and drafts are referenced or about to be; only orphans need a scan.
+        let protected = {
+            let state = self.state();
+            let sessions = state.index.chats().map(|(_, summary)| summary.id.clone());
+            sessions.chain(state.chats.keys().cloned()).collect()
+        };
+        let (root, sessions, id) = (
+            self.0.config.attachments_dir(),
+            self.0.config.sessions_dir.clone(),
+            id.to_owned(),
+        );
+        // Scanning every session file can take seconds, so the delete doesn't wait for it.
+        let mut cleanup = self
+            .0
+            .cleanup
+            .lock()
+            .expect("the cleanup lock isn't poisoned");
+        let previous = cleanup.take();
+        *cleanup = Some(tokio::spawn(async move {
+            if let Some(previous) = previous {
+                _ = previous.await;
+            }
+            let removed = tokio::task::spawn_blocking(move || {
+                attachments::cleanup(&root, &sessions, protected)
+            });
+            match removed.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("chat {id}: attachment cleanup: {error:#}"),
+                Err(error) => eprintln!("chat {id}: attachment cleanup: {error}"),
+            }
+        }));
         Ok(())
     }
 
@@ -1395,6 +1427,15 @@ impl Engine {
         self.0.watching.abort();
         self.stop_pairing();
         self.disconnect();
+        let cleanup = self
+            .0
+            .cleanup
+            .lock()
+            .expect("the cleanup lock isn't poisoned")
+            .take();
+        if let Some(cleanup) = cleanup {
+            _ = cleanup.await;
+        }
         let (processes, working): (Vec<Arc<Pi>>, Vec<String>) = {
             let mut state = self.state();
             state.stopping = true;
