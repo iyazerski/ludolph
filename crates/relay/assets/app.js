@@ -342,7 +342,7 @@ function eventStream(connect, onEvent, onDown) {
   };
 }
 
-const store = { machines: null, chats: null, loaded: new Set() };
+const store = { machines: null, chats: null, loaded: new Set(), failed: new Set() };
 const machineName = id => store.machines?.find(m => m.id === id)?.name || "Mac";
 const severalMacs = () => (store.machines?.length || 0) > 1;
 
@@ -369,19 +369,35 @@ function macNote(m) {
       " It may be asleep, or its engine isn't running: open Ludolph on it."));
   }
   if (macState(m) === "unlinked") return h("div", { class: "offline-note" }, h("span", {}, NOT_LINKED));
+  if (store.failed.has(m.id)) {
+    return h("div", { class: "offline-note" }, h("span", {}, h("b", {}, `${m.name} isn't answering.`), " Retrying…"));
+  }
   return null;
 }
 
-async function loadChats() {
-  const { machines } = await post("/api/machines");
-  store.machines = machines;
-  const m = selectedMac();
+async function loadMachines() {
+  store.machines = (await post("/api/machines")).machines;
+}
+
+// Only a Mac's newest load may land: an answer that was slow must not replace a newer one.
+const listing = new Map();
+async function loadChats(m) {
   if (!m) { store.chats = []; return; }
   let fresh = [];
   if (macState(m) === "ready") {
-    const { chats } = await call(m.id, "list_chats", { limit: 200 });
+    const mine = {};
+    listing.set(m.id, mine);
+    let chats;
+    try {
+      ({ chats } = await call(m.id, "list_chats", { limit: 200 }));
+    } catch (e) {
+      if (listing.get(m.id) === mine) store.failed.add(m.id);
+      throw e;
+    }
+    if (listing.get(m.id) !== mine) return;
     fresh = chats.map(c => ({ ...c, machine: m.id }));
   }
+  store.failed.delete(m.id);
   const when = c => Date.parse(c.lastMessageAt || c.createdAt) || 0;
   store.chats = [...(store.chats || []).filter(c => c.machine !== m.id), ...fresh].sort((a, b) => when(b) - when(a));
   store.loaded.add(m.id);
@@ -900,7 +916,9 @@ function listView() {
     known.clear();
     draw();
     scroll.scrollTop = 0;
-    poll.now();
+    // The old poll may still wait on a slow Mac; the new one must not.
+    poll.stop();
+    poll = poller(refresh, () => 4000);
   }
 
   function draw() {
@@ -914,7 +932,7 @@ function listView() {
           glyph("dot", tone), m.name);
       }));
     }
-    if (!store.chats || (sel && !store.loaded.has(sel.id))) {
+    if (!machines || (sel && !store.loaded.has(sel.id) && !store.failed.has(sel.id))) {
       if (!rows.querySelector(".skeleton")) rows.replaceChildren(...Array.from({ length: 7 }, () => h("div", { class: "skeleton" })));
       return;
     }
@@ -923,7 +941,7 @@ function listView() {
       onclick: () => { if (f.id === listState.filter) return; haptic(4); listState.filter = f.id; draw(); },
     }, f.label)));
     const filter = FILTERS.find(f => f.id === listState.filter);
-    const all = store.chats.filter(c => c.machine === sel?.id);
+    const all = (store.chats || []).filter(c => c.machine === sel?.id);
     const chats = all.filter(filter.keeps);
     const nodes = [];
     if (!machines.length) {
@@ -956,7 +974,11 @@ function listView() {
     painted = true;
   }
 
-  const poll = poller(async () => { await loadChats(); draw(); }, () => 4000);
+  // Show the Macs before waiting on one of them.
+  const refresh = async () => {
+    try { await loadMachines(); draw(); await loadChats(selectedMac()); } finally { draw(); }
+  };
+  let poll = poller(refresh, () => 4000);
   const redraw = () => { known.clear(); draw(); };
   dark.addEventListener("change", redraw);
   return {
@@ -2381,7 +2403,7 @@ if ("serviceWorker" in navigator) {
   try {
     const { signedIn, hasPasskey } = await post("/auth/status");
     if (!signedIn) return showSignIn(hasPasskey);
-    if (location.hash.startsWith("#/new")) store.machines = (await post("/api/machines")).machines;
+    if (location.hash.startsWith("#/new")) await loadMachines();
   } catch {
   }
   route();

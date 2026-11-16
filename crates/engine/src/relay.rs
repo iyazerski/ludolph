@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use ludolph_relay_proto::{
-    CONNECT_PATH, Down, PAIR_PATH, PROTOCOL, PairStart, Paired, Sealed, Up, pair_url,
+    CONNECT_PATH, Down, PAIR_PATH, PING_EVERY, PROTOCOL, PairStart, Paired, Sealed, Up, pair_url,
 };
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use security_framework::passwords::{
@@ -26,6 +26,7 @@ use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::engine::{Alert, AlertKind, Engine};
 use crate::feed::{self, Feed};
+use crate::notify::Changes;
 use crate::power;
 use crate::seal::{self, Keys, Opened, Purpose, Replays};
 use crate::settings::Notify;
@@ -33,8 +34,13 @@ use crate::text::one_line;
 use crate::tools::{self, Tool};
 use crate::transcript::{self, Part, Window};
 
-const PING_EVERY: Duration = Duration::from_secs(25);
-const SILENCE_LIMIT: Duration = Duration::from_secs(70);
+/// The relay answers every ping, so this is two missed pongs.
+const SILENCE_LIMIT: Duration = Duration::from_secs(25);
+/// After a network change, such as a VPN coming up, the old link is often
+/// open but dead, so it gets a quick ping that must be answered.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// configd posts this when interfaces, addresses or routes change.
+const NETWORK_CHANGE: &std::ffi::CStr = c"com.apple.system.config.network_change";
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Back off across short-lived connections too, such as protocol refusals after hello.
@@ -377,8 +383,11 @@ pub(crate) async fn run(
         }
     };
     let slots = Arc::new(Semaphore::new(MAX_CALLS));
-    let mut power = power::Changes::new()
+    let mut power = power::changes()
         .inspect_err(|e| eprintln!("relay: the battery won't update: {e:#}"))
+        .ok();
+    let mut network = Changes::new(NETWORK_CHANGE)
+        .inspect_err(|e| eprintln!("relay: network changes won't be noticed: {e:#}"))
         .ok();
     let mut backoff = MIN_BACKOFF;
     loop {
@@ -388,7 +397,7 @@ pub(crate) async fn run(
             eprintln!("relay: connected to {url}");
             report(LinkStatus::Connected, None);
             connected = Some(Instant::now());
-            serve(socket, &engine, &phones, &slots, &mut power).await
+            serve(socket, &engine, &phones, &slots, &mut power, &mut network).await
         }
         .await;
         if connected.is_some_and(|at| at.elapsed() >= STABLE_AFTER) {
@@ -492,7 +501,8 @@ async fn serve(
     engine: &Engine,
     phones: &Arc<Phones>,
     slots: &Arc<Semaphore>,
-    power: &mut Option<power::Changes>,
+    power: &mut Option<Changes>,
+    network: &mut Option<Changes>,
 ) -> Result<()> {
     let mut alerts = engine.alerts();
     let (mut sink, mut stream) = socket.split();
@@ -504,11 +514,12 @@ async fn serve(
     let mut watching: HashMap<u64, AbortHandle> = HashMap::new();
     let (frames_tx, mut frames) = mpsc::channel::<Up>(FRAME_QUEUE);
     let mut ping = tokio::time::interval(PING_EVERY);
-    let mut heard = Instant::now();
+    let mut deadline = Instant::now() + SILENCE_LIMIT;
     loop {
         tokio::select! {
+            () = tokio::time::sleep_until(deadline) => bail!("the relay stopped answering"),
             frame = stream.next() => {
-                heard = Instant::now();
+                deadline = Instant::now() + SILENCE_LIMIT;
                 match frame {
                     Some(Ok(Message::Text(body))) => match serde_json::from_str::<Down>(&body) {
                         Ok(Down::Call { id, .. }) if calls.len() >= MAX_QUEUED_CALLS => {
@@ -565,7 +576,15 @@ async fn serve(
                 Err(RecvError::Lagged(missed)) => eprintln!("relay: skipped {missed} notifications"),
                 Err(RecvError::Closed) => bail!("the engine stopped"),
             },
-            changed = power_change(power) => {
+            changed = change(network) => {
+                if let Err(e) = changed {
+                    eprintln!("relay: network changes won't be noticed: {e:#}");
+                    *network = None;
+                }
+                sink.send(Message::Ping(Bytes::new())).await?;
+                deadline = deadline.min(Instant::now() + PROBE_TIMEOUT);
+            }
+            changed = change(power) => {
                 if let Err(e) = changed {
                     eprintln!("relay: the battery won't update: {e:#}");
                     *power = None;
@@ -582,12 +601,7 @@ async fn serve(
                 }
             }
             Some(frame) = frames.recv() => sink.send(encode(&frame)?).await?,
-            _ = ping.tick() => {
-                if heard.elapsed() > SILENCE_LIMIT {
-                    bail!("no word from the relay for {}s", SILENCE_LIMIT.as_secs());
-                }
-                sink.send(Message::Ping(Bytes::new())).await?;
-            }
+            _ = ping.tick() => sink.send(Message::Ping(Bytes::new())).await?,
         }
     }
 }
@@ -694,8 +708,8 @@ async fn watch(
     }
 }
 
-async fn power_change(power: &mut Option<power::Changes>) -> Result<()> {
-    match power {
+async fn change(changes: &mut Option<Changes>) -> Result<()> {
+    match changes {
         Some(changes) => changes.next().await,
         None => std::future::pending().await,
     }

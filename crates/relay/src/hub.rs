@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use ludolph_relay_proto::{Battery, Down, PROTOCOL, Sealed, Up};
+use ludolph_relay_proto::{Battery, Down, PING_EVERY, PROTOCOL, Sealed, Up};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
@@ -14,7 +14,8 @@ use tokio::time::{Duration, Instant};
 use crate::store::Machine;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-const SILENCE_LIMIT: Duration = Duration::from_secs(70);
+/// Until then, calls to a Mac whose link died quietly wait out their timeout.
+const SILENCE_LIMIT: Duration = PING_EVERY.saturating_mul(3);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const CALL_QUEUE: usize = 64;
 /// A lagging phone must reconnect: dropping individual frames corrupts its page.
