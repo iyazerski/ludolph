@@ -5,6 +5,15 @@ on:
   workflow_call:
   workflow_dispatch:
 
+# Only PR runs share a group, so a new push cancels the outdated run and frees its macOS runner.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+# Debug info makes up most of the cached target directory, and CI never reads it.
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+
 jobs:
   phone:
     runs-on: ubuntu-24.04
@@ -48,7 +57,7 @@ jobs:
         run: cargo test -p ludolph-relay --locked
 
   licenses:
-    runs-on: macos-26
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v7
