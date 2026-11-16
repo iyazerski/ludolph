@@ -2148,12 +2148,12 @@ function detailsView(machine, id, fromChat, chatFromList) {
       const cost = d.spent.cost > 0 && d.spent.cost < 0.01 ? "<$0.01" : `$${d.spent.cost.toFixed(2)}`;
       body.replaceChildren(
         h("section", {},
-          h("h2", {}, "Uncommitted changes"),
-          d.changes ? h("a", { class: "turn-changes", href: `${chatHash(machine, id)}/changes/working` }, icon("diff"),
+          h("h2", {}, "Chat changes"),
+          d.changes?.files ? h("a", { class: "turn-changes", href: `${chatHash(machine, id)}/changes/chat` }, icon("diff"),
             plural(d.changes.files, "file", "files"),
             h("span", { class: "plus" }, `+${d.changes.additions}`),
             h("span", { class: "minus" }, `−${d.changes.deletions}`), icon("chevRight", "chev"))
-            : h("p", {}, d.changesError || "Not a Git repository")),
+            : h("p", {}, d.changesError || "No changes yet")),
         h("section", {}, h("h2", {}, "Pull requests"), d.pullRequests.length
           ? d.pullRequests.map(pr => h("a", { class: "pr-link", href: pr.url, target: "_blank", rel: "noopener noreferrer" }, icon("fetch"), pr.label))
           : h("p", {}, "No PR links yet")),
@@ -2168,21 +2168,21 @@ function detailsView(machine, id, fromChat, chatFromList) {
 }
 
 function changesView(machine, id, turn, fromChat, chatFromList) {
-  const working = turn === "working";
+  const whole = turn === "chat";
   const cached = store.chats?.find(c => c.id === id && c.machine === machine);
   const back = () => { haptic(5); fromChat ? history.back() : go(chatHash(machine, id)); };
   const bar = h("div", { class: "bar floating" }, h("div", { class: "bar-card glass" },
     h("button", { class: "circle", "aria-label": "Back", onclick: back }, icon("back")),
-    h("div", { class: "grow" }, h("div", { class: "t" }, working ? "Uncommitted changes" : "Turn changes"), h("div", { class: "s" }, cached?.title || " ")),
+    h("div", { class: "grow" }, h("div", { class: "t" }, whole ? "Chat changes" : "Turn changes"), h("div", { class: "s" }, cached?.title || " ")),
     h("div", { class: "circle" })));
   const body = h("div", { class: "diff" }, h("div", { class: "skeleton", style: { height: "120px" } }));
   const offline = offlineBanner();
   const el = h("div", { class: "view" }, h("div", { class: "scroll" }, body), bar, offline.el);
   let gone = false;
-  call(machine, working ? "working_changes" : "turn_changes", working ? { chat: id } : { chat: id, turn }).then(d => {
+  call(machine, whole ? "chat_changes" : "turn_changes", whole ? { chat: id } : { chat: id, turn }).then(d => {
     if (gone) return;
     const files = parsePatch(d.patch || "");
-    const notes = [!files.length && (working ? "No uncommitted changes" : "No changes this turn"), d.truncated && "The diff is too large to show whole."];
+    const notes = [!files.length && (whole ? "No changes in this chat" : "No changes this turn"), d.truncated && "The diff is too large to show whole."];
     body.replaceChildren(...notes.filter(Boolean).map(n => h("div", { class: "dempty" }, n)), ...files.map(diffFile));
   }, e => !gone && body.replaceChildren(h("div", { class: "dempty" }, `Couldn't load the changes: ${e.message}`)));
   return { kind: "changes", chatFromList: fromChat && chatFromList, el, destroy() { gone = true; offline.stop(); } };

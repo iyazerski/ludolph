@@ -94,7 +94,7 @@ pub fn card(chat: &Existing, k: &Kit) -> El {
 }
 
 fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
-    if let Some(counts) = &details.changes {
+    if let Some(counts) = details.changes.as_ref().filter(|c| c.files > 0) {
         let stats = format!("+{} −{}", counts.additions, counts.deletions);
         let split = stats.find(' ').unwrap_or(stats.len());
         let line = row()
@@ -131,16 +131,13 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
             line.radius(6.0)
                 .hover_group()
                 .label(format!(
-                    "Show current uncommitted changes in {} files",
+                    "Show this chat's changes in {} files",
                     counts.files
                 ))
-                .on_press(State::open_working_changes),
+                .on_press(State::open_chat_changes),
         );
     } else {
-        let label = details
-            .changes_error
-            .as_deref()
-            .unwrap_or("Not a Git repository");
+        let label = details.changes_error.as_deref().unwrap_or("No changes yet");
         body = body.child(
             text(label.to_owned())
                 .font(k.ty.small)

@@ -329,7 +329,14 @@ impl Engine {
         if let Err(e) = login::apply(&config.home, config.app.as_deref(), settings.open_at_login) {
             eprintln!("login item: {e:#}");
         }
-        let turns = Arc::new(Turns::new(config.state_dir.join("turns"))?);
+        // `turns` held patches, which `changes` replaced.
+        match std::fs::remove_dir_all(config.state_dir.join("turns")) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                eprintln!("removing the old turn changes: {e}");
+            }
+            _ => {}
+        }
+        let turns = Arc::new(Turns::new(config.state_dir.join("changes"))?);
         // The engine's folder has no `.pi` settings to change the list.
         let catalog = Catalog::new(
             config.pi.clone(),
@@ -717,7 +724,7 @@ impl Engine {
             return;
         };
         let saved = async {
-            let changes = self.0.turns.after(before).await?;
+            let changes = self.0.turns.after(id, before).await?;
             let (turns, session) = (self.0.turns.clone(), id.to_owned());
             tokio::task::spawn_blocking(move || turns.save(&session, key, &changes)).await?
         };
@@ -756,24 +763,14 @@ impl Engine {
         Ok((details, spent))
     }
 
-    pub async fn working_changes(&self, id: &str) -> Result<Option<Diff>> {
-        match self.cwd(id)? {
-            Some(cwd) => self.0.turns.working(&cwd).await,
-            None => Ok(None),
-        }
+    pub async fn chat_changes(&self, id: &str) -> Result<Diff> {
+        known(&self.state(), id)?;
+        self.0.turns.chat(id).await
     }
 
-    pub async fn working_counts(&self, id: &str) -> Result<Option<Counts>> {
-        match self.cwd(id)? {
-            Some(cwd) => self.0.turns.working_counts(&cwd).await,
-            None => Ok(None),
-        }
-    }
-
-    fn cwd(&self, id: &str) -> Result<Option<PathBuf>> {
-        let state = self.state();
-        known(&state, id)?;
-        Ok(cwd_of(&state, id))
+    pub async fn chat_counts(&self, id: &str) -> Result<Counts> {
+        known(&self.state(), id)?;
+        self.0.turns.chat_counts(id).await
     }
 
     pub async fn run_counts(&self, id: &str) -> Result<BTreeMap<i64, Counts>> {
@@ -782,8 +779,7 @@ impl Engine {
     }
 
     pub async fn run_changes(&self, id: &str, key: i64) -> Result<Option<Diff>> {
-        let (turns, id) = (self.0.turns.clone(), id.to_owned());
-        tokio::task::spawn_blocking(move || turns.load(&id, key)).await?
+        self.0.turns.load(id, key).await
     }
 
     fn title_soon(&self, id: &str, text: &str) {

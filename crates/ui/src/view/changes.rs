@@ -80,7 +80,7 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
         .child(
             text(match chat.changes_of {
                 ChangeTarget::Turn(_) => "Turn changes",
-                ChangeTarget::WorkingTree => "Uncommitted changes",
+                ChangeTarget::Chat => "Chat changes",
             })
             .font(k.ty.ui_medium)
             .color(k.c.text_base)
@@ -107,7 +107,7 @@ pub fn page(s: &State, chat: &Existing, changes: &Changes, k: &Kit) -> El {
         Changes::Ready { diff, .. } if diff.files().is_empty() => note().child(
             text(match chat.changes_of {
                 ChangeTarget::Turn(_) => "No changes this turn",
-                ChangeTarget::WorkingTree => "No uncommitted changes",
+                ChangeTarget::Chat => "No changes in this chat",
             })
             .font(k.ty.ui)
             .color(k.c.text_muted),
