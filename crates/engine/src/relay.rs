@@ -35,7 +35,7 @@ use crate::tools::{self, Tool};
 use crate::transcript::{self, Part, Window};
 
 /// The relay answers every ping, so this is two missed pongs.
-const SILENCE_LIMIT: Duration = Duration::from_secs(25);
+const SILENCE_LIMIT: Duration = Duration::from_secs(30);
 /// After a network change, such as a VPN coming up, the old link is often
 /// open but dead, so it gets a quick ping that must be answered.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);

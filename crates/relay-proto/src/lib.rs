@@ -9,7 +9,7 @@ pub const CONNECT_PATH: &str = "/connect";
 
 /// How often a connected Mac pings the relay. Both sides drop a link that
 /// stays quiet for a few pings, since a network change can leave it open but dead.
-pub const PING_EVERY: Duration = Duration::from_secs(10);
+pub const PING_EVERY: Duration = Duration::from_secs(15);
 
 pub const PAIR_PATH: &str = "/pair";
 
