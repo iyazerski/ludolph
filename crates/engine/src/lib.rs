@@ -11,6 +11,7 @@ mod jsonl;
 pub mod live;
 pub mod login;
 pub mod models;
+mod notify;
 pub mod pi;
 pub mod power;
 pub mod relay;
