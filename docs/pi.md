@@ -1,0 +1,33 @@
+# pi behavior Ludolph relies on
+
+Ludolph uses only pi's RPC mode (`docs/rpc.md`, `docs/rpc-extension-ui.md`) and its session files (`docs/session-format.md`). These are the behaviors the code depends on that pi's docs don't promise, or that are easy to miss. Check them again when you upgrade pi. They were last checked with pi 1.5.2.
+
+## RPC
+
+- Records are JSON lines, split only on `\n`. Responses match requests by `id`. pi's stdout must be read all the time.
+- `pi --mode rpc --session-id <uuid>` doesn't write the session file until the first prompt.
+- `message_end` arrives before pi appends the entry to the file (`agent-session.js`). Events carry no entry ids.
+- An abort drops pi's queue without a `queue_update`.
+- pi writes the same `aborted` reply on exit as for a Stop. So `runtime.json` alone can't tell whether an interrupted run finished.
+- An `extension_ui_request` dialog (`select`, `confirm`, `input`, `editor`) blocks until it gets an answer. When its `timeout` runs out, pi resolves it without telling the client. An extension command can wait on a dialog outside a run, so a pi with an open question isn't idle.
+- `set_session_name` is kept in memory until pi writes the file, then saved as a `session_info` entry.
+- `get_available_models` lists one set of models for all projects. A provider added by a project-local extension isn't listed, but `set_model` still accepts it.
+- Supported thinking levels come from the model object, as pi's `getSupportedThinkingLevels` works them out: only `off` without `reasoning`, and `xhigh` and `max` only when `thinkingLevelMap` names them.
+- pi may compact before it acknowledges a prompt.
+- RPC mode refuses to open a session whose `cwd` no longer exists.
+- A fresh `pi --mode rpc` answers `get_state` in about 250 ms. Resuming a 45 MB session takes about 270 ms. A loaded pi uses 135 to 300 MB.
+
+## Session files
+
+- The first line is the header, with `id` and `cwd`.
+- The latest `session_info` entry's `name` is the title.
+- Entries form a tree (`id`, `parentId`). `/tree` leaves old branches in the file, so the transcript is the path from the last entry appended.
+- `/fork` and `/clone` copy entries, with their ids, into a new file.
+- pi loads a session once and then only appends (`session-manager.js`). It may still rewrite a whole file, for example when it migrates an old version on load.
+- pi doesn't lock session files or keep them open between writes (checked with `lsof`). Two pis on one session fork its history.
+- The `timestamp` of a user message in the file matches the one pi reports in its events.
+
+## Wishlist
+
+- An advisory lock (`flock`) on session files, so Ludolph can tell when a terminal pi has a chat open.
+- A move RPC, so moving a chat doesn't need Ludolph to rewrite the header.
