@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 
 use super::page::{ChangeTarget, Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
 use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
-use crate::data::{ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Polished, Skills};
+use crate::data::{
+    ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Part, Polished, Skills, ToolState,
+};
 use crate::dictation::{self, Heard, Listening};
 
 const EARLIER: usize = 40;
@@ -27,6 +29,12 @@ pub enum Answer {
 struct Sent {
     delivery: String,
     text: String,
+}
+
+fn finished_in(page: &[Message], call: &str) -> bool {
+    page.iter().flat_map(|m| &m.parts).any(|part| {
+        matches!(part, Part::Tool { id, state, .. } if id == call && *state != ToolState::Running)
+    })
 }
 
 impl State {
@@ -93,8 +101,25 @@ impl State {
         chat.turn_changes = frame.turn_changes;
         chat.run = frame.run;
         chat.queued = frame.queued;
+        let finished: Vec<String> = chat
+            .tool_outputs
+            .iter()
+            .filter(|(_, output)| matches!(output, Some(Ok(output)) if output.running))
+            .filter(|(call, _)| finished_in(&page, call))
+            .map(|(call, _)| call.clone())
+            .collect();
         chat.page = Some(page);
         chat.file_links.borrow_mut().clear();
+        // A snapshot taken while its tool ran misses the end, often the error or summary.
+        for call in &finished {
+            chat.tool_outputs.insert(call.clone(), None);
+        }
+        for call in finished {
+            self.fetch_tool_output(nav, call);
+        }
+        let Some(chat) = self.existing_at(nav) else {
+            return;
+        };
         let moved = chat
             .chat
             .as_ref()
@@ -235,8 +260,14 @@ impl State {
             return;
         }
         chat.tool_outputs.insert(call.to_owned(), None);
+        self.fetch_tool_output(nav, call.to_owned());
+    }
+
+    fn fetch_tool_output(&mut self, nav: u64, call: String) {
+        let Some(chat) = self.existing_at(nav) else {
+            return;
+        };
         let id = chat.id.clone();
-        let call = call.to_owned();
         self.api.call(
             "tool_output",
             json!({"chat": id, "call": call}),
