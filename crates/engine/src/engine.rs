@@ -757,15 +757,23 @@ impl Engine {
     }
 
     pub async fn working_changes(&self, id: &str) -> Result<Option<Diff>> {
-        let cwd = {
-            let state = self.state();
-            known(&state, id)?;
-            cwd_of(&state, id)
-        };
-        match cwd {
+        match self.cwd(id)? {
             Some(cwd) => self.0.turns.working(&cwd).await,
             None => Ok(None),
         }
+    }
+
+    pub async fn working_counts(&self, id: &str) -> Result<Option<Counts>> {
+        match self.cwd(id)? {
+            Some(cwd) => self.0.turns.working_counts(&cwd).await,
+            None => Ok(None),
+        }
+    }
+
+    fn cwd(&self, id: &str) -> Result<Option<PathBuf>> {
+        let state = self.state();
+        known(&state, id)?;
+        Ok(cwd_of(&state, id))
     }
 
     pub async fn run_counts(&self, id: &str) -> Result<BTreeMap<i64, Counts>> {

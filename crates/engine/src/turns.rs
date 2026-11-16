@@ -129,6 +129,26 @@ impl Turns {
 
     /// Read staged, unstaged and untracked changes through a private index and object store.
     pub async fn working(&self, cwd: &Path) -> Result<Option<Diff>> {
+        let Some((snapshot, base)) = self.working_tree(cwd).await? else {
+            return Ok(None);
+        };
+        compare(&snapshot, &base, &snapshot.tree).await.map(Some)
+    }
+
+    /// [`Self::working`] without the patch, which can be large and only the Changes view shows.
+    pub async fn working_counts(&self, cwd: &Path) -> Result<Option<Counts>> {
+        let Some((snapshot, base)) = self.working_tree(cwd).await? else {
+            return Ok(None);
+        };
+        let (files, additions, deletions) = numstat(&snapshot, &base, &snapshot.tree).await?;
+        Ok(Some(Counts {
+            files: files.len(),
+            additions,
+            deletions,
+        }))
+    }
+
+    async fn working_tree(&self, cwd: &Path) -> Result<Option<(Snapshot, String)>> {
         let Some(snapshot) = self.before(cwd).await? else {
             return Ok(None);
         };
@@ -142,9 +162,8 @@ impl Turns {
             // A new repository has no HEAD yet.
             Err(_) => git(&snapshot, &["hash-object", "-w", "-t", "tree", "--stdin"]).await?,
         };
-        compare(&snapshot, base.trim(), &snapshot.tree)
-            .await
-            .map(Some)
+        let base = base.trim().to_owned();
+        Ok(Some((snapshot, base)))
     }
 
     pub fn save(&self, session: &str, key: i64, changes: &Diff) -> Result<()> {
@@ -274,32 +293,8 @@ fn read_dir(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 async fn compare(snapshot: &Snapshot, before: &str, after: &str) -> Result<Diff> {
+    let (files, additions, deletions) = numstat(snapshot, before, after).await?;
     let range = [before, after];
-    let numstat = git(
-        snapshot,
-        &[
-            &["diff-tree", "-r", "--no-renames", "--numstat", "-z"][..],
-            &range,
-        ]
-        .concat(),
-    )
-    .await?;
-    let mut files = Vec::new();
-    let (mut additions, mut deletions) = (0, 0);
-    // Numstat is NUL-separated; binary files report '-' instead of line counts.
-    for record in numstat.split('\0').filter(|r| !r.is_empty()) {
-        let mut fields = record.splitn(3, '\t');
-        let (Some(added), Some(deleted), Some(path)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            bail!("git diff-tree printed {record:?}");
-        };
-        additions += added.parse::<u64>().unwrap_or(0);
-        deletions += deleted.parse::<u64>().unwrap_or(0);
-        files.push(File {
-            path: path.to_owned(),
-        });
-    }
     let patch_args = [
         "diff-tree",
         "-r",
@@ -327,6 +322,36 @@ async fn compare(snapshot: &Snapshot, before: &str, after: &str) -> Result<Diff>
         deletions,
         truncated,
     })
+}
+
+async fn numstat(snapshot: &Snapshot, before: &str, after: &str) -> Result<(Vec<File>, u64, u64)> {
+    let range = [before, after];
+    let numstat = git(
+        snapshot,
+        &[
+            &["diff-tree", "-r", "--no-renames", "--numstat", "-z"][..],
+            &range,
+        ]
+        .concat(),
+    )
+    .await?;
+    let mut files = Vec::new();
+    let (mut additions, mut deletions) = (0, 0);
+    // Numstat is NUL-separated; binary files report '-' instead of line counts.
+    for record in numstat.split('\0').filter(|r| !r.is_empty()) {
+        let mut fields = record.splitn(3, '\t');
+        let (Some(added), Some(deleted), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            bail!("git diff-tree printed {record:?}");
+        };
+        additions += added.parse::<u64>().unwrap_or(0);
+        deletions += deleted.parse::<u64>().unwrap_or(0);
+        files.push(File {
+            path: path.to_owned(),
+        });
+    }
+    Ok((files, additions, deletions))
 }
 
 async fn repo(cwd: &Path) -> Option<Repo> {
