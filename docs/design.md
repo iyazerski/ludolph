@@ -386,6 +386,8 @@ Measured on the main window's release build (physical footprint): 10 MB started 
 
 Why streaming frames skip springs: Rune springs a page to its new layout, so with each frame animated, a growing reply kept the window drawing at the display's 120 Hz for the whole reply. That took 20 to 25% of a core, and fewer frames didn't change it. Frames that only grow a streaming reply now land at once, which leaves Rune drawing about 7 frames a second. Other changes still animate.
 
+Entrances are one-off, so they cost frames only while they play. A sent prompt, a question and a new chat's first prompt rise about 12 points and fade in over half a second. That's about 60 frames once per send, and a send already kept the window drawing for about 80 frames, which it still does. Rune lands an entrance that mounts out of sight in the same commit that scrolls to it, so these mount hidden and rise after their first layout. Nothing loops, and streaming text never animates.
+
 How we check:
 
 - `ps -o rss,pcpu` sampled over a minute in each state, on every release.

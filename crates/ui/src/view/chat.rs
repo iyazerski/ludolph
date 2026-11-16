@@ -1,4 +1,4 @@
-use rune::{Color, El, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
+use rune::{Color, El, ScrollSpec, TextStyle, Transition, Tx, col, el, icon, row, text};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Markdown, Menu,
@@ -7,8 +7,10 @@ use rune_kit::{
 
 use super::{breaks, code, icons};
 
-use super::widgets::{busy, dot, engine_note, head, head_titles, hide_button, tones};
-use crate::app::{Answer, ChatPage, Existing, Overlay, QuestionForm, State, Target, Window};
+use super::widgets::{
+    busy, dot, engine_note, head, head_titles, hide_button, rise, rise_into_view, tones,
+};
+use crate::app::{Answer, ChatPage, Existing, Overlay, QuestionForm, State, Target, Top, Window};
 use crate::data::{DialogKind, Message, MessageStatus, Part, Role, Run, ToolState};
 use crate::labels::{self, ToolCall, tool_summary};
 use rune::Image;
@@ -98,9 +100,7 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .grow(1.0)
         .min_h(0.0)
         .scroll(ScrollSpec {
-            stick_bottom: page
-                .existing()
-                .is_none_or(|chat| chat.top_message.is_none()),
+            stick_bottom: page.existing().is_none_or(|chat| chat.top.is_none()),
         })
         .scroll_anchor()
         .on_layout_tx(|s: &mut State, [_, _, _, height], tx| {
@@ -128,7 +128,7 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
             .label("Scroll to bottom")
             .on_press_tx(|s: &mut State, tx: &mut Tx| {
                 if let Some(chat) = s.chat_mut().and_then(ChatPage::existing_mut) {
-                    chat.top_message = None;
+                    chat.top = None;
                 }
                 tx.scroll_to_bottom("transcript");
             })
@@ -138,6 +138,7 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
                 .pin(None, None, Some(0.0), Some(10.0))
                 .w_full()
                 .justify_center()
+                .transition(Transition::scale(0.9))
                 .child(jump),
         );
     }
@@ -289,14 +290,19 @@ fn close_menu(s: &mut State) {
 }
 
 fn hero(k: &Kit) -> El {
-    col().w_full().pt(80.0).items_center().child(
-        text("What are we building?")
-            .font(TextStyle {
-                size: 20.0,
-                ..k.ty.body_medium
-            })
-            .color(k.c.text_muted),
-    )
+    col()
+        .w_full()
+        .pt(80.0)
+        .items_center()
+        .transition(rise())
+        .child(
+            text("What are we building?")
+                .font(TextStyle {
+                    size: 20.0,
+                    ..k.ty.body_medium
+                })
+                .color(k.c.text_muted),
+        )
 }
 
 fn errbox(k: &Kit, why: &str) -> El {
@@ -347,7 +353,8 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
         let key = format!("m-{}", m.id);
         match m.role {
             Role::User => {
-                if page.top_message == Some(m.created_at) {
+                let held = page.top.as_ref().filter(|t| t.at == m.created_at);
+                if held.is_some() {
                     top = Some(out.len());
                 }
                 let images = m
@@ -358,11 +365,12 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
                     })
                     .collect();
                 started = Some(m.created_at);
-                out.push(
-                    user_bubble(page, k, &m.id, &m.text(), images, Shade::Sent)
-                        .child(footer(page, k, m))
-                        .key(key),
-                );
+                let bubble = user_bubble(page, k, &m.id, &m.text(), images, Shade::Sent)
+                    .child(footer(page, k, m));
+                out.push(match held {
+                    Some(held) => rise_held(bubble, held),
+                    None => bubble.key(key),
+                });
             }
             Role::Assistant => {
                 let streaming = m.status == MessageStatus::Streaming
@@ -374,21 +382,17 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
         }
     }
     for (i, p) in page.pending.iter().enumerate() {
-        if page.top_message == Some(p.at) {
+        let held = page.top.as_ref().filter(|t| t.at == p.at);
+        if held.is_some() {
             top = Some(out.len());
         }
         let images = p.images.iter().map(|t| (t.as_ref(), None)).collect();
-        out.push(
-            user_bubble(
-                page,
-                k,
-                &format!("pending-{i}"),
-                &p.text,
-                images,
-                Shade::Pending,
-            )
-            .key(format!("pending-{i}")),
-        );
+        let key = format!("pending-{i}");
+        let bubble = user_bubble(page, k, &key, &p.text, images, Shade::Pending);
+        out.push(match held {
+            Some(held) => rise_held(bubble, held),
+            None => bubble.transition(rise()).key(key),
+        });
     }
     let queued = page
         .run
@@ -404,6 +408,7 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
                 Vec::new(),
                 Shade::Queued,
             )
+            .transition(rise())
             .key(format!("queued-{i}")),
         );
     }
@@ -419,7 +424,13 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
         out.push(working_row(k, "Working", secs.map(|s| format!("{s}s"))).key("working"));
     }
     if let Some(form) = &page.question {
-        out.push(question(k, form).key(format!("q-{}", form.dialog.id)));
+        let card = question(k, form).key(format!("q-{}", form.dialog.id));
+        out.push(rise_into_view(card, form.shown, |s| {
+            s.chat_mut()
+                .and_then(ChatPage::existing_mut)
+                .and_then(|c| c.question.as_mut())
+                .is_some_and(|q| !std::mem::replace(&mut q.shown, true))
+        }));
     }
     if let Some(top) = top {
         let turn = out.split_off(top);
@@ -434,6 +445,16 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
         );
     }
     out
+}
+
+fn rise_held(bubble: El, top: &Top) -> El {
+    let bubble = bubble.key(format!("prompt-{}", top.sent));
+    rise_into_view(bubble, top.shown, |s| {
+        s.chat_mut()
+            .and_then(ChatPage::existing_mut)
+            .and_then(|c| c.top.as_mut())
+            .is_some_and(|top| !std::mem::replace(&mut top.shown, true))
+    })
 }
 
 fn working_row(k: &Kit, label: &str, detail: Option<String>) -> El {

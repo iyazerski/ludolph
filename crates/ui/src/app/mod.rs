@@ -30,7 +30,7 @@ pub use self::chats::{ChatDialog, project_drop_key};
 pub use self::draft::{Catalog, Config, Draft, Load, Pick};
 pub use self::page::{
     ChangeTarget, Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending,
-    QuestionForm, SkillList, Target, Voice,
+    QuestionForm, SkillList, Target, Top, Voice,
 };
 pub use self::settings::{QR_SIZE, SettingsPage, Update};
 

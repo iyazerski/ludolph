@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::page::{ChangeTarget, Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
-use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
+use super::{ChatPage, Pending, QuestionForm, State, Target, Top, attach};
 use crate::data::{
     ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Part, Polished, Skills,
     ToolOutput, ToolState,
@@ -383,7 +383,7 @@ impl State {
         };
         let id = chat.id.clone();
         let at = chrono::Utc::now().timestamp_millis();
-        chat.top_message = Some(at);
+        chat.top = Some(Top::new(at));
         chat.pending.push(Pending {
             text: typed.clone(),
             images: thumbs,
@@ -416,8 +416,8 @@ impl State {
                         .as_ref()
                         .is_ok_and(|sent| matches!(sent.delivery.as_str(), "handled" | "queued"));
                 if let Some(chat) = page.existing_mut() {
-                    if gone && chat.top_message == Some(at) {
-                        chat.top_message = None;
+                    if gone && chat.top.as_ref().is_some_and(|top| top.at == at) {
+                        chat.top = None;
                     }
                     chat.pending.retain_mut(|p| {
                         if p.text == typed {
