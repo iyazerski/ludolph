@@ -111,10 +111,9 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
                 }
             }
         })
-        .on_far_from_bottom(160.0, |s: &mut State, far| {
-            if let Some(page) = s.chat_mut() {
-                page.far_from_bottom = far;
-            }
+        .on_far_from_bottom_if(160.0, None, |s: &mut State, far| {
+            s.chat_mut()
+                .is_some_and(|page| std::mem::replace(&mut page.far_from_bottom, far) != far)
         })
         .child(body.key("messages"));
     if wide {
