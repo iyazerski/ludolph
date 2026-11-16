@@ -199,7 +199,9 @@ pub fn run(opts: Opts) -> Result<()> {
             MacWindowOptions::default()
                 .level(FLOATING)
                 .collection_behavior(ALL_SPACES | FULL_SCREEN_AUXILIARY)
-                .corner_radius(CORNER),
+                .corner_radius(CORNER)
+                // Keeps it out of screenshots and screen sharing, so it can stay open during a call.
+                .exclude_from_capture(true),
         );
         let mut saved = saved_frame(&prefs.borrow(), displays);
         let main_options = WindowOptions {
