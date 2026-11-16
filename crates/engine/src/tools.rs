@@ -171,13 +171,13 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
             let args: ChatArgs = parse(args)?;
             let (session, changes) = tokio::join!(
                 engine.details(&args.chat),
-                engine.working_changes(&args.chat)
+                engine.working_counts(&args.chat)
             );
             let (details, spent) = session?;
             let (changes, error) = match changes {
-                Ok(Some(diff)) => (
+                Ok(Some(counts)) => (
                     Some(
-                        json!({"files": diff.files.len(), "additions": diff.additions, "deletions": diff.deletions}),
+                        json!({"files": counts.files, "additions": counts.additions, "deletions": counts.deletions}),
                     ),
                     None,
                 ),

@@ -202,6 +202,8 @@ pub struct ToolOutput {
     pub args: serde_json::Value,
     pub text: String,
     pub truncated: bool,
+    /// Taken while the tool ran, so it's partial.
+    pub running: bool,
 }
 
 impl Message {

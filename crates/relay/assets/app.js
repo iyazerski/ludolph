@@ -187,6 +187,8 @@ async function post(path, body = {}) {
   setOnline(true);
   const data = await res.json().catch(() => null);
   if (res.status === 401 && !path.startsWith("/auth/")) { showSignIn(); throw new ApiError("Sign in first"); }
+  // A proxy in front of the relay answers these without a body, e.g. while the relay restarts.
+  if (!res.ok && data?.error == null && [502, 503, 504].includes(res.status)) throw new LostError("Can't reach the relay");
   if (!res.ok) throw new ApiError(data?.error || `HTTP ${res.status}`);
   if (data == null) throw new LostError("Can't reach the relay");
   return data;
