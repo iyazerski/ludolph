@@ -198,7 +198,7 @@ async function loadLinks() { links = new Map((await Seal.links()).map(l => [l.ma
 const NOT_LINKED = "This phone can't open this Mac's chats yet. On the Mac, open Ludolph's Settings, choose Link new phone, and scan the code.";
 
 // Reuse operation ids across retries so a lost reply cannot repeat a mutation.
-const ONCE = new Set(["send_message", "create_chat", "respond_to_input", "edit_queued_message", "delete_queued_message", "resume_queue"]);
+const ONCE = new Set(["send_message", "create_chat", "respond_to_input", "edit_queued_message", "delete_queued_message", "steer_queued_message", "resume_queue"]);
 const ONCE_PATIENCE = 3 * 60_000;
 const NOT_CONNECTED = "this Mac is offline";
 const BUSY = "this Mac is busy; try again";
@@ -386,6 +386,13 @@ async function loadChats() {
   store.chats = [...(store.chats || []).filter(c => c.machine !== m.id), ...fresh].sort((a, b) => when(b) - when(a));
   store.loaded.add(m.id);
   seen.prime(fresh);
+}
+
+// A notice is sent once the chat settles, so the list need not wait for its next poll.
+const NOTICE_STATUS = { finished: "idle", failed: "errored", interrupted: "interrupted", input: "awaitingInput" };
+function settle(notice) {
+  const chat = store.chats?.find(c => c.machine === notice.machine && c.id === notice.chat);
+  if (chat && NOTICE_STATUS[notice.kind]) chat.status = NOTICE_STATUS[notice.kind];
 }
 
 const seen = {
@@ -956,6 +963,7 @@ function listView() {
     kind: "list",
     el,
     mounted() { draw(); scroll.scrollTop = listState.scroll; updateBar(); },
+    refresh() { draw(); poll.now(); },
     destroy() { poll.stop(); offline.stop(); dark.removeEventListener("change", redraw); },
   };
 }
@@ -1012,22 +1020,21 @@ function toolSummary(tools) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function toolGroup(tools, open, onToggle, onOpen, isOpen, toggleCall) {
+function toolGroup(tools, open, onToggle, isOpen, toggleCall) {
   const live = tools.some(t => t.state === "running");
   const block = h("div", { class: `tools${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { block.classList.toggle("open"); onToggle(block.classList.contains("open")); haptic(4); } },
     icon("chevDown", "chev"), h("span", { class: `sum${live ? " shimmer" : ""}` }, toolSummary(tools)));
-  const toolRow = (t, onClick) => {
+  const toolRow = t => {
     const [verb, iconName] = TOOL_VIEW[t.name] || ["Tool", "tool"];
     const arg = TOOL_VIEW[t.name] ? t.subject || "" : [t.name, t.subject].filter(Boolean).join(" · ");
     const subject = FILE_TOOLS.has(t.name) && t.subject ? fileBadge(t.subject) : h("span", { class: "arg" }, arg.replace(/\s+/g, " "));
-    const row = h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, role: onClick ? "button" : null, onclick: onClick, "aria-label": `${verb} ${arg} · ${t.state}` },
+    return h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, "aria-label": `${verb} ${arg} · ${t.state}` },
       h("span", { class: "lead" }, t.state === "running" ? glyph("trail") : icon(iconName)),
       h("span", { class: "verb" }, verb), subject);
-    return row;
   };
   const items = tools.map(t => {
-    if (t.name !== "codemode" && !t.calls?.length) return toolRow(t, () => onOpen(t));
+    if (t.name !== "codemode" && !t.calls?.length) return toolRow(t);
     const key = `${t.id}#calls`;
     const nested = h("div", { class: `nested${isOpen(key, true) ? " open" : ""}` });
     const label = t.name === "codemode" ? "Codemode" : t.name;
@@ -1041,7 +1048,6 @@ function toolGroup(tools, open, onToggle, onOpen, isOpen, toggleCall) {
       toolRow(call),
       call.error || call.state === "cancelled" ? h("div", { class: `call-note ${STATE_CLASS[call.state] || ""}` }, call.error || "Cancelled or unfinished") : null,
     ]);
-    if (t.name !== "codemode") children.push(h("button", { class: "call-output", onclick: () => onOpen(t) }, "Arguments & output"));
     nested.append(head, h("div", { class: "children" }, children));
     return nested;
   });
@@ -1441,7 +1447,7 @@ function chatView(machine, id, fromList) {
       h("div", { class: "group" },
         isWorking() && itemRow({ iconName: "stop", label: "Stop the agent", cls: "danger", onclick: () => { close(); stop(); } }),
         itemRow({ iconName: "edit", label: "Rename", onclick: renameSheet }),
-        itemRow({ iconName: "copy", label: "Copy link", onclick: () => { close(); copyText(location.href); toast({ title: "Link copied", kind: "done", timeout: 1800 }); } }),
+        chat && itemRow({ iconName: "copy", label: "Copy Chat ID", onclick: () => { close(); copyText(chat.id); toast({ title: "Chat ID copied", kind: "done", timeout: 1800 }); } }),
         itemRow({ iconName: "trash", label: "Delete", cls: "danger", onclick: deleteSheet })),
     ]);
   }
@@ -1490,21 +1496,6 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  function openTool(t) {
-    haptic(4);
-    const [verb] = TOOL_VIEW[t.name] || ["Tool"];
-    const head = h("h2", {}, `${verb} ${t.subject || t.name}`.trim());
-    sheet((close, fill) => {
-      api("tool_output", { call: t.id }).then(out => {
-        const text = out.text || (out.running ? "No output yet." : "No output.");
-        fill([head, out.failed ? h("div", { class: "note danger" }, "Failed") : null,
-          h("div", { class: "code" }, h("pre", {}, h("code", {}, out.truncated ? `${text}\n…` : text))),
-          ...out.images.map(img => h("img", { class: "shot", src: `data:${img.mimeType};base64,${img.data}` }))]);
-      }, e => fill([head, h("div", { class: "note" }, e.message)]));
-      return [head, h("div", { class: "note" }, "Loading…")];
-    });
-  }
-
   function openImage(m, index) {
     haptic(4);
     const head = h("h2", {}, `Image ${index + 1}`);
@@ -1530,7 +1521,7 @@ function chatView(machine, id, fromList) {
 
   function toolsBlock(m, g, byDefault = false) {
     const key = `${m.id}#${g.at}`;
-    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool, isOpen, (key, on) => openGroups.set(key, on));
+    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), isOpen, (key, on) => openGroups.set(key, on));
   }
 
 
@@ -1634,7 +1625,14 @@ function chatView(machine, id, fromList) {
           if (queueEdit?.id === message.id) closeQueueEditor();
           feed.now();
         } catch (e) { toast({ title: "Couldn't remove the queued message", body: e.message, kind: "error" }); }
-      } }, icon("trash")))));
+      } }, icon("trash")),
+      h("button", { "aria-label": "Send queued message now", onclick: async () => {
+        try {
+          await api("steer_queued_message", { id: message.id });
+          if (queueEdit?.id === message.id) closeQueueEditor();
+          feed.now();
+        } catch (e) { toast({ title: "Couldn't steer the queued message", body: e.message, kind: "error" }); }
+      } }, icon("send")))));
   }
 
   function closeQueueEditor() {
@@ -2367,8 +2365,10 @@ if ("serviceWorker" in navigator) {
     if (data?.type === "open") go(new URL(data.url, location.origin).hash || "#/");
     if (data?.type === "notice") {
       const n = data.notice;
+      settle(n);
+      current?.refresh?.();
       const target = n.machine && n.chat ? chatHash(n.machine, n.chat) : null;
-      if (target && location.hash === target) return;
+      if (data.shown || (target && location.hash === target)) return;
       toast({ title: n.title, body: n.body, kind: n.kind, timeout: 6000, onclick: target ? () => go(target) : null });
     }
   });
