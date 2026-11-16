@@ -2,9 +2,9 @@ use std::sync::LazyLock;
 
 use rune::Icon;
 pub use rune_theme_opencode::icons::OUTLINE_BRAIN as THOUGHT;
+pub use rune_theme_opencode::icons::OUTLINE_EXPAND as EXPAND;
 pub use rune_theme_opencode::icons::SETTINGS_GEAR as SETTINGS;
 pub use rune_theme_opencode::icons::{EDIT as NEW_CHAT, FOLDER};
-pub use rune_theme_opencode::icons::{OUTLINE_EXPAND as EXPAND, SQUARE_ARROW_TOP_RIGHT as POP_OUT};
 
 const fn icon(name: &'static str, view: f32, body: &'static str) -> Icon {
     Icon { name, view, body }
@@ -20,6 +20,12 @@ pub static INFO: Icon = icon(
     "info",
     24.0,
     r#"<g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" d="M12 17v-6"/><path stroke-linecap="round" d="M12 7.5h.01"/></g>"#,
+);
+
+pub static POP_OUT: Icon = icon(
+    "pop-out",
+    24.0,
+    r#"<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H8a4 4 0 0 0-4 4v8a4 4 0 0 0 4 4h8a4 4 0 0 0 4-4v-3"/><path d="M14 4h6v6M20 4l-8 8"/></g>"#,
 );
 
 pub static BACK: Icon = icon(
