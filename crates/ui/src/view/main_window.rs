@@ -2,7 +2,7 @@ use rune::{Cx, El, col, el, row, text};
 use rune_kit::shell::{SidebarToggle, SplitView, Toolbar};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
-use super::{chat, dialogs, icons, settings, sidebar, theme, toast};
+use super::{chat, dialogs, icons, settings, sidebar, theme, toast, widgets};
 use crate::app::{ChatPage, Page, State};
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
@@ -16,8 +16,11 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             toolbar(s, page, k, &mut layer),
         ),
         Page::Settings(page) => (
-            settings::view(s, page, &theme.controls, &mut layer),
-            Toolbar::new().leading(settings_title(k)),
+            widgets::page(
+                settings::view(s, page, &theme.controls, &mut layer),
+                "settings-page",
+            ),
+            Toolbar::new().leading(widgets::page(settings_title(k), "settings-title")),
         ),
         Page::List => (el(), Toolbar::new()),
     };
@@ -68,7 +71,7 @@ fn toolbar(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> Toolbar 
                 .truncate(),
         );
     }
-    let mut bar = Toolbar::new().leading(titles);
+    let mut bar = Toolbar::new().leading(widgets::page(titles, "chat-titles"));
     if let Some(c) = page.existing() {
         let id = c.id.clone();
         bar = bar
@@ -78,10 +81,11 @@ fn toolbar(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> Toolbar 
                     .label("Open in the quick window")
                     .help("Open in the quick window")
                     .on_press(move |s: &mut State| s.open_in_peer(id.clone()))
-                    .build(k),
+                    .build(k)
+                    .transition(widgets::swap()),
             )
-            .trailing(super::details::toggle(s, k))
-            .trailing(chat::more_menu(page, k, layer));
+            .trailing(super::details::toggle(s, k).transition(widgets::swap()))
+            .trailing(chat::more_menu(page, k, layer).transition(widgets::swap()));
     }
     bar
 }

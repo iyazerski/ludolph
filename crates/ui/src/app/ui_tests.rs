@@ -212,7 +212,7 @@ fn reasoning_menu_fills_its_popup_and_stop_has_no_background() {
 }
 
 #[test]
-fn sent_messages_start_at_the_top_and_hold_while_the_reply_grows() {
+fn sent_messages_start_at_the_top_then_follow_the_reply_unless_scrolled_up() {
     for (width, window) in [(420.0, Window::Quick), (1120.0, Window::Main)] {
         let (_rt, mut ui) = runtime(width, window);
         ui.state.engine_up = true;
@@ -251,7 +251,7 @@ fn sent_messages_start_at_the_top_and_hold_while_the_reply_grows() {
             viewport.rect
         );
         let at = ui.state.chat().unwrap().existing().unwrap().pending[0].at;
-        for lines in [1, 6, 40] {
+        let reply = |ui: &mut Runtime<State>, lines: usize| {
             ui.update(|s, tx| s.frame(0, serde_json::json!({
                 "chat": {"id":"test", "status":"working", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z"},
                 "ids":["earlier", "sent", "reply"],
@@ -261,28 +261,45 @@ fn sent_messages_start_at_the_top_and_hold_while_the_reply_grows() {
                 ],
                 "queued":[], "turnChanges":[], "olderRemaining":0
             }), tx));
-            settle(&mut ui);
-            let elements = ui.elements();
-            let question = elements
-                .iter()
+            settle(ui);
+            ui.elements()
+                .into_iter()
                 .find(|e| e.text.as_deref() == Some("Next question"))
-                .unwrap();
+                .unwrap()
+                .rect[1]
+        };
+        for lines in [1, 6] {
+            let question = reply(&mut ui, lines);
             assert!(
-                (question.rect[1] - top).abs() < 1.0,
-                "width={width}, lines={lines}, question={:?}",
-                question.rect
+                (question - top).abs() < 1.0,
+                "a reply that fits holds the prompt: width={width}, lines={lines}, question={question}"
             );
         }
+        assert!(reply(&mut ui, 40) < top - 100.0, "width={width}");
+        assert_eq!(
+            ui.scroll_at_bottom("transcript"),
+            Some(true),
+            "width={width}"
+        );
+        let [x, y, w, h] = viewport.rect;
+        ui.wheel(x + w / 2.0, y + h / 2.0, 300.0);
+        settle(&mut ui);
+        let read = reply(&mut ui, 40);
+        assert!(
+            (reply(&mut ui, 60) - read).abs() < 1.0,
+            "growth doesn't move a chat scrolled up: width={width}"
+        );
         let elements = ui.elements();
         let jump = elements
             .iter()
             .find(|e| e.label.as_deref() == Some("Scroll to bottom"))
             .unwrap();
         click(&mut ui, jump);
-        assert!(
-            !ui.elements()
-                .iter()
-                .any(|e| e.label.as_deref() == Some("Scroll to bottom"))
+        reply(&mut ui, 80);
+        assert_eq!(
+            ui.scroll_at_bottom("transcript"),
+            Some(true),
+            "width={width}"
         );
         ui.update(|s, tx| {
             s.chat_mut().unwrap().composer = TextEdit::new("Another question");
@@ -411,4 +428,63 @@ fn sent_prompts_rise_into_place_and_keep_their_bubble_once_written() {
         "it starts below and faded: {path:?}"
     );
     assert!(path[6].1 < 1.0, "pi's copy carries on the rise: {path:?}");
+}
+
+#[test]
+fn pages_swap_without_showing_through_or_sliding() {
+    type Change = fn(&mut State);
+    let pages: [(Change, Change); 2] = [
+        (|s| s.open_changes("0"), State::back),
+        (State::open_settings, State::close_settings),
+    ];
+    for (open, close) in pages {
+        let (_rt, mut ui) = runtime(1120.0, Window::Main);
+        ui.state.engine_up = true;
+        let mut chat = Existing::new("test".into(), None);
+        chat.page = Some(vec![Message {
+            id: "earlier".into(),
+            role: Role::Assistant,
+            created_at: 0,
+            ended_at: 0,
+            status: MessageStatus::Complete,
+            parts: vec![Part::Text {
+                text: "Earlier reply.".into(),
+            }],
+        }]);
+        ui.state.page = Page::Chat(Box::new(ChatPage::new(
+            0,
+            Target::Existing(chat),
+            TextEdit::default(),
+        )));
+        settle(&mut ui);
+        for change in [open, close] {
+            ui.update(move |s, tx| {
+                tx.animated();
+                change(s);
+            });
+            ui.frame(1.0 / 120.0);
+            let elements = ui.elements();
+            let page = elements
+                .iter()
+                .find(|e| e.key.as_deref().is_some_and(|k| k.ends_with("-page")))
+                .unwrap();
+            assert!(page.opacity < 1.0, "the new page fades in");
+            for e in elements.iter().filter(|e| e.path.starts_with(&page.path)) {
+                let moved = (e.rect[0] - e.target[0])
+                    .abs()
+                    .max((e.rect[1] - e.target[1]).abs());
+                assert!(moved < 0.5, "{:?} slides into place", e.key);
+            }
+            let exiting: Vec<_> = elements
+                .iter()
+                .filter(|e| e.exiting)
+                .map(|e| (&e.key, e.role, e.opacity, &e.path))
+                .collect();
+            assert!(
+                exiting.is_empty(),
+                "the old page stays on screen: {exiting:?}"
+            );
+            settle(&mut ui);
+        }
+    }
 }

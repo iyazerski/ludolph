@@ -5,7 +5,7 @@ use rune_kit::{
     MenuItem, TextArea, TextInput,
 };
 
-use super::{breaks, code, icons};
+use super::{breaks, code, icons, widgets};
 
 use super::widgets::{
     busy, dot, engine_note, head, head_titles, hide_button, rise, rise_into_view, tones,
@@ -22,25 +22,26 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     if let Some(chat) = page.existing()
         && let Some(changes) = &chat.changes
     {
-        return super::changes::page(s, chat, changes, k);
+        return widgets::page(super::changes::page(s, chat, changes, k), "changes-page");
     }
     if let Some(chat) = page.existing().filter(|chat| chat.details_open) {
-        return super::details::page(chat, k);
+        return widgets::page(super::details::page(chat, k), "details-page");
     }
-    col()
+    let chat = col()
         .w_full()
         .h_full()
         .child(header(s, page, k, layer))
-        .child(body(s, page, k, layer))
+        .child(body(s, page, k, layer));
+    widgets::page(chat, "chat-page")
 }
 
 pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     if let Some(chat) = page.existing()
         && let Some(changes) = &chat.changes
     {
-        return super::changes::page(s, chat, changes, k);
+        return widgets::page(super::changes::page(s, chat, changes, k), "changes-page");
     }
-    body(s, page, k, layer)
+    widgets::page(body(s, page, k, layer), "chat-page")
 }
 
 fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -99,9 +100,7 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .scroll(ScrollSpec {
-            stick_bottom: page.existing().is_none_or(|chat| chat.top.is_none()),
-        })
+        .scroll(ScrollSpec { stick_bottom: true })
         .scroll_anchor()
         .on_layout_tx(|s: &mut State, [_, _, _, height], tx| {
             if let Some(page) = s.chat_mut() {
