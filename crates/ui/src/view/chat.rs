@@ -100,9 +100,7 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .scroll(ScrollSpec {
-            stick_bottom: page.existing().is_none_or(|chat| chat.top.is_none()),
-        })
+        .scroll(ScrollSpec { stick_bottom: true })
         .scroll_anchor()
         .on_layout_tx(|s: &mut State, [_, _, _, height], tx| {
             if let Some(page) = s.chat_mut() {

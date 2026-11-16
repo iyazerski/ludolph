@@ -212,7 +212,7 @@ fn reasoning_menu_fills_its_popup_and_stop_has_no_background() {
 }
 
 #[test]
-fn sent_messages_start_at_the_top_and_hold_while_the_reply_grows() {
+fn sent_messages_start_at_the_top_then_follow_the_reply_unless_scrolled_up() {
     for (width, window) in [(420.0, Window::Quick), (1120.0, Window::Main)] {
         let (_rt, mut ui) = runtime(width, window);
         ui.state.engine_up = true;
@@ -251,7 +251,7 @@ fn sent_messages_start_at_the_top_and_hold_while_the_reply_grows() {
             viewport.rect
         );
         let at = ui.state.chat().unwrap().existing().unwrap().pending[0].at;
-        for lines in [1, 6, 40] {
+        let reply = |ui: &mut Runtime<State>, lines: usize| {
             ui.update(|s, tx| s.frame(0, serde_json::json!({
                 "chat": {"id":"test", "status":"working", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z"},
                 "ids":["earlier", "sent", "reply"],
@@ -261,28 +261,45 @@ fn sent_messages_start_at_the_top_and_hold_while_the_reply_grows() {
                 ],
                 "queued":[], "turnChanges":[], "olderRemaining":0
             }), tx));
-            settle(&mut ui);
-            let elements = ui.elements();
-            let question = elements
-                .iter()
+            settle(ui);
+            ui.elements()
+                .into_iter()
                 .find(|e| e.text.as_deref() == Some("Next question"))
-                .unwrap();
+                .unwrap()
+                .rect[1]
+        };
+        for lines in [1, 6] {
+            let question = reply(&mut ui, lines);
             assert!(
-                (question.rect[1] - top).abs() < 1.0,
-                "width={width}, lines={lines}, question={:?}",
-                question.rect
+                (question - top).abs() < 1.0,
+                "a reply that fits holds the prompt: width={width}, lines={lines}, question={question}"
             );
         }
+        assert!(reply(&mut ui, 40) < top - 100.0, "width={width}");
+        assert_eq!(
+            ui.scroll_at_bottom("transcript"),
+            Some(true),
+            "width={width}"
+        );
+        let [x, y, w, h] = viewport.rect;
+        ui.wheel(x + w / 2.0, y + h / 2.0, 300.0);
+        settle(&mut ui);
+        let read = reply(&mut ui, 40);
+        assert!(
+            (reply(&mut ui, 60) - read).abs() < 1.0,
+            "growth doesn't move a chat scrolled up: width={width}"
+        );
         let elements = ui.elements();
         let jump = elements
             .iter()
             .find(|e| e.label.as_deref() == Some("Scroll to bottom"))
             .unwrap();
         click(&mut ui, jump);
-        assert!(
-            !ui.elements()
-                .iter()
-                .any(|e| e.label.as_deref() == Some("Scroll to bottom"))
+        reply(&mut ui, 80);
+        assert_eq!(
+            ui.scroll_at_bottom("transcript"),
+            Some(true),
+            "width={width}"
         );
         ui.update(|s, tx| {
             s.chat_mut().unwrap().composer = TextEdit::new("Another question");
