@@ -327,6 +327,34 @@ fn notifications_are_rounded_and_centered_at_the_top_in_both_windows() {
 }
 
 #[test]
+fn closing_the_release_notice_keeps_that_release_from_being_offered_again() {
+    let (_rt, mut ui) = runtime(420.0, true, Window::Quick);
+    ui.state.release_notice = Some("9.9.9".into());
+    settle(&mut ui);
+    let elements = ui.elements();
+    let release = elements
+        .iter()
+        .find(|e| e.role == "status" && e.label.as_deref() == Some("Ludolph 9.9.9 is out"))
+        .unwrap();
+    assert!((release.rect[1] - 16.0).abs() < 1.0);
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.label.as_deref() == Some("Update"))
+    );
+    let close = elements
+        .iter()
+        .find(|e| e.label.as_deref() == Some("Close"))
+        .unwrap();
+    click(&mut ui, close);
+    assert!(ui.state.release_notice.is_none());
+    assert_eq!(
+        ui.state.prefs.borrow().dismissed_release.as_deref(),
+        Some("9.9.9")
+    );
+}
+
+#[test]
 fn sent_prompts_rise_into_place_and_keep_their_bubble_once_written() {
     let (_rt, mut ui) = runtime(1120.0, true, Window::Main);
     ui.state.engine_up = true;

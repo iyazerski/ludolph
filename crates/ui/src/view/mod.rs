@@ -67,13 +67,24 @@ fn quick(s: &State, cx: &mut Cx<State>) -> El {
 }
 
 fn toast(s: &State, k: &Kit) -> Option<El> {
-    let t = s.toast.as_ref()?;
-    let mut toast = Toast::new("toast", t.title.clone());
-    if !t.body.is_empty() {
-        toast = toast.description(t.body.clone());
-    }
-    if t.kind == ToastKind::Failure {
-        toast = toast.icon(k, &icons::ALERT);
+    let release = s.release_notice.as_ref().map(|version| {
+        Toast::new("release", format!("Ludolph {version} is out"))
+            .description("Updating restarts Ludolph and stops running chats.")
+            .action(k, "Update", true, |s: &mut State, _| s.install_release())
+            .on_close(State::dismiss_release)
+    });
+    let note = s.toast.as_ref().map(|t| {
+        let mut toast = Toast::new("toast", t.title.clone());
+        if !t.body.is_empty() {
+            toast = toast.description(t.body.clone());
+        }
+        if t.kind == ToastKind::Failure {
+            toast = toast.icon(k, &icons::ALERT);
+        }
+        toast.on_close(|s: &mut State| s.toast = None)
+    });
+    if release.is_none() && note.is_none() {
+        return None;
     }
     Some(
         col()
@@ -82,15 +93,15 @@ fn toast(s: &State, k: &Kit) -> Option<El> {
             .label("Notifications")
             .pin(Some(16.0), Some(16.0), Some(16.0), None)
             .items_center()
-            .child(
+            .gap(8.0)
+            .children(release.into_iter().chain(note).map(|toast| {
                 toast
-                    .on_close(|s: &mut State| s.toast = None)
                     .build(k)
                     .w_full()
                     .max_w(320.0)
                     .radius(18.0)
-                    .transition(Transition::move_edge(Edge::Top)),
-            ),
+                    .transition(Transition::move_edge(Edge::Top))
+            })),
     )
 }
 

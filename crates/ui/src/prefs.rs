@@ -18,6 +18,9 @@ pub struct Prefs {
     pub main_frame: Option<Frame>,
     pub show_details: bool,
     pub accent: Accent,
+    pub release_checked: Option<DateTime<Utc>>,
+    /// The release whose notice was closed, so it isn't offered again.
+    pub dismissed_release: Option<String>,
 }
 
 /// A window's place, in physical pixels, as Rune reads and takes it.
@@ -37,6 +40,8 @@ impl Default for Prefs {
             main_frame: None,
             show_details: true,
             accent: Accent::default(),
+            release_checked: None,
+            dismissed_release: None,
         }
     }
 }
