@@ -59,7 +59,8 @@ for (const fails of [false, true]) {
 
       const finished = new Promise(resolve => {
         const observer = new window.MutationObserver(() => {
-          if (document.querySelector(".toast") || window.location.hash !== "#/new") {
+          // Wait for the routed view too: happy-dom fires hashchange after other mutations.
+          if (document.querySelector(".toast") || document.querySelector("#app .view:not(.leave)") !== view) {
             observer.disconnect();
             resolve();
           }
