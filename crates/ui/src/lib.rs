@@ -38,7 +38,7 @@ fn bottom_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     let px = |points: f32| (f64::from(points) * display.scale).round() as i32;
     let right = display.position.0 + i32::try_from(display.size.0).ok()?;
     let bottom = display.position.1 + i32::try_from(display.size.1).ok()?;
-    Some((right - px(SIZE.0 + 24.0), bottom - px(SIZE.1 + 24.0)))
+    Some((right - px(SIZE.0), bottom - px(SIZE.1)))
 }
 
 fn saved_frame(prefs: &Prefs, displays: &[rune::Display]) -> Option<Frame> {
