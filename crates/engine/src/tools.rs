@@ -61,10 +61,12 @@ pub enum Tool {
 
 impl Tool {
     /// Phone calls must not change this Mac's settings or redirect its relay.
+    /// The phone doesn't show tool output, so the relay never carries it.
     pub fn for_phone(self) -> bool {
         !matches!(
             self,
-            Self::SetSettings
+            Self::ToolOutput
+                | Self::SetSettings
                 | Self::GetPhoneLink
                 | Self::LinkPhone
                 | Self::StopLinkingPhone

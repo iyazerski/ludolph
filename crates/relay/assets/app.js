@@ -1012,22 +1012,21 @@ function toolSummary(tools) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function toolGroup(tools, open, onToggle, onOpen, isOpen, toggleCall) {
+function toolGroup(tools, open, onToggle, isOpen, toggleCall) {
   const live = tools.some(t => t.state === "running");
   const block = h("div", { class: `tools${open ? " open" : ""}` });
   const head = h("button", { onclick: () => { block.classList.toggle("open"); onToggle(block.classList.contains("open")); haptic(4); } },
     icon("chevDown", "chev"), h("span", { class: `sum${live ? " shimmer" : ""}` }, toolSummary(tools)));
-  const toolRow = (t, onClick) => {
+  const toolRow = t => {
     const [verb, iconName] = TOOL_VIEW[t.name] || ["Tool", "tool"];
     const arg = TOOL_VIEW[t.name] ? t.subject || "" : [t.name, t.subject].filter(Boolean).join(" · ");
     const subject = FILE_TOOLS.has(t.name) && t.subject ? fileBadge(t.subject) : h("span", { class: "arg" }, arg.replace(/\s+/g, " "));
-    const row = h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, role: onClick ? "button" : null, onclick: onClick, "aria-label": `${verb} ${arg} · ${t.state}` },
+    return h("div", { class: `item ${STATE_CLASS[t.state] || ""}`, "aria-label": `${verb} ${arg} · ${t.state}` },
       h("span", { class: "lead" }, t.state === "running" ? glyph("trail") : icon(iconName)),
       h("span", { class: "verb" }, verb), subject);
-    return row;
   };
   const items = tools.map(t => {
-    if (t.name !== "codemode" && !t.calls?.length) return toolRow(t, () => onOpen(t));
+    if (t.name !== "codemode" && !t.calls?.length) return toolRow(t);
     const key = `${t.id}#calls`;
     const nested = h("div", { class: `nested${isOpen(key, true) ? " open" : ""}` });
     const label = t.name === "codemode" ? "Codemode" : t.name;
@@ -1041,7 +1040,6 @@ function toolGroup(tools, open, onToggle, onOpen, isOpen, toggleCall) {
       toolRow(call),
       call.error || call.state === "cancelled" ? h("div", { class: `call-note ${STATE_CLASS[call.state] || ""}` }, call.error || "Cancelled or unfinished") : null,
     ]);
-    if (t.name !== "codemode") children.push(h("button", { class: "call-output", onclick: () => onOpen(t) }, "Arguments & output"));
     nested.append(head, h("div", { class: "children" }, children));
     return nested;
   });
@@ -1490,21 +1488,6 @@ function chatView(machine, id, fromList) {
     });
   }
 
-  function openTool(t) {
-    haptic(4);
-    const [verb] = TOOL_VIEW[t.name] || ["Tool"];
-    const head = h("h2", {}, `${verb} ${t.subject || t.name}`.trim());
-    sheet((close, fill) => {
-      api("tool_output", { call: t.id }).then(out => {
-        const text = out.text || (out.running ? "No output yet." : "No output.");
-        fill([head, out.failed ? h("div", { class: "note danger" }, "Failed") : null,
-          h("div", { class: "code" }, h("pre", {}, h("code", {}, out.truncated ? `${text}\n…` : text))),
-          ...out.images.map(img => h("img", { class: "shot", src: `data:${img.mimeType};base64,${img.data}` }))]);
-      }, e => fill([head, h("div", { class: "note" }, e.message)]));
-      return [head, h("div", { class: "note" }, "Loading…")];
-    });
-  }
-
   function openImage(m, index) {
     haptic(4);
     const head = h("h2", {}, `Image ${index + 1}`);
@@ -1530,7 +1513,7 @@ function chatView(machine, id, fromList) {
 
   function toolsBlock(m, g, byDefault = false) {
     const key = `${m.id}#${g.at}`;
-    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool, isOpen, (key, on) => openGroups.set(key, on));
+    return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), isOpen, (key, on) => openGroups.set(key, on));
   }
 
 
