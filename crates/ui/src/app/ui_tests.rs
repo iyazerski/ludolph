@@ -412,3 +412,62 @@ fn sent_prompts_rise_into_place_and_keep_their_bubble_once_written() {
     );
     assert!(path[6].1 < 1.0, "pi's copy carries on the rise: {path:?}");
 }
+
+#[test]
+fn pages_swap_without_showing_through_or_sliding() {
+    type Change = fn(&mut State);
+    let pages: [(Change, Change); 2] = [
+        (|s| s.open_changes("0"), State::back),
+        (State::open_settings, State::close_settings),
+    ];
+    for (open, close) in pages {
+        let (_rt, mut ui) = runtime(1120.0, Window::Main);
+        ui.state.engine_up = true;
+        let mut chat = Existing::new("test".into(), None);
+        chat.page = Some(vec![Message {
+            id: "earlier".into(),
+            role: Role::Assistant,
+            created_at: 0,
+            ended_at: 0,
+            status: MessageStatus::Complete,
+            parts: vec![Part::Text {
+                text: "Earlier reply.".into(),
+            }],
+        }]);
+        ui.state.page = Page::Chat(Box::new(ChatPage::new(
+            0,
+            Target::Existing(chat),
+            TextEdit::default(),
+        )));
+        settle(&mut ui);
+        for change in [open, close] {
+            ui.update(move |s, tx| {
+                tx.animated();
+                change(s);
+            });
+            ui.frame(1.0 / 120.0);
+            let elements = ui.elements();
+            let page = elements
+                .iter()
+                .find(|e| e.key.as_deref().is_some_and(|k| k.ends_with("-page")))
+                .unwrap();
+            assert!(page.opacity < 1.0, "the new page fades in");
+            for e in elements.iter().filter(|e| e.path.starts_with(&page.path)) {
+                let moved = (e.rect[0] - e.target[0])
+                    .abs()
+                    .max((e.rect[1] - e.target[1]).abs());
+                assert!(moved < 0.5, "{:?} slides into place", e.key);
+            }
+            let exiting: Vec<_> = elements
+                .iter()
+                .filter(|e| e.exiting)
+                .map(|e| (&e.key, e.role, e.opacity, &e.path))
+                .collect();
+            assert!(
+                exiting.is_empty(),
+                "the old page stays on screen: {exiting:?}"
+            );
+            settle(&mut ui);
+        }
+    }
+}

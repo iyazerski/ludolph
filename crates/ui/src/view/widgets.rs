@@ -1,7 +1,10 @@
 use std::sync::LazyLock;
 
 use rune::color::hex;
-use rune::{Color, Cycle, El, Span, TextStyle, Transition, col, el, icon, row, text};
+use rune::{
+    Color, Cycle, El, Span, Spring, SpringPair, TextStyle, Transition, col, el, icon, row, text,
+    tok,
+};
 use rune_kit::{ComboboxOption, IconButton, IconButtonVariant, Kit};
 
 use super::icons;
@@ -25,6 +28,17 @@ pub fn rise() -> Transition {
         Transition::offset(0.0, RISE).combined(Transition::opacity()),
         Transition::opacity(),
     )
+}
+
+/// Fades in but leaves at once, so a page and the one it replaces don't show through each other.
+pub fn swap() -> Transition {
+    Transition::opacity().springs(SpringPair::new(tok::motion::SETTLE, Spring::NONE))
+}
+
+/// Keys a whole page so Rune swaps it rather than springing its unkeyed parts from the last
+/// page's layout.
+pub fn page(el: El, key: &'static str) -> El {
+    el.key(key).transition(swap())
 }
 
 /// Hides `el` until its first layout, then rises it in, for content that mounts out of sight

@@ -390,6 +390,8 @@ Why streaming frames skip springs: Rune springs a page to its new layout, so wit
 
 Entrances are one-off, so they cost frames only while they play. A sent prompt, a question and a new chat's first prompt rise about 12 points and fade in over half a second. That's about 60 frames once per send, and a send already kept the window drawing for about 80 frames, which it still does. Rune lands an entrance that mounts out of sight in the same commit that scrolls to it, so these mount hidden and rise after their first layout. Nothing loops, and streaming text never animates.
 
+Pages swap rather than morph. The chat, its changes, its details and Settings each have their own key. Without one, Rune matches their unkeyed parts by position and springs them from the last page's layout, so a diff slid in from where the details card was. The old page also faded out over the new one. Now the old page leaves at once and the new one fades in, and so do the toolbar's titles and buttons.
+
 How we check:
 
 - `ps -o rss,pcpu` sampled over a minute in each state, on every release.
