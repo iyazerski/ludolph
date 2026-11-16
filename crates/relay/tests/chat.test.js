@@ -81,7 +81,9 @@ for (const fails of [false, true]) {
         expect(document.querySelector(".toast").textContent).toContain("pi couldn't start");
       } else {
         expect(window.location.hash).toBe("#/m/mac/chat/chat");
-        expect(document.querySelector("#app .view:not(.leave) .msg.user .bubble")?.textContent).toBe("Build a clock");
+        const opened = document.querySelector("#app .view:not(.leave)");
+        expect(opened).not.toBe(view);
+        expect(opened.querySelector(".msg.user .bubble")?.textContent).toBe("Build a clock");
       }
     } finally {
       runInContext("current?.destroy()", context);

@@ -1065,6 +1065,9 @@ function workedFold(ms, blocks, open, onToggle, changes) {
 }
 
 const textOf = m => m.parts.filter(p => p.kind === "text").map(p => p.text).join("\n\n");
+// A link to a file on the Mac, such as a pasted image, which the phone
+// can't open: its label stays, and the image chips open the images.
+const MAC_LINK = /\[([^\]]+)\]\((?:<\/[^>]*>|\/[^)\s]*)\)/g;
 
 let handoff = null;
 
@@ -1530,9 +1533,6 @@ function chatView(machine, id, fromList) {
     return toolGroup(g.tools, isOpen(key, byDefault), on => openGroups.set(key, on), openTool, isOpen, (key, on) => openGroups.set(key, on));
   }
 
-  // A link to a file on the Mac, such as a pasted image, which the phone
-  // can't open: its label stays, and the image chips open the images.
-  const MAC_LINK = /\[([^\]]+)\]\((?:<\/[^>]*>|\/[^)\s]*)\)/g;
 
   function userBubble(m, isPending = false) {
     const images = m.parts.filter(p => p.kind === "image");
