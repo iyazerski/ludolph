@@ -226,6 +226,12 @@ def prompt(command):
         for name in ("new.txt", "secret.env"):
             with open(name, "w") as f:
                 f.write("new\n")
+    if command["message"] == "commit":
+        with open("a.txt", "a") as f:
+            f.write("again\n")
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ["commit", "-qm", "work"], check=True)
     started = now()
     emit({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending", "timestamp": started}})
     update({"type": "text_start", "contentIndex": 0})

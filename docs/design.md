@@ -68,7 +68,7 @@ Both processes run from the same binary inside `Ludolph.app`.
 |---|---|---|
 | Transcript, cwd, model, thinking level, title | pi's session files, `~/.pi/agent/sessions/**.jsonl` | pi |
 | Index: one row per session | `~/Library/Application Support/Ludolph/index.json` | engine |
-| Turn changes | `~/Library/Application Support/Ludolph/turns/<session id>/<entry id>.json` | engine |
+| Turn changes | `~/Library/Application Support/Ludolph/changes/<session id>/<key>.json`, with blobs in `changes/<session id>/git` | engine |
 | Settings | `~/Library/Application Support/Ludolph/settings.json` | engine; the app changes them through it |
 | UI state (seen turns, folded projects, window frames, last picks) | `~/Library/Application Support/Ludolph/ui.json` | app |
 | Attached image files, which sent messages link to | `~/.pi/agent/attachments/<session id>/<image id>.<ext>` | engine |
@@ -224,13 +224,13 @@ A chat you're done with is deleted, not archived. Right-clicking a chat in eithe
 
 ## Chat details
 
-The Mac shows a details card beside an existing chat in the main window. Its header button shows or hides the card, which starts shown and saves its visibility locally. In the quick window and on the phone, a header button opens a separate details page in place of the chat. Back returns to the chat; opening uncommitted changes from details and going back returns to details first. These pages do not change the main window's card preference. There is no Sources section.
+The Mac shows a details card beside an existing chat in the main window. Its header button shows or hides the card, which starts shown and saves its visibility locally. In the quick window and on the phone, a header button opens a separate details page in place of the chat. Back returns to the chat; opening the chat's changes from details and going back returns to details first. These pages do not change the main window's card preference. There is no Sources section.
 
-- **Changes** opens the current checkout's uncommitted diff, independent of agent turns. It includes staged, unstaged and untracked files across the whole repository, respecting `.gitignore`. Like turn snapshots, it uses a private index and object store, so reading it leaves the real index and repository objects untouched. A repository without commits compares against an empty tree. Existing snapshot limits apply, and a large patch is marked truncated.
+- **Changes** opens one net diff of every run in the chat: each file goes from its content before the first run that changed it to its content after the last one. It's built only from saved run changes, so it still shows the chat's work after commits, and it doesn't read the repository. If you edit a file between two runs, that edit is in the net diff too. A chat without changes shows **No changes yet**. A large patch is marked truncated.
 - **Pull requests** lists explicit HTTPS GitHub-style PR URLs mentioned in final assistant answers on the current branch. Markdown and bare links are normalized and deduplicated. Tool output, intermediate commentary and code examples do not add PRs. The links are derived incrementally from pi's file, across the whole history rather than just the visible transcript page. There is no PR status polling, auth requirement, or second history store. Bare references such as `#123` are not resolved.
 - **Usage** shows all recorded compactions, cumulative tokens in millions, and cost in US dollars. Counts include earlier branches, as pi's terminal totals do. Failed compaction attempts without a saved entry do not count.
 
-`chat_details` returns session metadata, saved usage and current change counts. `working_changes` loads a fresh patch for the existing diff viewer, headed **Uncommitted changes** rather than **Turn changes**. A Git error leaves usage and PR links available. The card and details pages refresh every eight seconds while visible, and the Mac also refreshes after a run settles or its project changes. Hidden details and windows do not poll. Reading details never starts pi or fetches PR status.
+`chat_details` returns session metadata, saved usage and the chat's change counts, which the engine caches until a run saves. `chat_changes` loads the patch for the existing diff viewer, headed **Chat changes** rather than **Turn changes**. A Git error leaves usage and PR links available. The card and details pages refresh every eight seconds while visible, and the Mac also refreshes after a run settles or its project changes. Hidden details and windows do not poll. Reading details never starts pi or fetches PR status.
 
 ## Turn changes
 
@@ -242,15 +242,16 @@ The engine takes its snapshots with git, without touching your repo:
 
 1. **Before** it forwards a prompt to an idle chat, it snapshots the working tree, and only then sends the prompt. So no tool can change a file before the snapshot.
 2. When the run settles, it snapshots again. A new prompt waits for that snapshot.
-3. It diffs the two snapshots and saves the patch and its line counts as `turns/<session id>/<key>.json`. The key is the timestamp of the user message that started the run, which pi reports as the run starts. `chat_view` matches it to that message's `createdAt`, and a run lasts until the next run starts, including a run still in progress, so steering messages stay in it and a completed turn's diff stays below its own reply. The feed invalidates its run-change cache when a run boundary changes or a diff finishes saving, even if the transcript ids and chat status stay the same.
+3. It diffs the two snapshots, copies the changed files' blobs into the chat's own bare repo, `changes/<session id>/git`, and saves each changed path's mode and blob, before and after, with the line counts, as `changes/<session id>/<key>.json`. A turn's diff and the chat's net diff are both built from these on request, with throwaway trees of just the changed paths. The key is the timestamp of the user message that started the run, which pi reports as the run starts. `chat_view` matches it to that message's `createdAt`, and a run lasts until the next run starts, including a run still in progress, so steering messages stay in it and a completed turn's diff stays below its own reply. The feed invalidates its run-change cache when a run boundary changes or a diff finishes saving, even if the transcript ids and chat status stay the same.
 
-A snapshot copies the repo's index to a temporary file and runs `git add -A` and `git write-tree` against that copy (`GIT_INDEX_FILE`). New file contents go to an object store of the run's own (`GIT_OBJECT_DIRECTORY`), with the repo's objects as an alternate (`GIT_ALTERNATE_OBJECT_DIRECTORIES`). So the repo gets no new objects, your index and staged changes stay as they are, and `.gitignore` is respected, which keeps ignored secrets out. Once the patch is saved, the run's store is deleted, so nothing needs pruning. A store left by a stopped engine is deleted at start. A warm snapshot takes about 30 ms on zeron-tools and on Ludolph's own repo.
+A snapshot runs `git status` against the repo's real index, without optional locks, so the repo's fsmonitor and untracked cache help and nothing is written. It copies the repo's index to a temporary file, adds only the paths status named with `git add --all --pathspec-from-file` against that copy (`GIT_INDEX_FILE`), and runs `git write-tree`. So a large repo costs about one `git status`, not a walk of every file. The run's second snapshot copies the index again, so files a run commits still show. New file contents go to an object store of the run's own (`GIT_OBJECT_DIRECTORY`), with the repo's objects as an alternate (`GIT_ALTERNATE_OBJECT_DIRECTORIES`). So the repo gets no new objects, your index and staged changes stay as they are, and `.gitignore` is respected, which keeps ignored secrets out. Once the run is saved, its store is deleted. A store left by a stopped engine is deleted at start. A snapshot takes about 0.1 s on Ludolph's own repo.
 
 Limits:
 
 - A snapshot that takes more than 10 s, or a changed file over 10 MB, skips that run's changes, with a line in the engine's log.
 - Binary files show as changed, without content. A patch over 1 MB is cut at a line's end and marked `truncated`.
-- The saved patches have a 50 MB budget, and the oldest go first.
+- Saved changes have a 100 MB budget. Whole chats go, least recently changed first, since their runs share one store, but never the chat that just saved.
+- Nested repositories and submodule contents are left out.
 - A run whose pi exits before it settles has no changes.
 
 Folders that aren't git repos get no run changes. Two chats working in the same repo at once see each other's changes in their diffs.
@@ -285,6 +286,7 @@ The app and the phone call the same tools:
 | `move_chat` | Stop an idle pi, move its session to the destination project, and update its header's cwd |
 | `delete_chat` | Stop pi, then remove the session's files |
 | `turn_changes` | Saved turn changes |
+| `chat_changes` | The net diff of every run in the chat |
 | `composer_info` | Branch (`git`), then the model, thinking level and context use (see [pi processes](#pi-processes)) |
 | `set_chat_model` | `set_model`, `set_thinking_level` |
 | `list_models` | Cached `get_available_models` |

@@ -176,8 +176,8 @@ impl State {
         self.load_changes(ChangeTarget::Turn(turn.to_owned()));
     }
 
-    pub fn open_working_changes(&mut self) {
-        self.load_changes(ChangeTarget::WorkingTree);
+    pub fn open_chat_changes(&mut self) {
+        self.load_changes(ChangeTarget::Chat);
     }
 
     fn load_changes(&mut self, target: ChangeTarget) {
@@ -190,7 +190,7 @@ impl State {
         chat.changes_of = target.clone();
         let (method, args) = match &target {
             ChangeTarget::Turn(turn) => ("turn_changes", json!({"chat": chat.id, "turn": turn})),
-            ChangeTarget::WorkingTree => ("working_changes", json!({"chat": chat.id})),
+            ChangeTarget::Chat => ("chat_changes", json!({"chat": chat.id})),
         };
         self.api
             .call(method, args, move |s, result: Result<Diff, String>, _| {

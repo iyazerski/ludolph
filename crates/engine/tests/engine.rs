@@ -830,65 +830,44 @@ async fn turn_changes(engine: &Engine, id: &str, runs: usize) -> (Vec<Value>, Ve
 }
 
 fn state_runs(engine: &Engine) -> PathBuf {
-    engine.config().state_dir.join("turns/runs")
+    engine.config().state_dir.join("changes/runs")
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn working_changes_handle_new_repositories_and_non_git_projects() {
+async fn chat_changes_leave_out_what_the_chat_didnt_change() {
     let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().join("repo");
-    std::fs::create_dir(&repo).unwrap();
-    git(&repo, &["init", "-q"]);
-    std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+    let other = dir.path().join("not-git");
+    std::fs::create_dir(&other).unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
-    let id = engine.create(&repo).await.unwrap();
-    let status = git(&repo, &["status", "--porcelain"]);
-    let objects = git(&repo, &["count-objects"]);
+    let id = engine.create(&other).await.unwrap();
     let details = tool(&engine, "chat_details", json!({"chat": id}))
         .await
         .unwrap();
     assert_eq!(
         details["changes"],
-        json!({"files": 1, "additions": 1, "deletions": 0})
+        json!({"files": 0, "additions": 0, "deletions": 0})
     );
     assert_eq!(details["changesError"], Value::Null);
-    let diff = tool(&engine, "working_changes", json!({"chat": id}))
+    assert_eq!(details["spent"], json!({"tokens": 0, "cost": 0.0}));
+
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    std::fs::write(repo.join("old.txt"), "old\n").unwrap();
+    let id = engine.create(&repo).await.unwrap();
+    engine.send(&id, "edit", Vec::new()).await.unwrap();
+    turn_changes(&engine, &id, 1).await;
+    let diff = tool(&engine, "chat_changes", json!({"chat": id}))
         .await
         .unwrap();
-    assert!(diff["patch"].as_str().unwrap().contains("+new"));
-    assert_eq!(git(&repo, &["status", "--porcelain"]), status);
-    assert_eq!(git(&repo, &["count-objects"]), objects);
-    assert_eq!(std::fs::read_dir(state_runs(&engine)).unwrap().count(), 0);
-    std::fs::File::create(repo.join("large.bin"))
-        .unwrap()
-        .set_len(10 * 1024 * 1024 + 1)
-        .unwrap();
-    let details = tool(&engine, "chat_details", json!({"chat": id}))
-        .await
-        .unwrap();
-    assert_eq!(details["changes"], Value::Null);
-    assert!(
-        details["changesError"]
-            .as_str()
-            .unwrap()
-            .contains("over 10 MB")
+    assert_eq!(
+        diff["files"],
+        json!([{"path": "a.txt"}, {"path": "new.txt"}, {"path": "secret.env"}]),
+        "a repo without commits, and old.txt was there before the chat"
     );
-    assert_eq!(details["spent"], json!({"tokens": 0, "cost": 0.0}));
-    let other = dir.path().join("not-git");
-    std::fs::create_dir(&other).unwrap();
-    let id = engine.create(&other).await.unwrap();
-    let details = tool(&engine, "chat_details", json!({"chat": id}))
-        .await
-        .unwrap();
-    assert_eq!(details["changes"], Value::Null);
-    assert_eq!(details["changesError"], Value::Null);
-    assert_eq!(details["spent"], json!({"tokens": 0, "cost": 0.0}));
-    assert!(
-        tool(&engine, "working_changes", json!({"chat": id}))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("not in a git")
+    assert_eq!(
+        git(&repo, &["status", "--porcelain"]),
+        "?? a.txt\n?? new.txt\n?? old.txt\n?? secret.env\n"
     );
     engine.shutdown().await.unwrap();
 }
@@ -989,19 +968,11 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         .unwrap();
     assert_eq!(
         details["changes"],
-        json!({"files": 3, "additions": 3, "deletions": 1})
+        json!({"files": 2, "additions": 2, "deletions": 0}),
+        "b.txt was staged before the chat"
     );
     assert_eq!(details["compactions"], 1);
     assert_eq!(details["pullRequests"], json!([]));
-    let working = tool(&engine, "working_changes", json!({"chat": id}))
-        .await
-        .unwrap();
-    assert_eq!(
-        working["files"],
-        json!([{"path":"a.txt"}, {"path":"b.txt"}, {"path":"new.txt"}])
-    );
-    assert!(working["patch"].as_str().unwrap().contains("+two"));
-    assert!(!working["patch"].as_str().unwrap().contains("secret"));
 
     assert_eq!(status, "M  b.txt\n");
     let status = git(&repo, &["status", "--porcelain"]);
@@ -1013,6 +984,27 @@ async fn each_run_keeps_what_it_changed_without_touching_the_repo() {
         git(&repo, &["count-objects"]),
         objects,
         "the repo got no objects"
+    );
+
+    engine.send(&id, "commit", Vec::new()).await.unwrap();
+    turn_changes(&engine, &id, 3).await;
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "");
+    let chat = tool(&engine, "chat_changes", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        chat["files"],
+        json!([{"path": "a.txt"}, {"path": "new.txt"}]),
+        "the chat's work outlives its commit"
+    );
+    assert_eq!(
+        (&chat["additions"], &chat["deletions"]),
+        (&json!(3), &json!(0))
+    );
+    let patch = chat["patch"].as_str().unwrap();
+    assert!(
+        patch.contains(" one\n+changed\n+again\n") && !patch.contains("secret"),
+        "{patch}"
     );
     engine.shutdown().await.unwrap();
 }

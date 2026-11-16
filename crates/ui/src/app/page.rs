@@ -115,7 +115,7 @@ pub type FileLinks = Rc<RefCell<HashMap<String, Option<String>>>>;
 #[derive(Clone, PartialEq, Eq)]
 pub enum ChangeTarget {
     Turn(String),
-    WorkingTree,
+    Chat,
 }
 
 pub enum Changes {
@@ -344,7 +344,7 @@ impl Existing {
             info_at: None,
             copied: None,
             changes: None,
-            changes_of: ChangeTarget::WorkingTree,
+            changes_of: ChangeTarget::Chat,
             details_open: false,
             details: None,
             details_loading: false,

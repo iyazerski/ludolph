@@ -1,7 +1,9 @@
-//! Snapshot with a private index and object store; never change the user's repository state.
+//! What each run changed, kept per chat so its diffs outlive commits and later edits.
+//!
+//! Snapshots read the repository through a private index and object store, so they never change
+//! its state. A run copies the blobs it changed into its chat's own object store.
 
-use std::collections::{BTreeMap, HashMap};
-use std::ffi::OsString;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -10,16 +12,21 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Skip oversized files rather than hashing them on the send path.
 const FILE_LIMIT: u64 = 10 * 1024 * 1024;
 const PATCH_LIMIT: usize = 1024 * 1024;
-/// The most the saved runs may take on disk; the oldest go first.
-const BUDGET: u64 = 50 * 1024 * 1024;
+/// The most the saved chats may take on disk; the least recently changed go first.
+const BUDGET: u64 = 100 * 1024 * 1024;
+/// `git diff-tree --raw`'s mode for a side where the path doesn't exist.
+const ABSENT: &str = "000000";
+/// A submodule's commit, which isn't in the store.
+const GITLINK: &str = "160000";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diff {
     pub patch: String,
     pub files: Vec<File>,
@@ -34,38 +41,90 @@ pub struct File {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
     pub files: usize,
     pub additions: u64,
     pub deletions: u64,
 }
 
-impl From<&Diff> for Counts {
-    fn from(changes: &Diff) -> Self {
+/// What one run changed, saved as `<session id>/<key>.json`, with its blobs in `<session id>/git`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Run {
+    changes: BTreeMap<String, Change>,
+    additions: u64,
+    deletions: u64,
+}
+
+impl From<&Run> for Counts {
+    fn from(run: &Run) -> Self {
         Self {
-            files: changes.files.len(),
-            additions: changes.additions,
-            deletions: changes.deletions,
+            files: run.changes.len(),
+            additions: run.additions,
+            deletions: run.deletions,
         }
     }
 }
 
-/// A private object store, deleted on drop after the run's diff has been saved.
+/// A path's content before and after; `None` where it doesn't exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Change {
+    before: Option<Entry>,
+    after: Option<Entry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Entry {
+    mode: String,
+    oid: String,
+}
+
+/// A folder under `runs`, deleted on drop.
+#[derive(Debug)]
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(runs: &Path) -> Result<Self> {
+        let dir = runs.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(dir.join("objects"))
+            .with_context(|| format!("creating {}", dir.display()))?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.0)
+            && e.kind() != ErrorKind::NotFound
+        {
+            eprintln!("removing {}: {e}", self.0.display());
+        }
+    }
+}
+
+/// The working tree as a run starts, in a private object store that lasts until the run is saved.
 #[derive(Debug)]
 pub struct Snapshot {
     repo: Repo,
-    store: PathBuf,
+    store: Scratch,
     tree: String,
 }
 
-impl Drop for Snapshot {
-    fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_dir_all(&self.store)
-            && e.kind() != ErrorKind::NotFound
-        {
-            eprintln!("removing {}: {e}", self.store.display());
-        }
+impl Snapshot {
+    fn git(&self, args: &[&str]) -> Command {
+        let mut command = Command::new("git");
+        // The user's fsmonitor hook would run, and quoting would mangle paths.
+        command
+            .args(["-c", "core.fsmonitor=false", "-c", "core.quotePath=false"])
+            .args(args)
+            .current_dir(&self.repo.top)
+            .env("GIT_INDEX_FILE", self.store.0.join("index"))
+            .env("GIT_OBJECT_DIRECTORY", self.store.0.join("objects"))
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &self.repo.objects)
+            .env("GIT_LITERAL_PATHSPECS", "1")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE");
+        command
     }
 }
 
@@ -76,12 +135,19 @@ struct Repo {
     objects: PathBuf,
 }
 
-/// `<session id>/<user-message timestamp>.json`.
+#[derive(Debug, Default)]
+struct Cache {
+    /// By session id, so a chat view doesn't parse every run.
+    runs: HashMap<String, BTreeMap<i64, Counts>>,
+    chats: HashMap<String, Counts>,
+    /// Bumped by every save, so counts read meanwhile aren't cached.
+    saves: u64,
+}
+
 #[derive(Debug)]
 pub struct Turns {
     dir: PathBuf,
-    /// By session id, so a chat view doesn't parse whole patches.
-    counts: Mutex<HashMap<String, BTreeMap<i64, Counts>>>,
+    cache: Mutex<Cache>,
 }
 
 impl Turns {
@@ -95,7 +161,7 @@ impl Turns {
         }
         Ok(Self {
             dir,
-            counts: Mutex::default(),
+            cache: Mutex::default(),
         })
     }
 
@@ -103,108 +169,144 @@ impl Turns {
         let Some(repo) = repo(cwd).await else {
             return Ok(None);
         };
-        let store = self.dir.join("runs").join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(store.join("objects"))
-            .with_context(|| format!("creating {}", store.display()))?;
         let mut snapshot = Snapshot {
             repo,
-            store,
+            store: Scratch::new(&self.dir.join("runs"))?,
             tree: String::new(),
         };
-        // A repo with no commits yet has no index.
-        match std::fs::copy(&snapshot.repo.index, snapshot.store.join("index")) {
-            Err(e) if e.kind() != ErrorKind::NotFound => {
-                return Err(e).context("copying the repo's index");
-            }
-            _ => {}
-        }
         snapshot.tree = tree(&snapshot).await?;
         Ok(Some(snapshot))
     }
 
-    pub async fn after(&self, before: Snapshot) -> Result<Diff> {
+    /// Compare with the working tree now, and keep the changed blobs in the chat's store.
+    pub async fn after(&self, session: &str, before: Snapshot) -> Result<Run> {
         let after = tree(&before).await?;
-        compare(&before, &before.tree, &after).await
-    }
-
-    /// Read staged, unstaged and untracked changes through a private index and object store.
-    pub async fn working(&self, cwd: &Path) -> Result<Option<Diff>> {
-        let Some((snapshot, base)) = self.working_tree(cwd).await? else {
-            return Ok(None);
-        };
-        compare(&snapshot, &base, &snapshot.tree).await.map(Some)
-    }
-
-    /// [`Self::working`] without the patch, which can be large and only the Changes view shows.
-    pub async fn working_counts(&self, cwd: &Path) -> Result<Option<Counts>> {
-        let Some((snapshot, base)) = self.working_tree(cwd).await? else {
-            return Ok(None);
-        };
-        let (files, additions, deletions) = numstat(&snapshot, &base, &snapshot.tree).await?;
-        Ok(Some(Counts {
-            files: files.len(),
+        let raw = run(
+            before.git(&["diff-tree", "-r", "-z", "--no-renames", "--raw"]),
+            &[&before.tree, &after],
+            None,
+        )
+        .await?;
+        let changes = changes(&raw)?;
+        let (_, additions, deletions) =
+            numstat(|args| before.git(args), &before.tree, &after).await?;
+        if !changes.is_empty() {
+            let store = self.store(session)?;
+            if !store.join("HEAD").exists() {
+                let mut init = Command::new("git");
+                init.args(["init", "--bare", "--quiet", "--template="])
+                    .arg(&store)
+                    .env_remove("GIT_DIR")
+                    .env_remove("GIT_WORK_TREE");
+                run(init, &[], None).await?;
+            }
+            let blobs: BTreeSet<&str> = changes
+                .values()
+                .flat_map(|change| [&change.before, &change.after])
+                .flatten()
+                .filter(|entry| entry.mode != GITLINK)
+                .map(|entry| entry.oid.as_str())
+                .collect();
+            let list: String = blobs.iter().map(|oid| format!("{oid}\n")).collect();
+            let mut pack = before.git(&["pack-objects", "--quiet"]);
+            pack.arg(store.join("objects/pack/pack"));
+            run(pack, &[], Some(list.into_bytes())).await?;
+        }
+        Ok(Run {
+            changes,
             additions,
             deletions,
-        }))
+        })
     }
 
-    async fn working_tree(&self, cwd: &Path) -> Result<Option<(Snapshot, String)>> {
-        let Some(snapshot) = self.before(cwd).await? else {
-            return Ok(None);
-        };
-        let base = match git(
-            &snapshot,
-            &["rev-parse", "--verify", "--quiet", "HEAD^{tree}"],
-        )
-        .await
-        {
-            Ok(head) => head,
-            // A new repository has no HEAD yet.
-            Err(_) => git(&snapshot, &["hash-object", "-w", "-t", "tree", "--stdin"]).await?,
-        };
-        let base = base.trim().to_owned();
-        Ok(Some((snapshot, base)))
-    }
-
-    pub fn save(&self, session: &str, key: i64, changes: &Diff) -> Result<()> {
+    pub fn save(&self, session: &str, key: i64, run: &Run) -> Result<()> {
         let path = self.path(session, key)?;
         let dir = path
             .parent()
             .expect("a run's file is in its session's folder");
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        ludolph_json_file::save(&path, changes)?;
-        self.lock()
-            .entry(session.to_owned())
-            .or_default()
-            .insert(key, Counts::from(changes));
-        if let Err(e) = self.prune() {
+        ludolph_json_file::save(&path, run)?;
+        {
+            let mut cache = self.lock();
+            cache.saves += 1;
+            cache.chats.remove(session);
+            // Unloaded counts stay unloaded, so the next read finds every run.
+            if let Some(runs) = cache.runs.get_mut(session) {
+                runs.insert(key, Counts::from(run));
+            }
+        }
+        if let Err(e) = self.prune(session) {
             eprintln!("pruning saved runs: {e:#}");
         }
         Ok(())
     }
 
-    pub fn load(&self, session: &str, key: i64) -> Result<Option<Diff>> {
-        ludolph_json_file::load(&self.path(session, key)?)
+    pub async fn load(&self, session: &str, key: i64) -> Result<Option<Diff>> {
+        let Some(run) = ludolph_json_file::load::<Run>(&self.path(session, key)?)? else {
+            return Ok(None);
+        };
+        self.diff(session, &run.changes).await.map(Some)
+    }
+
+    /// Every run's changes in one diff: each path from before its first run to after its last.
+    pub async fn chat(&self, session: &str) -> Result<Diff> {
+        let changes = net(self.runs(session)?);
+        self.diff(session, &changes).await
+    }
+
+    pub async fn chat_counts(&self, session: &str) -> Result<Counts> {
+        let saves = {
+            let cache = self.lock();
+            if let Some(counts) = cache.chats.get(session) {
+                return Ok(*counts);
+            }
+            cache.saves
+        };
+        let changes = net(self.runs(session)?);
+        let counts = if changes.is_empty() {
+            Counts::default()
+        } else {
+            let (scratch, before, after) = self.trees(session, &changes).await?;
+            let store = self.store(session)?;
+            let (files, additions, deletions) =
+                numstat(|args| stored(&store, &scratch, args), &before, &after).await?;
+            Counts {
+                files: files.len(),
+                additions,
+                deletions,
+            }
+        };
+        let mut cache = self.lock();
+        if cache.saves == saves {
+            cache.chats.insert(session.to_owned(), counts);
+        }
+        Ok(counts)
     }
 
     pub fn counts(&self, session: &str) -> Result<BTreeMap<i64, Counts>> {
-        if let Some(counts) = self.lock().get(session) {
-            return Ok(counts.clone());
-        }
-        let dir = self.dir.join(checked(session)?);
+        let saves = {
+            let cache = self.lock();
+            if let Some(counts) = cache.runs.get(session) {
+                return Ok(counts.clone());
+            }
+            cache.saves
+        };
         let mut counts = BTreeMap::new();
-        for (key, path) in runs(&dir)? {
-            if let Some(changes) = ludolph_json_file::load::<Diff>(&path)? {
-                counts.insert(key, Counts::from(&changes));
+        for (key, path) in runs(&self.dir.join(checked(session)?))? {
+            if let Some(run) = ludolph_json_file::load::<Run>(&path)? {
+                counts.insert(key, Counts::from(&run));
             }
         }
-        self.lock().insert(session.to_owned(), counts.clone());
+        let mut cache = self.lock();
+        if cache.saves == saves {
+            cache.runs.insert(session.to_owned(), counts.clone());
+        }
         Ok(counts)
     }
 
     pub fn forget(&self, session: &str) -> Result<()> {
         let dir = self.dir.join(checked(session)?);
-        self.lock().remove(session);
+        self.uncache(session);
         match std::fs::remove_dir_all(&dir) {
             Err(e) if e.kind() != ErrorKind::NotFound => {
                 Err(e).with_context(|| format!("removing {}", dir.display()))
@@ -213,8 +315,9 @@ impl Turns {
         }
     }
 
-    fn prune(&self) -> Result<()> {
-        let mut saved: Vec<(SystemTime, u64, String, i64, PathBuf)> = Vec::new();
+    /// Drop whole chats, since their runs share one store, but never the one just saved.
+    fn prune(&self, keep: &str) -> Result<()> {
+        let mut saved: Vec<(SystemTime, u64, String, PathBuf)> = Vec::new();
         for session in read_dir(&self.dir)? {
             let Some(name) = session
                 .file_name()
@@ -226,33 +329,132 @@ impl Turns {
             if name == "runs" || !session.is_dir() {
                 continue;
             }
-            for (key, path) in runs(&session)? {
-                let meta = std::fs::metadata(&path)?;
-                saved.push((meta.modified()?, meta.len(), name.clone(), key, path));
-            }
+            let (len, modified) = usage(&session)?;
+            saved.push((modified, len, name, session));
         }
-        let mut total: u64 = saved.iter().map(|run| run.1).sum();
-        saved.sort_by_key(|run| run.0);
-        for (_, len, session, key, path) in saved {
+        let mut total: u64 = saved.iter().map(|chat| chat.1).sum();
+        saved.sort_by_key(|chat| chat.0);
+        for (_, len, session, dir) in saved {
             if total <= BUDGET {
                 break;
             }
-            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-            if let Some(counts) = self.lock().get_mut(&session) {
-                counts.remove(&key);
+            if session == keep {
+                continue;
             }
+            std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+            self.uncache(&session);
             total -= len;
         }
         Ok(())
+    }
+
+    /// Saved runs, oldest first.
+    fn runs(&self, session: &str) -> Result<Vec<Run>> {
+        let mut paths = runs(&self.dir.join(checked(session)?))?;
+        paths.sort_by_key(|(key, _)| *key);
+        let mut out = Vec::new();
+        for (_, path) in paths {
+            out.extend(ludolph_json_file::load::<Run>(&path)?);
+        }
+        Ok(out)
+    }
+
+    async fn diff(&self, session: &str, changes: &BTreeMap<String, Change>) -> Result<Diff> {
+        if changes.is_empty() {
+            return Ok(Diff::default());
+        }
+        let (scratch, before, after) = self.trees(session, changes).await?;
+        let store = self.store(session)?;
+        compare(|args| stored(&store, &scratch, args), &before, &after).await
+    }
+
+    /// Trees of just the changed paths, written to a scratch store over the chat's.
+    async fn trees(
+        &self,
+        session: &str,
+        changes: &BTreeMap<String, Change>,
+    ) -> Result<(Scratch, String, String)> {
+        let store = self.store(session)?;
+        let scratch = Scratch::new(&self.dir.join("runs"))?;
+        let before = changes
+            .iter()
+            .filter_map(|(p, c)| Some((p, c.before.as_ref()?)));
+        let before = write_tree(&store, &scratch, "before", before).await?;
+        let after = changes
+            .iter()
+            .filter_map(|(p, c)| Some((p, c.after.as_ref()?)));
+        let after = write_tree(&store, &scratch, "after", after).await?;
+        Ok((scratch, before, after))
+    }
+
+    fn store(&self, session: &str) -> Result<PathBuf> {
+        Ok(self.dir.join(checked(session)?).join("git"))
     }
 
     fn path(&self, session: &str, key: i64) -> Result<PathBuf> {
         Ok(self.dir.join(checked(session)?).join(format!("{key}.json")))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, BTreeMap<i64, Counts>>> {
-        self.counts.lock().expect("lock poisoned")
+    fn uncache(&self, session: &str) {
+        let mut cache = self.lock();
+        cache.runs.remove(session);
+        cache.chats.remove(session);
     }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
+        self.cache.lock().expect("lock poisoned")
+    }
+}
+
+/// Git in a chat's store, writing new objects to `scratch`.
+fn stored(store: &Path, scratch: &Scratch, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
+        .args(["-c", "core.quotePath=false"])
+        .args(args)
+        .current_dir(store)
+        .env("GIT_DIR", store)
+        .env("GIT_OBJECT_DIRECTORY", scratch.0.join("objects"))
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", store.join("objects"))
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE");
+    command
+}
+
+async fn write_tree<'a>(
+    store: &Path,
+    scratch: &Scratch,
+    index: &str,
+    entries: impl Iterator<Item = (&'a String, &'a Entry)>,
+) -> Result<String> {
+    let mut info = Vec::new();
+    for (path, entry) in entries {
+        info.extend(format!("{} {}\t{path}\0", entry.mode, entry.oid).into_bytes());
+    }
+    let index = scratch.0.join(index);
+    let mut update = stored(store, scratch, &["update-index", "-z", "--index-info"]);
+    update.env("GIT_INDEX_FILE", &index);
+    run(update, &[], Some(info)).await?;
+    let mut write = stored(store, scratch, &["write-tree", "--missing-ok"]);
+    write.env("GIT_INDEX_FILE", &index);
+    Ok(run(write, &[], None).await?.trim().to_owned())
+}
+
+/// Fold runs in order, so a path goes from its first run's before to its last run's after.
+fn net(runs: Vec<Run>) -> BTreeMap<String, Change> {
+    let mut net: BTreeMap<String, Change> = BTreeMap::new();
+    for run in runs {
+        for (path, change) in run.changes {
+            match net.get_mut(&path) {
+                Some(kept) => kept.after = change.after,
+                None => {
+                    net.insert(path, change);
+                }
+            }
+        }
+    }
+    net.retain(|_, change| change.before != change.after);
+    net
 }
 
 /// `session`, if it's safe as a folder name. pi's ids are UUIDs.
@@ -292,9 +494,52 @@ fn read_dir(dir: &Path) -> Result<Vec<PathBuf>> {
         .with_context(|| format!("reading {}", dir.display()))
 }
 
-async fn compare(snapshot: &Snapshot, before: &str, after: &str) -> Result<Diff> {
-    let (files, additions, deletions) = numstat(snapshot, before, after).await?;
-    let range = [before, after];
+/// A folder's total size, and when its newest file changed.
+fn usage(dir: &Path) -> Result<(u64, SystemTime)> {
+    let (mut len, mut modified) = (0, SystemTime::UNIX_EPOCH);
+    let mut dirs = vec![dir.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        for path in read_dir(&dir)? {
+            let meta = std::fs::symlink_metadata(&path)?;
+            if meta.is_dir() {
+                dirs.push(path);
+            } else {
+                len += meta.len();
+                modified = modified.max(meta.modified()?);
+            }
+        }
+    }
+    Ok((len, modified))
+}
+
+fn changes(raw: &str) -> Result<BTreeMap<String, Change>> {
+    let side = |mode: &str, oid: &str| {
+        (mode != ABSENT).then(|| Entry {
+            mode: mode.to_owned(),
+            oid: oid.to_owned(),
+        })
+    };
+    let mut fields = raw.split('\0').filter(|f| !f.is_empty());
+    let mut out = BTreeMap::new();
+    while let Some(meta) = fields.next() {
+        let parts: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+        let (Some(path), [before_mode, after_mode, before, after, _]) = (fields.next(), &parts[..])
+        else {
+            bail!("git diff-tree printed {meta:?}");
+        };
+        out.insert(
+            path.to_owned(),
+            Change {
+                before: side(before_mode, before),
+                after: side(after_mode, after),
+            },
+        );
+    }
+    Ok(out)
+}
+
+async fn compare(git: impl Fn(&[&str]) -> Command, before: &str, after: &str) -> Result<Diff> {
+    let (files, additions, deletions) = numstat(&git, before, after).await?;
     let patch_args = [
         "diff-tree",
         "-r",
@@ -304,7 +549,7 @@ async fn compare(snapshot: &Snapshot, before: &str, after: &str) -> Result<Diff>
         "--no-ext-diff",
         "--no-textconv",
     ];
-    let mut patch = git(snapshot, &[&patch_args[..], &range].concat()).await?;
+    let mut patch = run(git(&patch_args), &[before, after], None).await?;
     let truncated = patch.len() > PATCH_LIMIT;
     if truncated {
         // Truncate at a line boundary so the partial patch still parses.
@@ -324,15 +569,15 @@ async fn compare(snapshot: &Snapshot, before: &str, after: &str) -> Result<Diff>
     })
 }
 
-async fn numstat(snapshot: &Snapshot, before: &str, after: &str) -> Result<(Vec<File>, u64, u64)> {
-    let range = [before, after];
-    let numstat = git(
-        snapshot,
-        &[
-            &["diff-tree", "-r", "--no-renames", "--numstat", "-z"][..],
-            &range,
-        ]
-        .concat(),
+async fn numstat(
+    git: impl Fn(&[&str]) -> Command,
+    before: &str,
+    after: &str,
+) -> Result<(Vec<File>, u64, u64)> {
+    let numstat = run(
+        git(&["diff-tree", "-r", "--no-renames", "--numstat", "-z"]),
+        &[before, after],
+        None,
     )
     .await?;
     let mut files = Vec::new();
@@ -389,58 +634,116 @@ async fn repo(cwd: &Path) -> Option<Repo> {
     })
 }
 
+/// The repo's index with every changed path added, as a tree.
+///
+/// Only the paths `git status` names are hashed, so a large repository costs about one status.
 async fn tree(snapshot: &Snapshot) -> Result<String> {
     let write = async {
-        too_big(snapshot).await?;
-        git(snapshot, &["add", "-A"]).await?;
-        Ok::<_, anyhow::Error>(git(snapshot, &["write-tree"]).await?.trim().to_owned())
+        // A fresh copy each time, so the after tree has what a run committed.
+        let index = snapshot.store.0.join("index");
+        match std::fs::copy(&snapshot.repo.index, &index) {
+            Ok(_) => {}
+            // A repo with no commits yet has no index.
+            Err(e) if e.kind() == ErrorKind::NotFound => match std::fs::remove_file(&index) {
+                Err(e) if e.kind() != ErrorKind::NotFound => {
+                    return Err(e).context("removing the snapshot's index");
+                }
+                _ => {}
+            },
+            Err(e) => return Err(e).context("copying the repo's index"),
+        }
+        let paths = dirty(&snapshot.repo.top).await?;
+        if !paths.is_empty() {
+            let list: Vec<u8> = paths.iter().flat_map(|p| p.bytes().chain([0])).collect();
+            let add = snapshot.git(&[
+                "add",
+                "--all",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ]);
+            run(add, &[], Some(list)).await?;
+        }
+        Ok::<_, anyhow::Error>(
+            run(snapshot.git(&["write-tree"]), &[], None)
+                .await?
+                .trim()
+                .to_owned(),
+        )
     };
     tokio::time::timeout(SNAPSHOT_TIMEOUT, write)
         .await
         .with_context(|| format!("the snapshot took over {}s", SNAPSHOT_TIMEOUT.as_secs()))?
 }
 
-async fn too_big(snapshot: &Snapshot) -> Result<()> {
-    let changed = git(
-        snapshot,
-        &[
-            "ls-files",
-            "-z",
-            "--modified",
-            "--others",
-            "--exclude-standard",
-        ],
-    )
-    .await?;
-    for path in changed.split('\0').filter(|p| !p.is_empty()) {
-        let len = std::fs::metadata(snapshot.repo.top.join(path)).map_or(0, |meta| meta.len());
-        if len > FILE_LIMIT {
-            bail!("{path} is over {} MB", FILE_LIMIT / 1024 / 1024);
-        }
-    }
-    Ok(())
-}
-
-async fn git(snapshot: &Snapshot, args: &[&str]) -> Result<String> {
-    let alternates: OsString = snapshot.repo.objects.clone().into_os_string();
-    let out = Command::new("git")
-        // The user's fsmonitor hook would run, and quoting would mangle paths.
-        .args(["-c", "core.fsmonitor=false", "-c", "core.quotePath=false"])
-        .args(args)
-        .current_dir(&snapshot.repo.top)
-        .env("GIT_INDEX_FILE", snapshot.store.join("index"))
-        .env("GIT_OBJECT_DIRECTORY", snapshot.store.join("objects"))
-        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", alternates)
+/// Paths that differ from `HEAD` or the index, and untracked ones `.gitignore` allows.
+async fn dirty(top: &Path) -> Result<Vec<String>> {
+    // The repo's own index, so its fsmonitor and untracked cache help; no locks, so it's not written.
+    let mut status = Command::new("git");
+    status
+        .args([
+            "--no-optional-locks",
+            "-c",
+            "core.quotePath=false",
+            "status",
+        ])
+        .args(["--porcelain", "-z", "--no-renames", "--untracked-files=all"])
+        .current_dir(top)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .context("running git")?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        .env_remove("GIT_INDEX_FILE");
+    let out = run(status, &[], None).await?;
+    let mut paths = Vec::new();
+    for record in out.split('\0').filter(|r| !r.is_empty()) {
+        let (Some(code), Some(path)) = (record.get(..2), record.get(3..)) else {
+            bail!("git status printed {record:?}");
+        };
+        // A nested repository shows as its folder.
+        if path.ends_with('/') {
+            continue;
+        }
+        let meta = std::fs::symlink_metadata(top.join(path));
+        if let Ok(meta) = &meta
+            && meta.len() > FILE_LIMIT
+        {
+            bail!("{path} is over {} MB", FILE_LIMIT / 1024 / 1024);
+        }
+        // Gone from the index and the worktree, so the copied index has it right already.
+        if meta.is_err() && !code.ends_with('D') {
+            continue;
+        }
+        paths.push(path.to_owned());
     }
+    paths.sort_unstable();
+    paths.dedup();
+    Ok(paths)
+}
+
+async fn run(mut command: Command, args: &[&str], input: Option<Vec<u8>>) -> Result<String> {
+    command
+        .args(args)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().context("running git")?;
+    let stdin = child.stdin.take();
+    let write = async {
+        if let (Some(mut stdin), Some(input)) = (stdin, input) {
+            stdin.write_all(&input).await?;
+        }
+        Ok::<_, std::io::Error>(())
+    };
+    let (written, out) = tokio::join!(write, child.wait_with_output());
+    let out = out.context("running git")?;
+    if !out.status.success() {
+        let args: Vec<_> = command.as_std().get_args().collect();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("git {args:?} failed: {}", stderr.trim());
+    }
+    written.context("writing to git")?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
