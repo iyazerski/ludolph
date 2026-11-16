@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 use super::page::{ChangeTarget, Changes, Dictating, LEVELS_KEPT, SkillList, SkillMenu, Voice};
 use super::{ChatPage, Pending, QuestionForm, State, Target, attach};
 use crate::data::{
-    ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Part, Polished, Skills, ToolState,
+    ChatView, ComposerInfo, Diff, Frame, Message, MessageStatus, Part, Polished, Skills,
+    ToolOutput, ToolState,
 };
 use crate::dictation::{self, Heard, Listening};
 
@@ -111,11 +112,15 @@ impl State {
         chat.page = Some(page);
         chat.file_links.borrow_mut().clear();
         // A snapshot taken while its tool ran misses the end, often the error or summary.
-        for call in &finished {
-            chat.tool_outputs.insert(call.clone(), None);
-        }
-        for call in finished {
-            self.fetch_tool_output(nav, call);
+        let partials: Vec<_> = finished
+            .into_iter()
+            .filter_map(|call| match chat.tool_outputs.insert(call.clone(), None) {
+                Some(Some(Ok(partial))) => Some((call, partial)),
+                _ => None,
+            })
+            .collect();
+        for (call, partial) in partials {
+            self.fetch_tool_output(nav, call, Some(partial));
         }
         let Some(chat) = self.existing_at(nav) else {
             return;
@@ -260,10 +265,11 @@ impl State {
             return;
         }
         chat.tool_outputs.insert(call.to_owned(), None);
-        self.fetch_tool_output(nav, call.to_owned());
+        self.fetch_tool_output(nav, call.to_owned(), None);
     }
 
-    fn fetch_tool_output(&mut self, nav: u64, call: String) {
+    /// `partial` stays shown if the final output isn't readable yet, as before pi saves the result.
+    fn fetch_tool_output(&mut self, nav: u64, call: String, partial: Option<ToolOutput>) {
         let Some(chat) = self.existing_at(nav) else {
             return;
         };
@@ -271,11 +277,14 @@ impl State {
         self.api.call(
             "tool_output",
             json!({"chat": id, "call": call}),
-            move |s, result: Result<crate::data::ToolOutput, String>, _| {
+            move |s, result: Result<ToolOutput, String>, _| {
                 if let Some(chat) = s.existing_at(nav)
                     && let Some(output) = chat.tool_outputs.get_mut(&call)
                 {
-                    *output = Some(result);
+                    *output = Some(match (result, partial) {
+                        (Err(_), Some(partial)) => Ok(partial),
+                        (result, _) => result,
+                    });
                 }
             },
         );

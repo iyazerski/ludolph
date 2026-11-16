@@ -139,7 +139,13 @@ pub(crate) fn save(root: &Path, session: &str, images: Vec<Attachment>) -> Resul
 }
 
 /// Only run on chat deletion. Check every branch and terminal-created fork before removing files.
-pub(crate) fn cleanup(root: &Path, sessions: &Path, mut protected: HashSet<String>) -> Result<()> {
+/// `protected` is asked after listing the folders, so a chat started meanwhile is either protected
+/// or has no folder in the list.
+pub(crate) fn cleanup(
+    root: &Path,
+    sessions: &Path,
+    protected: impl FnOnce() -> HashSet<String>,
+) -> Result<()> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -156,6 +162,7 @@ pub(crate) fn cleanup(root: &Path, sessions: &Path, mut protected: HashSet<Strin
     if candidates.is_empty() {
         return Ok(());
     }
+    let mut protected = protected();
     candidates.retain(|(id, _)| !protected.contains(id));
     if candidates.is_empty() {
         return Ok(());

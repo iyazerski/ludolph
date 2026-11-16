@@ -15,7 +15,12 @@ use crate::text::one_line;
 const PREVIEW_CHARS: usize = 200;
 
 /// Keep the source until the caller has indexed the destination and removed all copies.
-pub(crate) fn relocate(path: &Path, sessions: &Path, cwd: &Path) -> Result<PathBuf> {
+/// The copy is unpublished: the caller persists it to the returned path when it can index it at once.
+pub(crate) fn relocate(
+    path: &Path,
+    sessions: &Path,
+    cwd: &Path,
+) -> Result<(tempfile::NamedTempFile, PathBuf)> {
     let cwd_text = cwd.to_str().context("the project path isn't UTF-8")?;
     let encoded = cwd_text
         .strip_prefix('/')
@@ -40,10 +45,7 @@ pub(crate) fn relocate(path: &Path, sessions: &Path, cwd: &Path) -> Result<PathB
     temporary.write_all(b"\n")?;
     std::io::copy(&mut reader, &mut temporary)?;
     temporary.as_file().sync_all()?;
-    temporary
-        .persist_noclobber(&target)
-        .with_context(|| format!("moving the session to {}", target.display()))?;
-    Ok(target)
+    Ok((temporary, target))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

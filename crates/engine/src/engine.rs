@@ -931,12 +931,15 @@ impl Engine {
         };
         // Copying a large session takes a while; other chats keep the state lock meanwhile.
         let (sessions, dest) = (self.0.config.sessions_dir.clone(), cwd.to_owned());
-        let target = tokio::task::spawn_blocking(move || {
+        let (copy, target) = tokio::task::spawn_blocking(move || {
             crate::session::relocate(&source, &sessions, &dest)
         })
         .await??;
         {
             let mut state = self.state();
+            // Published under the lock, so the watcher can't take the moved prompt for another pi's.
+            copy.persist_noclobber(&target)
+                .with_context(|| format!("moving the session to {}", target.display()))?;
             state.index.refresh_file(&target)?;
             for path in copies {
                 std::fs::remove_file(&path)
@@ -994,8 +997,9 @@ impl Engine {
         self.save_index()?;
         self.changed();
         // Folders of live sessions and drafts are referenced or about to be; only orphans need a scan.
-        let protected = {
-            let state = self.state();
+        let engine = self.clone();
+        let protected = move || {
+            let state = engine.state();
             let sessions = state.index.chats().map(|(_, summary)| summary.id.clone());
             sessions.chain(state.chats.keys().cloned()).collect()
         };
