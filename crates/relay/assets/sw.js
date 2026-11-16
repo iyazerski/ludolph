@@ -53,11 +53,10 @@ self.addEventListener("push", event => {
   event.waitUntil((async () => {
     const notice = await noticeOf(event.data?.json());
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    const visible = windows.filter(w => w.visibilityState === "visible");
-    if (visible.length && notice.kind !== "test") {
-      for (const w of visible) w.postMessage({ type: "notice", notice });
-      return;
-    }
+    // Hidden windows get it too, so their chat list is current when they come back.
+    const shown = notice.kind === "test" || !windows.some(w => w.visibilityState === "visible");
+    if (notice.kind !== "test") for (const w of windows) w.postMessage({ type: "notice", notice, shown });
+    if (!shown) return;
     await self.registration.showNotification(notice.title, {
       body: notice.body,
       tag: notice.chat || notice.kind,

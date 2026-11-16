@@ -388,6 +388,13 @@ async function loadChats() {
   seen.prime(fresh);
 }
 
+// A notice is sent once the chat settles, so the list need not wait for its next poll.
+const NOTICE_STATUS = { finished: "idle", failed: "errored", interrupted: "interrupted", input: "awaitingInput" };
+function settle(notice) {
+  const chat = store.chats?.find(c => c.machine === notice.machine && c.id === notice.chat);
+  if (chat && NOTICE_STATUS[notice.kind]) chat.status = NOTICE_STATUS[notice.kind];
+}
+
 const seen = {
   map: JSON.parse(localStorage.getItem("ludolph.seen") || "null"),
   save() { localStorage.setItem("ludolph.seen", JSON.stringify(this.map)); },
@@ -956,6 +963,7 @@ function listView() {
     kind: "list",
     el,
     mounted() { draw(); scroll.scrollTop = listState.scroll; updateBar(); },
+    refresh() { draw(); poll.now(); },
     destroy() { poll.stop(); offline.stop(); dark.removeEventListener("change", redraw); },
   };
 }
@@ -2357,8 +2365,10 @@ if ("serviceWorker" in navigator) {
     if (data?.type === "open") go(new URL(data.url, location.origin).hash || "#/");
     if (data?.type === "notice") {
       const n = data.notice;
+      settle(n);
+      current?.refresh?.();
       const target = n.machine && n.chat ? chatHash(n.machine, n.chat) : null;
-      if (target && location.hash === target) return;
+      if (data.shown || (target && location.hash === target)) return;
       toast({ title: n.title, body: n.body, kind: n.kind, timeout: 6000, onclick: target ? () => go(target) : null });
     }
   });
