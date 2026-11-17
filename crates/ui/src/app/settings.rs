@@ -1,7 +1,7 @@
 use chrono::{TimeDelta, Utc};
 use qrcode::QrCode;
 use qrcode::render::svg;
-use rune::{Image, Shortcut, ShortcutError, TextEdit};
+use rune::{Image, Shortcut, ShortcutError, TextEdit, Tx};
 use rune_kit::{ComboboxState, ShortcutRecorderState};
 use serde_json::{Value, json};
 
@@ -116,6 +116,10 @@ pub enum Update {
     Checking,
     Latest,
     Available(String),
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only Ludolph.app installs updates itself")
+    )]
     Installing(String),
     Failed(String),
 }
@@ -284,11 +288,11 @@ impl State {
         self.api.call(
             "sign_in",
             json!({"provider": provider, "apiKey": api_key}),
-            move |s, result: Result<SignIn, String>, _| s.started_sign_in(start, result),
+            move |s, result: Result<SignIn, String>, tx| s.started_sign_in(start, result, tx),
         );
     }
 
-    fn started_sign_in(&mut self, start: u64, result: Result<SignIn, String>) {
+    fn started_sign_in(&mut self, start: u64, result: Result<SignIn, String>, tx: &mut Tx) {
         let page = self.settings_page_mut();
         let wanted = page.is_some_and(|p| p.accounts.starting == Some(start));
         match result {
@@ -299,7 +303,7 @@ impl State {
                     page.accounts.starting = None;
                     page.accounts.attempt = Some(state.attempt);
                 }
-                self.show_sign_in(state);
+                self.show_sign_in(state, tx);
                 // Updates sent before the attempt was known were dropped.
                 self.refresh_sign_in();
             }
@@ -317,14 +321,14 @@ impl State {
         self.api.call(
             "sign_in_state",
             json!({}),
-            |s, result: Result<SignIn, String>, _| match result {
-                Ok(state) => s.show_sign_in(state),
+            |s, result: Result<SignIn, String>, tx| match result {
+                Ok(state) => s.show_sign_in(state, tx),
                 Err(e) => eprintln!("sign_in_state: {e}"),
             },
         );
     }
 
-    fn show_sign_in(&mut self, state: SignIn) {
+    fn show_sign_in(&mut self, state: SignIn, tx: &mut Tx) {
         let Some(page) = self.settings_page_mut() else {
             return;
         };
@@ -336,6 +340,21 @@ impl State {
             accounts.sign_in.result.is_none() && state.result.as_ref().is_some_and(|r| r.signed_in);
         if accounts.sign_in.prompt.as_ref().map(|p| &p.id) != state.prompt.as_ref().map(|p| &p.id) {
             accounts.answer = TextEdit::default();
+        }
+        // Each page opens once, when the engine first reports it.
+        let browser = state
+            .browser
+            .as_ref()
+            .filter(|url| accounts.sign_in.browser.as_ref() != Some(url));
+        let device_page = state
+            .device_code
+            .as_ref()
+            .filter(|code| code.open && accounts.sign_in.device_code.as_ref() != Some(code))
+            .map(|code| &code.url);
+        for url in browser.into_iter().chain(device_page) {
+            if let Err(e) = tx.open_url(url) {
+                eprintln!("opening a sign-in page: {e}");
+            }
         }
         accounts.sign_in = state;
         if signed_in {
@@ -367,8 +386,8 @@ impl State {
         self.api.call(
             "answer_sign_in",
             json!({"prompt": id, "value": value}),
-            |s, result: Result<SignIn, String>, _| match result {
-                Ok(state) => s.show_sign_in(state),
+            |s, result: Result<SignIn, String>, tx| match result {
+                Ok(state) => s.show_sign_in(state, tx),
                 Err(e) => s.fail("Couldn't sign in", e),
             },
         );
@@ -547,14 +566,14 @@ impl State {
         self.api.peer().update(|s, _| s.release_notice = None);
     }
 
-    pub fn install_release(&mut self) {
+    pub fn install_release(&mut self, tx: &mut Tx) {
         let Some(version) = self.release_notice.take() else {
             return;
         };
         if self.window == Window::Quick {
-            self.api.peer().update(|s, _| {
+            self.api.peer().update(|s, tx| {
                 s.release_notice = Some(version);
-                s.install_release();
+                s.install_release(tx);
             });
             return self.hide();
         }
@@ -564,11 +583,22 @@ impl State {
             && !matches!(page.update, Update::Installing(_))
         {
             page.update = Update::Available(version);
-            self.install_update();
+            self.install_update(tx);
         }
     }
 
-    pub fn install_update(&mut self) {
+    #[cfg(not(target_os = "macos"))]
+    pub fn install_update(&mut self, tx: &mut Tx) {
+        if let Some(page) = self.settings_page_mut()
+            && let Update::Available(version) = &page.update
+            && let Err(e) = tx.open_url(&update::release_page(version))
+        {
+            page.update = Update::Failed(format!("Couldn't open the release page: {e}"));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn install_update(&mut self, _tx: &mut Tx) {
         let Some(page) = self.settings_page_mut() else {
             return;
         };

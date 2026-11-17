@@ -1,6 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures_util::{SinkExt, StreamExt};
 use ludolph_engine::engine::{
@@ -264,6 +264,13 @@ async fn another_pis_writes_reach_the_chat_and_turn_sending_off() {
     let copy = dir.path().join("sessions/--fallback--/s1.jsonl");
     std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
     std::fs::copy(&path, &copy).unwrap();
+    // Linux file times are coarse, so the append alone may not make the original newer.
+    std::fs::File::options()
+        .write(true)
+        .open(&copy)
+        .unwrap()
+        .set_modified(SystemTime::UNIX_EPOCH)
+        .unwrap();
     append(&path, &user("d", Some("c"), "latest", 4));
     until(&engine, |c| last_prompt(&c[0]) == Some("latest")).await;
     let mut feed = ludolph_engine::feed::Feed::new(engine.clone(), "s1".into(), true);
@@ -1833,7 +1840,9 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
 
     let (read, mut write) = UnixStream::connect(&socket).await.unwrap().into_split();
     let mut reader = BufReader::new(read);
-    let project: PathBuf = dir.path().into();
+    // Not the home folder, which isn't a project.
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
     let requests = [
         json!({"id": 1, "subscribe": "chats"}),
         json!({"id": 2, "call": "create_chat", "args": {"project": project, "prompt": "hi"}}),
@@ -1867,10 +1876,7 @@ async fn the_socket_answers_calls_and_pushes_list_changes() {
     let _ = writing.await;
     let created = seen.iter().find(|r| r["id"] == 2).unwrap().clone();
     assert_eq!(created["ok"]["delivery"], "run", "{created}");
-    assert_eq!(
-        created["ok"]["project"]["name"],
-        json!(dir.path().file_name().unwrap().to_str())
-    );
+    assert_eq!(created["ok"]["project"]["name"], "project");
 
     write
         .write_all(format!("{}\n", json!({"id": 4, "call": "list_chats"})).as_bytes())
@@ -2505,7 +2511,7 @@ async fn a_sign_in_relays_pis_steps_and_the_users_answer() {
         .await
         .unwrap();
     let asking = state_until(asked).await;
-    let code = json!({"code": "ABCD-1234", "url": "https://example.com/device"});
+    let code = json!({"code": "ABCD-1234", "url": "https://example.com/device", "open": false});
     assert_eq!(asking["deviceCode"], code);
     tool(&engine, "answer_sign_in", answer(&asking, "good-key"))
         .await

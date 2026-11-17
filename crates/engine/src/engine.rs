@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
+use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::Instant;
 
@@ -353,14 +353,22 @@ impl Engine {
             config.grace,
         )?;
         let phones = Arc::new(Phones::new(config.state_dir.join("relay-replays"))?);
-        let engine = Self(Arc::new_cyclic(|inner| Inner {
+        // Following starts once the engine exists: inotify reports the writes made while
+        // starting, and a weak reference made before the engine can't reach it.
+        let (start, started) = oneshot::channel();
+        let watching = tokio::spawn(async move {
+            if let Ok(engine) = started.await {
+                follow(engine, watcher).await;
+            }
+        });
+        let engine = Self(Arc::new(Inner {
             turns,
             catalog,
             state: Mutex::new(state),
             list: watch::channel(0).0,
             alerts: broadcast::channel(ALERTS).0,
             transcripts: Arc::default(),
-            watching: tokio::spawn(follow(inner.clone(), watcher)).abort_handle(),
+            watching: watching.abort_handle(),
             titler: Arc::new(Titler::new(config.pi.clone())),
             settings: Mutex::new(settings),
             relay: Mutex::default(),
@@ -374,6 +382,7 @@ impl Engine {
             sign_in: SignIn::default(),
             config,
         }));
+        drop(start.send(Arc::downgrade(&engine.0)));
         tokio::spawn(engine.clone().reconnect());
         Ok(engine)
     }

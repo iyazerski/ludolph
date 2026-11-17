@@ -493,7 +493,7 @@ pub struct Account {
 pub struct SignIn {
     pub attempt: u64,
     pub provider: Option<String>,
-    /// The sign-in page, already open in the browser.
+    /// The sign-in page, which the app opens in the browser.
     pub browser: Option<String>,
     pub device_code: Option<DeviceCode>,
     pub prompt: Option<SignInPrompt>,
@@ -505,6 +505,8 @@ pub struct SignIn {
 pub struct DeviceCode {
     pub code: String,
     pub url: String,
+    /// pi asks to open `url` in the browser.
+    pub open: bool,
 }
 
 /// A question pi asks, in its own words.

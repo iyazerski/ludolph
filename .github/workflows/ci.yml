@@ -61,6 +61,36 @@ jobs:
           plutil -lint target/Ludolph.app/Contents/Info.plist
           codesign --verify --strict target/Ludolph.app
 
+  linux:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2.9.3
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  # Windows runs only the app; its engine is the Linux one, in WSL.
+  windows:
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2.9.3
+      - name: Clippy
+        run: cargo clippy -p ludolph -p ludolph-ui --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test -p ludolph-ui --locked
+
   relay:
     runs-on: ubuntu-24.04
 

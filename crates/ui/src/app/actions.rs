@@ -662,19 +662,11 @@ impl State {
 
     pub fn open_path(&mut self, path: String) {
         self.api.run(
-            move |_| async move {
-                tokio::process::Command::new("open")
-                    .arg(path)
-                    .output()
-                    .await
-            },
-            |s, out, _| match out {
-                Ok(out) if out.status.success() => {}
-                Ok(out) => s.fail(
-                    "Couldn't open the file",
-                    String::from_utf8_lossy(&out.stderr).trim(),
-                ),
-                Err(e) => s.fail("Couldn't open the file", e.to_string()),
+            move |_| async move { crate::paths::open(&path).await },
+            |s, opened, _| {
+                if let Err(e) = opened {
+                    s.fail("Couldn't open the file", e);
+                }
             },
         );
     }

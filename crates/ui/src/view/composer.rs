@@ -87,28 +87,30 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
             .press(rune::Color::TRANSPARENT);
     }
     let listening = page.voice.listening().is_some();
-    let dictate = IconButton::new(&icons::MIC)
-        .variant(if listening {
-            IconButtonVariant::Contrast
-        } else {
-            IconButtonVariant::GhostMuted
-        })
-        .label(if listening {
-            "Stop dictating"
-        } else {
-            "Dictate"
-        })
-        .disabled(matches!(page.voice, Voice::Authorizing | Voice::Polishing))
-        .on_press(State::dictate)
-        .build(k)
-        .preserve_focus_on_press(true);
+    let dictate = crate::dictation::AVAILABLE.then(|| {
+        IconButton::new(&icons::MIC)
+            .variant(if listening {
+                IconButtonVariant::Contrast
+            } else {
+                IconButtonVariant::GhostMuted
+            })
+            .label(if listening {
+                "Stop dictating"
+            } else {
+                "Dictate"
+            })
+            .disabled(matches!(page.voice, Voice::Authorizing | Voice::Polishing))
+            .on_press(State::dictate)
+            .build(k)
+            .preserve_focus_on_press(true)
+    });
     let tools = row()
         .w_full()
         .gap(8.0)
         .center_y()
         .child(model_picker(s, page, k, layer))
         .child(rune::spacer())
-        .child(dictate)
+        .children(dictate)
         .child(send);
     let mut field_box = col()
         .key("composer-box")

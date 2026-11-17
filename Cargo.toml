@@ -12,12 +12,16 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+ludolph-ui.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
 ludolph-engine = { path = "crates/engine" }
-ludolph-ui.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
 plist.workspace = true
 serde.workspace = true
-tokio.workspace = true
 
 [workspace]
 resolver = "3"
@@ -42,6 +46,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 dispatch2 = { version = "0.3", default-features = false, features = ["alloc"] }
 libc = "0.2"
+notify = { version = "8", default-features = false }
 ludolph-json-file = { path = "crates/json-file" }
 ludolph-prompt = { path = "crates/prompt" }
 ludolph-relay-proto = { path = "crates/relay-proto" }
@@ -81,6 +86,7 @@ uuid = { version = "1", features = ["v4"] }
 web-push-native = { version = "0.5", default-features = false }
 webauthn-rs = "0.6"
 webpki-root-certs = "1"
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 
 # Cargo does not inherit Rune's patches. Keep them at the same revision as Rune.
 [patch.crates-io]

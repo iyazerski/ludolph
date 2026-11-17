@@ -43,6 +43,7 @@ fn bottom_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
 
 /// Ludolph has only a dark look. Setting it on NSApp also makes native surfaces, such as the
 /// quick window's popover material, and Rune's `system_dark` dark under a light system.
+#[cfg(target_os = "macos")]
 fn use_dark_appearance() {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
@@ -107,10 +108,10 @@ pub fn run(opts: Opts) -> Result<()> {
         .enable_all()
         .build()
         .context("starting the runtime")?;
-    let socket = opts.state_dir.join("engine.sock");
+    let link = client::Link::new(&opts.state_dir).context("finding the engine")?;
     let prefs_path = opts.state_dir.join("ui.json");
     let prefs = Rc::new(RefCell::new(Prefs::load(&prefs_path)));
-    let shared = Shared::start(rt.handle().clone(), socket, prefs_path);
+    let shared = Shared::start(rt.handle().clone(), link, prefs_path);
     let hotkey = Rc::new(Cell::new(None));
     let expand_tools = Rc::new(Cell::new(false));
     let main_window = Rc::new(OnceCell::new());
@@ -182,6 +183,7 @@ pub fn run(opts: Opts) -> Result<()> {
         })
     };
     rune::run_windows_with_args(RunOptions { accessory: true }, [], move |displays| {
+        #[cfg(target_os = "macos")]
         use_dark_appearance();
         let options = WindowOptions {
             transparent: true,

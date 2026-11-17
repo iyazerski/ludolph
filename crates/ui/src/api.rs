@@ -10,7 +10,7 @@ use tokio::runtime::Handle;
 use tokio::sync::watch;
 
 use crate::State;
-use crate::client::{Client, Subscription};
+use crate::client::{Client, Link, Subscription};
 use crate::prefs::Prefs;
 
 const TICK: Duration = Duration::from_secs(1);
@@ -23,10 +23,10 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn start(rt: Handle, socket: PathBuf, prefs_path: PathBuf) -> Self {
+    pub fn start(rt: Handle, link: Link, prefs_path: PathBuf) -> Self {
         let client = {
             let _entered = rt.enter();
-            Client::start(socket)
+            Client::start(link)
         };
         let prefs = Arc::new(write_prefs(&rt, prefs_path));
         Self { rt, client, prefs }

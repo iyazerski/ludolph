@@ -25,6 +25,10 @@ const GAP: f32 = 8.0;
 /// The sidecar picker's id for pi's default model, which follows pi's
 /// settings; a model's id has a `/`.
 const DEFAULT_MODEL: &str = "default";
+/// browse and Cua Driver set up on macOS only, and macOS runs the app and the engine together.
+const GUI_TOOLS: bool = cfg!(target_os = "macos");
+/// Only Ludolph.app has a login item.
+const LOGIN_ITEM: bool = cfg!(target_os = "macos");
 
 pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>) -> El {
     let content = match page.section {
@@ -37,7 +41,9 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                 .gap(12.0)
                 .child(group(
                     k,
-                    vec![sidecar(s, page, k, layer), gui_model(s, page, k, layer)],
+                    std::iter::once(sidecar(s, page, k, layer))
+                        .chain(GUI_TOOLS.then(|| gui_model(s, page, k, layer)))
+                        .collect(),
                 ))
                 .child(caption(k, "Chat model picker"))
                 .child(group(k, chat_models(s, page, k)))
@@ -499,22 +505,7 @@ fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
             .on_pick(|s: &mut State, i, _| s.change_settings(|v| v.expand_tools = i == 1))
             .build(k),
     );
-    vec![
-        wide(
-            k,
-            "Quick window",
-            ShortcutRecorder::new("shortcut", &page.shortcut, |s: &mut State| {
-                &mut s
-                    .settings_page_mut()
-                    .expect("the recorder is on the settings page")
-                    .shortcut
-            })
-            .label("Show the quick window")
-            .on_change(|s: &mut State, shortcut, _| s.change_shortcut(shortcut))
-            .error_message(shortcut_error_message)
-            .width(CONTROL)
-            .build(k),
-        ),
+    let login = LOGIN_ITEM.then(|| {
         compact(
             k,
             "Open at login",
@@ -526,33 +517,51 @@ fn general(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
                     s.change_settings(|v| v.open_at_login = !v.open_at_login)
                 })
                 .build(k),
-        ),
-        tools,
-        wide(
-            k,
-            "Send while working",
-            SegmentedControl::new(
-                &["Queue", "Steer"],
-                Some(usize::from(page.settings.as_ref().is_some_and(
-                    |settings| settings.send_behavior == SendBehavior::Steer,
-                ))),
-            )
-            .width(Some(CONTROL))
-            .on_pick(|s: &mut State, index, _| {
-                s.change_settings(|settings| {
-                    settings.send_behavior = if index == 0 {
-                        SendBehavior::Queue
-                    } else {
-                        SendBehavior::Steer
-                    };
+        )
+    });
+    let shortcut = wide(
+        k,
+        "Quick window",
+        ShortcutRecorder::new("shortcut", &page.shortcut, |s: &mut State| {
+            &mut s
+                .settings_page_mut()
+                .expect("the recorder is on the settings page")
+                .shortcut
+        })
+        .label("Show the quick window")
+        .on_change(|s: &mut State, shortcut, _| s.change_shortcut(shortcut))
+        .error_message(shortcut_error_message)
+        .width(CONTROL)
+        .build(k),
+    );
+    std::iter::once(shortcut)
+        .chain(login)
+        .chain([
+            tools,
+            wide(
+                k,
+                "Send while working",
+                SegmentedControl::new(
+                    &["Queue", "Steer"],
+                    Some(usize::from(page.settings.as_ref().is_some_and(
+                        |settings| settings.send_behavior == SendBehavior::Steer,
+                    ))),
+                )
+                .width(Some(CONTROL))
+                .on_pick(|s: &mut State, index, _| {
+                    s.change_settings(|settings| {
+                        settings.send_behavior = if index == 0 {
+                            SendBehavior::Queue
+                        } else {
+                            SendBehavior::Steer
+                        };
+                    })
                 })
-            })
-            .build(k),
-        ),
-    ]
-    .into_iter()
-    .chain(unregistered(s, page, k))
-    .collect()
+                .build(k),
+            ),
+        ])
+        .chain(unregistered(s, page, k))
+        .collect()
 }
 
 fn unregistered(s: &State, page: &SettingsPage, k: &Kit) -> Option<El> {
@@ -758,8 +767,10 @@ fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
                 .build(k),
         ),
     ];
-    rows.extend(gui_tool(page, k, GuiTool::Browser));
-    rows.extend(gui_tool(page, k, GuiTool::Computer));
+    if GUI_TOOLS {
+        rows.extend(gui_tool(page, k, GuiTool::Browser));
+        rows.extend(gui_tool(page, k, GuiTool::Computer));
+    }
     if let Some(why) = &page.tools.failed {
         rows.push(error_line(k, format!("Couldn't check the tools: {why}")));
     }
@@ -1108,7 +1119,7 @@ fn about(page: &SettingsPage, k: &Kit) -> El {
         Update::Available(version) => Some(
             Button::new(format!("Update to {version}"))
                 .variant(ButtonVariant::Neutral)
-                .on_press(State::install_update)
+                .on_press_tx(State::install_update)
                 .build(k),
         ),
         Update::Latest | Update::Failed(_) => Some(

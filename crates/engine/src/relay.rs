@@ -9,7 +9,9 @@ use futures_util::{SinkExt, StreamExt};
 use ludolph_relay_proto::{
     CONNECT_PATH, Down, PAIR_PATH, PING_EVERY, PROTOCOL, PairStart, Paired, Sealed, Up, pair_url,
 };
+#[cfg(target_os = "macos")]
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
+#[cfg(target_os = "macos")]
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
@@ -40,6 +42,7 @@ const SILENCE_LIMIT: Duration = Duration::from_secs(30);
 /// open but dead, so it gets a quick ping that must be answered.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// configd posts this when interfaces, addresses or routes change.
+#[cfg(target_os = "macos")]
 const NETWORK_CHANGE: &std::ffi::CStr = c"com.apple.system.config.network_change";
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -54,6 +57,7 @@ const MAX_QUEUED_CALLS: usize = 64;
 const MAX_WATCHES: usize = 32;
 const PHONE_FRAME: Duration = Duration::from_millis(200);
 const FRAME_QUEUE: usize = 16;
+#[cfg(target_os = "macos")]
 const AWAY_AFTER: Duration = Duration::from_secs(120);
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(15);
 const BODY_CHARS: usize = 240;
@@ -63,13 +67,16 @@ const MAX_MESSAGE: usize = 24 << 20;
 pub const DEFAULT_RELAY: &str = "https://ludolph.iyazerski.dev";
 
 /// Namespace Keychain accounts by engine folder to isolate development engines.
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "dev.iyazerski.ludolph.relay";
+#[cfg(target_os = "macos")]
 const NOT_FOUND: i32 = -25300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretStore {
+    #[cfg(target_os = "macos")]
     Keychain,
-    /// Tests use the private state file instead of the user's Keychain.
+    /// The private state file: for tests, and outside macOS, which has no Keychain.
     File,
 }
 
@@ -297,6 +304,7 @@ impl Link {
         };
         let secrets = match store {
             SecretStore::File => saved.secrets,
+            #[cfg(target_os = "macos")]
             SecretStore::Keychain => {
                 match get_generic_password(KEYCHAIN_SERVICE, &keychain_account(state_dir)) {
                     Ok(bytes) => Some(
@@ -322,6 +330,7 @@ impl Link {
         };
         let secrets = match store {
             SecretStore::File => Some(secrets),
+            #[cfg(target_os = "macos")]
             SecretStore::Keychain => {
                 let account = keychain_account(state_dir);
                 set_generic_password(KEYCHAIN_SERVICE, &account, &serde_json::to_vec(&secrets)?)
@@ -344,18 +353,23 @@ impl Link {
             }
             _ => {}
         }
-        if store == SecretStore::Keychain {
-            match delete_generic_password(KEYCHAIN_SERVICE, &keychain_account(state_dir)) {
-                Err(e) if e.code() != NOT_FOUND => {
-                    bail!("removing the relay secrets from the keychain: {e}")
+        match store {
+            SecretStore::File => {}
+            #[cfg(target_os = "macos")]
+            SecretStore::Keychain => {
+                match delete_generic_password(KEYCHAIN_SERVICE, &keychain_account(state_dir)) {
+                    Err(e) if e.code() != NOT_FOUND => {
+                        bail!("removing the relay secrets from the keychain: {e}")
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         Ok(())
     }
 }
 
+#[cfg(target_os = "macos")]
 fn keychain_account(state_dir: &Path) -> String {
     state_dir.display().to_string()
 }
@@ -383,12 +397,17 @@ pub(crate) async fn run(
         }
     };
     let slots = Arc::new(Semaphore::new(MAX_CALLS));
-    let mut power = power::changes()
-        .inspect_err(|e| eprintln!("relay: the battery won't update: {e:#}"))
-        .ok();
-    let mut network = Changes::new(NETWORK_CHANGE)
-        .inspect_err(|e| eprintln!("relay: network changes won't be noticed: {e:#}"))
-        .ok();
+    #[cfg(target_os = "macos")]
+    let (mut power, mut network) = (
+        power::changes()
+            .inspect_err(|e| eprintln!("relay: the battery won't update: {e:#}"))
+            .ok(),
+        Changes::new(NETWORK_CHANGE)
+            .inspect_err(|e| eprintln!("relay: network changes won't be noticed: {e:#}"))
+            .ok(),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (mut power, mut network): (Option<Changes>, Option<Changes>) = (None, None);
     let mut backoff = MIN_BACKOFF;
     loop {
         let mut connected = None;
@@ -432,7 +451,7 @@ pub async fn pair(
     let mut socket = dial(&socket_url(relay, PAIR_PATH)?, token).await?;
     let start = PairStart {
         protocol: PROTOCOL,
-        name: mac_name(),
+        name: computer_name(),
     };
     socket
         .send(Message::Text(serde_json::to_string(&start)?.into()))
@@ -472,13 +491,17 @@ pub async fn forget(link: &Link) -> Result<()> {
         .context("the relay didn't answer")?
 }
 
-fn mac_name() -> String {
+fn computer_name() -> String {
+    #[cfg(target_os = "macos")]
     let name = std::process::Command::new("/usr/sbin/scutil")
         .args(["--get", "ComputerName"])
         .output()
         .ok()
         .filter(|out| out.status.success())
         .and_then(|out| String::from_utf8(out.stdout).ok());
+    // WSL names itself after the Windows computer.
+    #[cfg(not(target_os = "macos"))]
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname").ok();
     let name: String = name
         .as_deref()
         .map(str::trim)
@@ -487,7 +510,12 @@ fn mac_name() -> String {
         .take(60)
         .collect();
     if name.is_empty() {
-        "Mac".to_owned()
+        if cfg!(target_os = "macos") {
+            "Mac"
+        } else {
+            "Computer"
+        }
+        .to_owned()
     } else {
         name
     }
@@ -822,6 +850,7 @@ fn error(message: &transcript::Message) -> Option<String> {
 }
 
 /// Assume away if input idle time is unavailable; prefer an extra notice to a missed one.
+#[cfg(target_os = "macos")]
 fn away() -> bool {
     let any_input = CGEventType(u32::MAX);
     let idle = CGEventSource::seconds_since_last_event_type(
@@ -831,6 +860,12 @@ fn away() -> bool {
     Duration::try_from_secs_f64(idle)
         .ok()
         .is_none_or(|idle| idle >= AWAY_AFTER)
+}
+
+/// A Linux engine may run in WSL or on a server, away from the input it would read.
+#[cfg(not(target_os = "macos"))]
+fn away() -> bool {
+    true
 }
 
 async fn dial(url: &str, token: Option<&str>) -> Result<Socket> {

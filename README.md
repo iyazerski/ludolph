@@ -26,6 +26,14 @@ Ludolph isn't notarized by Apple, so macOS blocks it the first time you open it.
 
 To build it from source instead, run `make install`. It builds Ludolph.app, puts it in /Applications, and opens it.
 
+### Linux and Windows
+
+Linux and Windows get a smaller app: no dictation, browser or computer use, Open at login, or built-in updates. On Windows, the engine and pi run in WSL.
+
+- **Linux:** run the Terminal command above. It installs `ludolph` to `~/.local/bin`. Run `ludolph` to open it. The engine logs to `~/.local/state/ludolph/engine.log`.
+- **Windows:** install pi in your default WSL distribution and run the Terminal command there. Then download [Ludolph.exe](https://github.com/iyazerski/ludolph/releases/latest/download/Ludolph.exe) and open it. Pick project folders in WSL (`\\wsl.localhost\...`) or on a drive.
+- **Updates:** Settings tells you when a new version is out. Run the Terminal command again to update, and download Ludolph.exe again on Windows.
+
 ## Use
 
 - **Chats:** the main window lists your pi sessions by project, whichever tool started them, and you can start, follow and steer chats there. Right-click a chat to rename it, delete it, or open it in the other window.

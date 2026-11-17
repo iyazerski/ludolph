@@ -1,18 +1,114 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
 
 const RETRY_MIN: Duration = Duration::from_millis(250);
 const RETRY_MAX: Duration = Duration::from_secs(4);
 
+#[cfg(not(windows))]
 pub const DOWN: &str = "Ludolph's engine isn't running";
+#[cfg(windows)]
+pub const DOWN: &str =
+    "Ludolph's engine in WSL isn't running. Install Ludolph in WSL, then try again";
+
+/// How the app reaches the engine: its socket, which launchd keeps served.
+#[cfg(target_os = "macos")]
+pub struct Link(PathBuf);
+
+/// How the app reaches the engine: `ludolph connect`, which starts the engine if it isn't
+/// running.
+#[cfg(not(target_os = "macos"))]
+pub struct Link {
+    program: PathBuf,
+    args: &'static [&'static str],
+}
+
+impl Link {
+    #[cfg(target_os = "macos")]
+    pub fn new(state_dir: &Path) -> std::io::Result<Self> {
+        Ok(Self(state_dir.join("engine.sock")))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn new(_state_dir: &Path) -> std::io::Result<Self> {
+        Ok(Self {
+            program: std::env::current_exe()?,
+            args: &["connect"],
+        })
+    }
+
+    /// The engine runs in the default WSL distribution, where install.sh puts it in ~/.local.
+    #[cfg(windows)]
+    pub fn new(_state_dir: &Path) -> std::io::Result<Self> {
+        Ok(Self {
+            program: PathBuf::from("wsl.exe"),
+            args: &["--cd", "~", "--exec", ".local/bin/ludolph", "connect"],
+        })
+    }
+
+    /// A link to no engine, for tests.
+    #[cfg(test)]
+    pub fn nowhere() -> Self {
+        #[cfg(target_os = "macos")]
+        return Self(PathBuf::from("/nonexistent/engine.sock"));
+        #[cfg(not(target_os = "macos"))]
+        Self {
+            program: PathBuf::from("/nonexistent/ludolph"),
+            args: &[],
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn connect(&self) -> Option<Connection> {
+        let (read, write) = tokio::net::UnixStream::connect(&self.0)
+            .await
+            .ok()?
+            .into_split();
+        Some(Connection {
+            read: Box::new(BufReader::new(read)),
+            write: Box::new(write),
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn connect(&self) -> Option<Connection> {
+        let mut command = tokio::process::Command::new(&self.program);
+        command
+            .args(self.args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        let mut bridge = command.spawn().ok()?;
+        let mut read = BufReader::new(bridge.stdout.take()?);
+        let write = bridge.stdin.take()?;
+        // `connect` sends an empty line once the engine answers.
+        let mut ready = String::new();
+        match read.read_line(&mut ready).await {
+            Ok(1..) if ready.trim().is_empty() => Some(Connection {
+                read: Box::new(read),
+                write: Box::new(write),
+                _bridge: bridge,
+            }),
+            _ => None,
+        }
+    }
+}
+
+struct Connection {
+    read: Box<dyn AsyncBufRead + Send + Unpin>,
+    write: Box<dyn AsyncWrite + Send + Unpin>,
+    /// Killed when the connection drops.
+    #[cfg(not(target_os = "macos"))]
+    _bridge: tokio::process::Child,
+}
 
 pub type Sink = Arc<dyn Fn(Value) + Send + Sync>;
 
@@ -39,10 +135,10 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn start(socket: PathBuf) -> Self {
+    pub fn start(link: Link) -> Self {
         let (requests, queue) = mpsc::unbounded_channel();
         let (up, watching) = watch::channel(false);
-        tokio::spawn(run(socket, queue, up));
+        tokio::spawn(run(link, queue, up));
         Self {
             requests,
             next: Arc::new(AtomicU64::new(1)),
@@ -97,18 +193,14 @@ struct Followed {
     sink: Sink,
 }
 
-async fn run(
-    socket: PathBuf,
-    mut queue: mpsc::UnboundedReceiver<Request>,
-    up: watch::Sender<bool>,
-) {
+async fn run(link: Link, mut queue: mpsc::UnboundedReceiver<Request>, up: watch::Sender<bool>) {
     let mut followed: HashMap<u64, Followed> = HashMap::new();
     let mut wait = RETRY_MIN;
     loop {
-        if let Ok(stream) = UnixStream::connect(&socket).await {
+        if let Some(connection) = link.connect().await {
             wait = RETRY_MIN;
             up.send_replace(true);
-            let open = serve(stream, &mut queue, &mut followed).await;
+            let open = serve(connection, &mut queue, &mut followed).await;
             up.send_replace(false);
             if !open {
                 return;
@@ -135,12 +227,12 @@ async fn run(
 }
 
 async fn serve(
-    stream: UnixStream,
+    connection: Connection,
     queue: &mut mpsc::UnboundedReceiver<Request>,
     followed: &mut HashMap<u64, Followed>,
 ) -> bool {
-    let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
+    let mut write = connection.write;
+    let mut lines = connection.read.lines();
     let mut calls: HashMap<String, oneshot::Sender<Result<Value, String>>> = HashMap::new();
     let mut next_call = 0u64;
     let mut out = Vec::new();

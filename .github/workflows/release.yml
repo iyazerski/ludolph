@@ -31,8 +31,82 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Pick version
+        id: pick
+        run: |
+          minor=$(sed -nE 's/^version = "([0-9]+\.[0-9]+)\..*"/\1/p' Cargo.toml)
+          patch=$(git tag --list "v$minor.*" | wc -l | tr -d ' ')
+          echo "version=$minor.$patch" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: [ci, version]
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    # The oldest supported runner, so the binary needs only an older glibc.
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ASSET: ludolph-linux-${{ matrix.arch }}.tar.gz
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: oven-sh/setup-bun@v2
+      - name: Build binary
+        run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
+      - name: Package
+        run: |
+          share=dist/ludolph/share/ludolph
+          mkdir -p dist/ludolph/bin "$share"
+          cp target/release/ludolph dist/ludolph/bin/
+          cp LICENSE THIRD_PARTY_LICENSES.md "$share/"
+          (cd extensions && bun install --frozen-lockfile && bun run build "$GITHUB_WORKSPACE/$share/pi")
+          tar -czf "$ASSET" -C dist ludolph
+          sha256sum "$ASSET" > "$ASSET.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: ${{ env.ASSET }}*
+
+  windows:
+    needs: [ci, version]
+    runs-on: windows-2025
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - name: Build app
+        run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
+      - name: Package
+        run: |
+          cp target/release/ludolph.exe Ludolph.exe
+          sha256sum Ludolph.exe > Ludolph.exe.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Ludolph.exe*
+
   release:
-    needs: ci
+    needs: [ci, version, linux, windows]
     runs-on: macos-26
     permissions:
       contents: write
@@ -44,12 +118,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Pick version
-        id: version
-        run: |
-          minor=$(sed -nE 's/^version = "([0-9]+\.[0-9]+)\..*"/\1/p' Cargo.toml)
-          patch=$(git tag --list "v$minor.*" | wc -l | tr -d ' ')
-          echo "VERSION=$minor.$patch" >> "$GITHUB_ENV"
+      - name: Use version
+        run: echo "VERSION=${{ needs.version.outputs.version }}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ env.TARGET }}
@@ -92,6 +162,10 @@ jobs:
           cd dist
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
           shasum -a 256 Ludolph.dmg > Ludolph.dmg.sha256
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,11 +184,13 @@ jobs:
 
           ## Install
 
-          Ludolph needs [pi](https://pi.dev) and a Mac with Apple silicon.
+          Ludolph needs [pi](https://pi.dev). It runs on a Mac with Apple silicon, on Linux, and on Windows with pi in WSL.
 
           - **Download:** get \`Ludolph.dmg\` below, open it, and drag Ludolph into Applications. The first time you open Ludolph, macOS blocks it because it isn't notarized: go to System Settings > Privacy & Security and click **Open Anyway**.
           - **Homebrew:** \`brew install --cask iyazerski/tap/ludolph\`
           - **Terminal:** \`curl -fsSL https://raw.githubusercontent.com/$GH_REPO/main/install.sh | sh\`
+          - **Linux:** run the Terminal command above. It installs \`ludolph\` to \`~/.local/bin\`.
+          - **Windows:** run the Terminal command in WSL, then download \`Ludolph.exe\` below and open it.
           EOF
       - name: Update Homebrew cask
         env:
