@@ -1,7 +1,7 @@
 use rune::{Color, El, SurfaceFit, col, el, row, text};
 use rune_kit::{
-    Button, ButtonVariant, Combobox, ComboboxOption, Kit, SegmentedControl, ShortcutRecorder,
-    Switch, TextInput, shortcut_error_message,
+    Button, ButtonVariant, Combobox, ComboboxOption, Kit, Placement, SegmentedControl, Select,
+    SelectAppearance, ShortcutRecorder, Switch, TextInput, shortcut_error_message,
 };
 
 use super::theme;
@@ -17,6 +17,9 @@ const MAX_WIDTH: f32 = 640.0;
 const PAD: f32 = 12.0;
 const LABEL: f32 = 170.0;
 const CONTROL: f32 = 300.0;
+/// The reasoning picker next to a model picker; the pair is `CONTROL` wide.
+const THINKING: f32 = 108.0;
+const GAP: f32 = 8.0;
 /// The sidecar picker's id for pi's default model, which follows pi's
 /// settings; a model's id has a `/`.
 const DEFAULT_MODEL: &str = "default";
@@ -35,17 +38,13 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
             body = body
                 .child(section(k, "General"))
                 .child(group(k, general(s, page, k)))
+                .child(section(k, "Agent tools"))
+                .child(group(k, agent_tools(page, k)))
                 .child(section(k, "Model"))
                 .child(group(
                     k,
-                    vec![
-                        sidecar(s, page, k, layer),
-                        gui_model(s, page, k, layer),
-                        gui_thinking(s, page, k, layer),
-                    ],
+                    vec![sidecar(s, page, k, layer), gui_model(s, page, k, layer)],
                 ))
-                .child(section(k, "Agent tools"))
-                .child(group(k, agent_tools(page, k)))
                 .child(section(k, "Phone"))
                 .child(group(k, phone(page, k)));
         }
@@ -215,7 +214,7 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
             .expect("the picker is on the settings page")
             .model
     })
-    .label("Titles and dictation")
+    .label("Sidecar model")
     .current(Some(current.unwrap_or(DEFAULT_MODEL)))
     .search_placeholder("Search models")
     .width(CONTROL)
@@ -225,13 +224,17 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
     })
     .build(k, layer);
     with_hint(
-        wide(k, "Titles and dictation", picker),
+        wide(k, "Sidecar model", picker),
         k,
         "Names new chats and cleans up dictation, without thinking. A small, fast model works best.",
     )
 }
 
 fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
+    let enabled = page
+        .settings
+        .as_ref()
+        .is_some_and(|v| v.browser_use || v.computer_use);
     let current = page.settings.as_ref().and_then(|v| v.gui_model.as_deref());
     let default = s.catalog.default_model().map(|id| s.catalog.label(id));
     let default = default.map_or("Default model".to_owned(), |name| {
@@ -247,23 +250,32 @@ fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El
             .expect("the picker is on the settings page")
             .gui_model
     })
-    .label("Browser and computer use")
+    .label("Browser and computer use model")
     .current(Some(current.unwrap_or(DEFAULT_MODEL)))
     .search_placeholder("Search models")
-    .width(CONTROL)
+    .width(CONTROL - THINKING - GAP)
+    .disabled(!enabled)
     .on_choose(|s: &mut State, id, _| {
         let model = (id != DEFAULT_MODEL).then(|| id.to_owned());
         s.change_settings(|v| v.gui_model = model);
     })
     .build(k, layer);
+    let pickers = row()
+        .gap(GAP)
+        .child(picker)
+        .child(gui_thinking(s, page, k, layer, enabled));
     with_hint(
-        wide(k, "Browser and computer use", picker),
+        wide(k, "Browser and computer use", pickers),
         k,
-        "Runs browser and desktop tasks for the agent. It must read images, and a fast model works best.",
+        if enabled {
+            "Runs browser and computer use tasks. It must read images, and a fast model works best."
+        } else {
+            "Turn on Browser use or Computer use to choose it."
+        },
     )
 }
 
-fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
+fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>, enabled: bool) -> El {
     let settings = page.settings.as_ref();
     let model = settings
         .and_then(|v| v.gui_model.as_deref())
@@ -280,7 +292,19 @@ fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) ->
     let current = settings
         .and_then(|v| v.gui_thinking.as_deref())
         .unwrap_or("medium");
-    let picker = Combobox::new(
+    let current = levels.iter().any(|l| l == current).then_some(current);
+    let disabled = !enabled || levels.len() < 2;
+    let label = "Browser and computer use reasoning";
+    // The default trigger takes the list's width, but the list can't be narrower than
+    // Rune's 200-point popover.
+    let trigger = Select::new::<&str>("gui-thinking-value", &[])
+        .current(current.map(reasoning_name).as_deref())
+        .label(label)
+        .appearance(SelectAppearance::Field)
+        .width(THINKING)
+        .disabled(disabled)
+        .trigger(k);
+    Combobox::new(
         "gui-thinking",
         &page.gui_thinking,
         &options,
@@ -291,16 +315,17 @@ fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) ->
                 .gui_thinking
         },
     )
-    .label("Reasoning")
-    .current(levels.iter().any(|l| l == current).then_some(current))
-    .width(CONTROL)
-    .disabled(levels.len() < 2)
+    .label(label)
+    .current(current)
+    .trigger(trigger)
+    .placement(Placement::BottomEnd)
+    .width(200.0)
+    .disabled(disabled)
     .on_choose(|s: &mut State, level, _| {
         let level = level.to_owned();
         s.change_settings(|v| v.gui_thinking = Some(level));
     })
-    .build(k, layer);
-    wide(k, "Reasoning", picker)
+    .build(k, layer)
 }
 
 fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
