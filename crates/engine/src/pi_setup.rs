@@ -5,20 +5,15 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use tokio::sync::mpsc;
 
 use crate::pi::{Event, Options, Pi, Session};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Topic {
-    Accounts,
-    Resources,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,53 +38,62 @@ struct Answer {
 
 #[derive(Deserialize)]
 struct Reply {
-    ok: Option<Value>,
+    #[serde(default)]
+    ok: Value,
     error: Option<String>,
 }
 
-/// Applies `change`, if given, before answering about `topic`.
-pub async fn ask(
-    program: &Path,
-    extensions: &Path,
-    grace: Duration,
-    topic: Topic,
-    change: Option<&Change>,
-) -> Result<Value> {
-    let options = Options {
+/// A pi that runs `pi-setup.js`, from a folder with no project resources, since Settings aren't
+/// tied to a project.
+pub(crate) fn start(program: &Path, extensions: &Path) -> Result<(Pi, mpsc::Receiver<Event>)> {
+    Pi::start(&Options {
         program: program.to_owned(),
-        // A folder with no project resources, since Settings aren't tied to a project.
         cwd: "/".into(),
         session: Session::None,
         extensions: vec![extensions.join("pi-setup.js")],
         env: Vec::new(),
+    })
+}
+
+pub(crate) fn command(request: &Value) -> Value {
+    json!({"type": "prompt", "message": format!("/ludolph-setup {request}")})
+}
+
+/// pi-setup.js's answer, if `event` is it. Other extensions may notify too.
+pub(crate) fn answer(event: &Event) -> Option<Result<Value>> {
+    let Event::ExtensionUiRequest {
+        method,
+        message: Some(message),
+        ..
+    } = event
+    else {
+        return None;
     };
-    let (pi, mut events) = Pi::start(&options)?;
-    let args = json!({"topic": topic, "change": change});
-    let message = format!("/ludolph-setup {args}");
+    let answer = serde_json::from_str::<Answer>(message).ok()?;
+    if method != "notify" {
+        return None;
+    }
+    let reply = answer.ludolph_setup;
+    Some(match reply.error {
+        Some(error) => Err(anyhow!("{error}")),
+        None => Ok(reply.ok),
+    })
+}
+
+/// Asks pi-setup.js one `request`, such as `{"topic": "accounts"}`.
+pub async fn ask(
+    program: &Path,
+    extensions: &Path,
+    grace: Duration,
+    request: Value,
+) -> Result<Value> {
+    let (pi, mut events) = start(program, extensions)?;
     let answer = async {
-        pi.call(json!({"type": "prompt", "message": message}))
-            .await?;
+        pi.call(command(&request)).await?;
         while let Some(event) = events.recv().await {
-            let Event::ExtensionUiRequest {
-                method,
-                message: Some(message),
-                ..
-            } = event
-            else {
-                continue;
-            };
-            // Other extensions may notify too.
-            let Ok(answer) = serde_json::from_str::<Answer>(&message) else {
-                continue;
-            };
-            if method != "notify" {
-                continue;
+            if let Some(answer) = answer(&event) {
+                return answer;
             }
-            let reply = answer.ludolph_setup;
-            if let Some(error) = reply.error {
-                bail!("{error}");
-            }
-            return reply.ok.context("pi-setup.js answered with nothing");
         }
         bail!("pi exited before answering about its setup")
     };

@@ -22,12 +22,15 @@ Ludolph uses pi's RPC mode (`docs/rpc.md`, `docs/rpc-extension-ui.md`), its sess
 - `--extension <file>` loads a plain `.js` file next to installed packages. Its imports of `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai` and `typebox` resolve to pi's own copies, so the bundles leave them out.
 - `pi config` lists what `DefaultPackageManager.resolve()` returns, plus the built-in extensions, which `resolve()` lists only when given their names. Its switches write `+path` or `-path` to the user's `extensions` and `skills`, or to a package's filters. `resources.js` does the same.
 - An extension command sent as an RPC `prompt` runs before pi answers, so its `notify` comes first.
-- `ctx.modelRegistry` lists providers only through their models, so a provider whose catalog is empty until sign-in (`typesafe` in 1.5.2) isn't offered. `getProvider(id).auth` tells account sign-in (`oauth`) from API key login (`apiKey.login`).
+- `ctx.modelRegistry` lists providers only through their models, so a provider whose catalog is empty until sign-in (`typesafe` in 1.5.2) is missing. `ModelRuntime.create()`, which `pi auth` uses, lists every provider, so the account list and sign-in use it. `provider.auth` tells account sign-in (`oauth`) from API key login (`apiKey.login`).
+- An RPC pi reads its input while a command runs, so a long command can wait on `ctx.ui.input` and `ctx.ui.select` dialogs.
 
 ## Sign-in
 
-- `pi auth login` needs a terminal, and `/usr/bin/script` is enough. It prints each prompt without a trailing newline and reads the answer in raw mode, so the echo flag can't tell a secret from a question. An account sign-in opens the browser itself and waits for its local callback.
-- `pi auth logout` needs no terminal, and only removes what `auth.json` stores.
+- `ModelRuntime.login(provider, type, interaction)` reports its steps as typed events (`auth_url`, `device_code`, `info`, `progress`), and asks typed prompts (`text`, `secret`, `select`, `manual_code`). It never opens the browser itself; `pi auth login` does that, so Ludolph does too.
+- An account sign-in starts a local callback server for the browser, and also asks a `manual_code` prompt in case the page can't reach it. The prompt's signal aborts when the callback wins, and an RPC dialog then resolves with no message to the client.
+- An account sign-in's method `select` lists the browser first, and `pi auth login` takes it without asking.
+- `logout` removes only what `auth.json` stores. Environment variables and models.json stay.
 
 ## Session files
 

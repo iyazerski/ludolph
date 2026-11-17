@@ -1066,28 +1066,18 @@ impl Engine {
     /// pi next starts.
     pub async fn resources(&self, change: Option<&pi_setup::Change>) -> Result<Value> {
         let _one = self.0.resources.lock().await;
-        let config = &self.0.config;
-        pi_setup::ask(
-            &config.pi,
-            &config.extensions,
-            config.grace,
-            pi_setup::Topic::Resources,
-            change,
-        )
-        .await
+        self.pi_setup(json!({"topic": "resources", "change": change}))
+            .await
     }
 
     /// The providers pi can sign in to, and where it finds credentials for each.
     pub async fn accounts(&self) -> Result<Value> {
+        self.pi_setup(json!({"topic": "accounts"})).await
+    }
+
+    async fn pi_setup(&self, request: Value) -> Result<Value> {
         let config = &self.0.config;
-        pi_setup::ask(
-            &config.pi,
-            &config.extensions,
-            config.grace,
-            pi_setup::Topic::Accounts,
-            None,
-        )
-        .await
+        pi_setup::ask(&config.pi, &config.extensions, config.grace, request).await
     }
 
     pub fn sign_in(&self) -> &SignIn {
@@ -1098,12 +1088,13 @@ impl Engine {
         let config = &self.0.config;
         self.0
             .sign_in
-            .start(&config.pi, &config.home, provider, api_key)
+            .start(&config.pi, &config.extensions, provider, api_key)
     }
 
+    /// Removes the credentials pi stored for `provider`. Environment variables and models.json stay.
     pub async fn sign_out(&self, provider: &str) -> Result<Value> {
-        let config = &self.0.config;
-        sign_in::sign_out(&config.pi, &config.home, provider).await?;
+        self.pi_setup(json!({"topic": "signOut", "provider": provider}))
+            .await?;
         self.accounts().await
     }
 

@@ -493,9 +493,44 @@ pub struct Account {
 pub struct SignIn {
     pub attempt: u64,
     pub provider: Option<String>,
-    pub output: String,
-    pub waiting: bool,
-    pub signed_in: Option<bool>,
+    /// The sign-in page, already open in the browser.
+    pub browser: Option<String>,
+    pub device_code: Option<DeviceCode>,
+    pub prompt: Option<SignInPrompt>,
+    pub note: Option<String>,
+    pub result: Option<SignInResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DeviceCode {
+    pub code: String,
+    pub url: String,
+}
+
+/// A question pi asks, in its own words.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SignInPrompt {
+    pub id: String,
+    pub kind: PromptKind,
+    pub message: String,
+    pub placeholder: Option<String>,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptKind {
+    Text,
+    Secret,
+    Select,
+    ManualCode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignInResult {
+    pub signed_in: bool,
+    pub error: Option<String>,
 }
 
 /// A skill or extension from pi's own setup, and whether pi loads it.

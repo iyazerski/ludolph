@@ -255,7 +255,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::AnswerSignIn => {
             let args: AnswerArgs = parse(args)?;
             Ok(serde_json::to_value(
-                engine.sign_in().answer(args.attempt, &args.text).await?,
+                engine.sign_in().answer(&args.prompt, &args.value).await?,
             )?)
         }
         Tool::CancelSignIn => {
@@ -307,8 +307,8 @@ struct SignInArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AnswerArgs {
-    attempt: u64,
-    text: String,
+    prompt: String,
+    value: String,
 }
 
 #[derive(Deserialize)]

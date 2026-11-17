@@ -66,30 +66,49 @@ def polish():
     print(f"\n{' '.join(words).capitalize()}. ({model}, {thinking})\n")
 
 
-def auth(action, provider):
-    """Sign in like `pi auth login`: `--api-key` reads the key without echo, and
-    an account reads a pasted code with it. The signed-in providers go in a file
-    next to the log."""
+def setup(command):
+    """Answer like pi-setup.js. A sign-in asks for the key in a dialog, and an
+    account one shows a device code first. Signed-in providers go in a file next
+    to the log."""
+    request = json.loads(command["message"].split(" ", 1)[1])
     path = os.environ.get("FAKE_PI_LOG", "/dev/null") + "-auth"
-    if action == "logout":
-        print(f"Removed stored API key for {provider}.")
-        return 0
-    if "--api-key" in sys.argv:
-        import getpass
-        key = getpass.getpass(f"Enter {provider} API key: ")
+    stored = open(path).read().split() if os.path.exists(path) else []
+
+    def notify(body):
+        emit({"type": "extension_ui_request", "id": str(time.time()), "method": "notify",
+              "message": json.dumps(body)})
+
+    def reply(answer):
+        notify({"ludolphSetup": answer})
+        respond(command)
+
+    topic = request["topic"]
+    if topic == "accounts":
+        return reply({"ok": [{"provider": p, "name": p.title(), "oauth": True, "apiKey": True,
+                               "source": "stored"} for p in stored]})
+    if topic == "signOut":
+        with open(path, "w") as f:
+            f.writelines(p + "\n" for p in stored if p != request["provider"])
+        return reply({"ok": None})
+    if not request["apiKey"]:
+        notify({"ludolphSignIn": {"event": {"type": "device_code", "userCode": "ABCD-1234",
+                                             "verificationUri": "https://example.com/device",
+                                             "openBrowserOnConfirm": False}}})
+    asked = {"ludolphSignIn": {"prompt": {"type": "secret", "message": "Enter Fake API key"}}}
+    dialog = f"k{time.time()}"
+    emit({"type": "extension_ui_request", "id": dialog, "method": "input", "title": json.dumps(asked)})
+    for line in sys.stdin:
+        answer = json.loads(line)
+        if answer["type"] == "extension_ui_response" and answer["id"] == dialog:
+            break
     else:
-        key = input(f"Paste the {provider} code: ")
-    if key != "good-key":
-        print("Failed to log in: that key is wrong")
-        return 1
+        sys.exit(0)
+    if answer.get("value") != "good-key":
+        return reply({"error": "that key is wrong"})
     with open(path, "a") as f:
-        f.write(provider + "\n")
-    print(f"Saved API key for {provider}.")
-    return 0
+        f.write(request["provider"] + "\n")
+    reply({"ok": None})
 
-
-if sys.argv[1:2] == ["auth"]:
-    sys.exit(auth(sys.argv[2], sys.argv[3]))
 
 if "-p" in sys.argv:
     prompt_arg = sys.argv[sys.argv.index("--system-prompt") + 1]
@@ -221,6 +240,8 @@ def expand(text):
 
 
 def prompt(command):
+    if command["message"].startswith("/ludolph-setup "):
+        return setup(command)
     if command["message"] == "compact-before-prompt":
         log("compacting")
         emit({"type": "compaction_start", "reason": "threshold"})

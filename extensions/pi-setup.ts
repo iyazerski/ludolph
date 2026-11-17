@@ -1,6 +1,12 @@
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { accounts } from "./lib/accounts.ts";
+import { getAgentDir, ModelRuntime, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { accounts, signIn, signOut } from "./lib/accounts.ts";
 import { resources, type Change } from "./lib/resources.ts";
+
+type Request =
+	| { topic: "resources"; change?: Change }
+	| { topic: "accounts" }
+	| { topic: "signIn"; provider: string; apiKey: boolean }
+	| { topic: "signOut"; provider: string };
 
 /**
  * Answers Ludolph's Settings about pi's own setup. The engine runs it in a pi with no session, sends
@@ -12,9 +18,23 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			let answer;
 			try {
-				const { topic, change } = JSON.parse(args) as { topic: "resources" | "accounts"; change?: Change };
-				const ok = topic === "accounts" ? accounts(ctx.modelRegistry) : await resources(getAgentDir(), ctx.cwd, change);
-				answer = { ok };
+				const request = JSON.parse(args) as Request;
+				if (request.topic === "resources") {
+					answer = { ok: await resources(getAgentDir(), ctx.cwd, request.change) };
+				} else {
+					// The runtime `pi auth` uses, which has providers whose catalog fills only after sign-in.
+					const runtime = await ModelRuntime.create({ allowModelNetwork: false, signal: AbortSignal.timeout(15_000) });
+					if (request.topic === "accounts") {
+						answer = { ok: accounts(runtime) };
+					} else if (request.topic === "signOut") {
+						await signOut(runtime, request.provider);
+						answer = { ok: null };
+					} else {
+						const settings = SettingsManager.create(ctx.cwd, getAgentDir());
+						await signIn(runtime, ctx.ui, request.provider, request.apiKey, () => settings.getOrCreateDeviceId());
+						answer = { ok: null };
+					}
+				}
 			} catch (e) {
 				answer = { error: e instanceof Error ? e.message : String(e) };
 			}

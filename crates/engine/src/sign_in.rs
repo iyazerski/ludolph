@@ -1,37 +1,114 @@
-//! Sign-in runs pi's own `pi auth login`, which needs a terminal. macOS's `script` gives it one
-//! over pipes, so Ludolph relays what pi prints and the user's answers. pi opens the browser for an
-//! account sign-in itself.
+//! Sign-in runs pi's own login in a pi with `pi-setup.js`, which reports pi's steps as notifications
+//! and asks pi's questions as dialogs. That pi has no terminal or browser, so Ludolph opens pages.
 
 use std::path::Path;
-use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
-use serde::Serialize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{oneshot, watch};
+use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tokio::sync::{mpsc, oneshot, watch};
 
-const SCRIPT: &str = "/usr/bin/script";
-/// pi prints a prompt without a newline; this long a pause after one means it waits for an answer,
-/// not that the rest of the line is on its way.
-const SETTLE: Duration = Duration::from_millis(300);
-/// The output keeps its tail, since pi prints a few lines but a URL may repeat.
-const KEPT: usize = 16 * 1024;
-const HIDDEN: &str = "••••";
+use crate::pi::{Event, Pi};
+use crate::pi_setup;
+
+/// How long a sign-in may wait on the user before it gives up.
+const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
-    /// Answers and cancels name the attempt they're for, so a late one can't reach the next.
+    /// Cancels name the attempt they're for, so a late one can't stop the next.
     pub attempt: u64,
     pub provider: Option<String>,
-    pub output: String,
-    /// pi waits for the user to type something.
-    pub waiting: bool,
-    /// Whether pi saved the credentials, once it exits.
-    pub signed_in: Option<bool>,
+    /// The page pi signs in on, already opened in the browser.
+    pub browser: Option<String>,
+    pub device_code: Option<DeviceCode>,
+    pub prompt: Option<Prompt>,
+    /// Something pi says to do outside Ludolph, such as a command to run.
+    pub note: Option<String>,
+    /// How the sign-in ended, once it has.
+    pub result: Option<Outcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceCode {
+    pub code: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prompt {
+    /// pi's dialog, which the answer names.
+    pub id: String,
+    pub kind: PromptKind,
+    pub message: String,
+    pub placeholder: Option<String>,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptKind {
+    Text,
+    Secret,
+    Select,
+    /// A code pasted from the browser, which pi's own callback usually makes unneeded.
+    ManualCode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outcome {
+    pub signed_in: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Step {
+    ludolph_sign_in: StepBody,
+}
+
+#[derive(Deserialize)]
+struct StepBody {
+    event: Option<AuthEvent>,
+    prompt: Option<AskedPrompt>,
+    /// pi dropped its question, as when the browser callback beats a pasted code.
+    #[serde(default)]
+    ended: bool,
+}
+
+#[derive(Deserialize)]
+struct AskedPrompt {
+    #[serde(rename = "type")]
+    kind: PromptKind,
+    message: String,
+}
+
+/// pi's `AuthEvent`.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AuthEvent {
+    AuthUrl {
+        url: String,
+    },
+    DeviceCode {
+        #[serde(rename = "userCode")]
+        user_code: String,
+        #[serde(rename = "verificationUri")]
+        verification_uri: String,
+        #[serde(rename = "openBrowserOnConfirm")]
+        open_browser: Option<bool>,
+    },
+    Info {
+        message: String,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Default)]
@@ -48,12 +125,9 @@ struct Inner {
 
 #[derive(Debug)]
 struct Running {
-    stdin: Arc<tokio::sync::Mutex<ChildStdin>>,
-    /// Dropping it stops the attempt. Only the task that owns the child kills it, before reaping
-    /// it, so a reused pid is never signalled.
-    _cancel: oneshot::Sender<()>,
-    /// pi echoes some answers, such as a pasted code, so they're hidden from the output.
-    answers: Arc<Mutex<Vec<String>>>,
+    pi: Arc<Pi>,
+    /// Dropping it stops the attempt.
+    _stop: oneshot::Sender<()>,
 }
 
 impl Drop for SignIn {
@@ -75,86 +149,62 @@ impl SignIn {
     pub fn start(
         &self,
         program: &Path,
-        home: &Path,
+        extensions: &Path,
         provider: &str,
         api_key: bool,
     ) -> Result<State> {
         let mut inner = self.lock();
         inner.running.take();
-        let mut command = Command::new(SCRIPT);
-        command
-            .args(["-q", "/dev/null"])
-            .arg(program)
-            .args(["auth", "login", provider]);
-        if api_key {
-            command.arg("--api-key");
-        }
-        let mut child = command
-            .current_dir(home)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("starting {SCRIPT}"))?;
-        let stdin = child.stdin.take().expect("stdin is piped");
-        let stdout = child.stdout.take().expect("stdout is piped");
+        let (pi, events) = pi_setup::start(program, extensions)?;
+        let pi = Arc::new(pi);
         let attempt = inner.state.attempt + 1;
-        let (cancel, cancelled) = oneshot::channel();
-        let answers = Arc::default();
+        let (stop, stopped) = oneshot::channel();
         inner.state = State {
             attempt,
             provider: Some(provider.to_owned()),
             ..State::default()
         };
         inner.running = Some(Running {
-            stdin: Arc::new(tokio::sync::Mutex::new(stdin)),
-            _cancel: cancel,
-            answers: Arc::clone(&answers),
+            pi: Arc::clone(&pi),
+            _stop: stop,
         });
         let state = inner.state.clone();
         drop(inner);
         self.bump();
+        let request = json!({"topic": "signIn", "provider": provider, "apiKey": api_key});
         let relay = Relay {
             inner: Arc::clone(&self.inner),
             revision: self.revision.clone(),
             attempt,
-            answers,
         };
-        tokio::spawn(relay.run(child, stdout, cancelled));
+        tokio::spawn(relay.run(pi, events, pi_setup::command(&request), stopped));
         Ok(state)
     }
 
-    /// Types `text` and Return into pi's prompt.
-    pub async fn answer(&self, attempt: u64, text: &str) -> Result<State> {
-        let line = text.trim().replace(['\r', '\n'], "");
-        let stdin = {
+    /// Answers pi's question `prompt` of the running sign-in.
+    pub async fn answer(&self, prompt: &str, value: &str) -> Result<State> {
+        let (pi, answer) = {
             let mut inner = self.lock();
             let Inner { state, running } = &mut *inner;
-            let Some(running) = running.as_ref().filter(|_| state.attempt == attempt) else {
-                bail!("that sign-in has ended");
-            };
-            if !state.waiting {
+            let (Some(running), Some(asked)) = (running.as_ref(), state.prompt.as_ref()) else {
                 bail!("pi isn't asking anything");
+            };
+            if asked.id != prompt {
+                bail!("pi isn't asking that anymore");
             }
-            if !line.is_empty() {
-                running
-                    .answers
-                    .lock()
-                    .expect("lock poisoned")
-                    .push(line.clone());
-            }
-            state.waiting = false;
-            Arc::clone(&running.stdin)
+            let answer = match asked.kind {
+                PromptKind::Select if !asked.options.iter().any(|o| o == value) => {
+                    bail!("{value} isn't one of pi's choices")
+                }
+                PromptKind::Select => value.to_owned(),
+                _ => value.trim().to_owned(),
+            };
+            state.prompt = None;
+            (Arc::clone(&running.pi), answer)
         };
         self.bump();
-        let mut stdin = stdin.lock().await;
-        stdin
-            .write_all(format!("{line}\r").as_bytes())
-            .await
-            .context("answering pi")?;
-        stdin.flush().await.context("answering pi")?;
+        pi.send(&json!({"type": "extension_ui_response", "id": prompt, "value": answer}))
+            .await?;
         Ok(self.state())
     }
 
@@ -182,94 +232,153 @@ impl SignIn {
     }
 }
 
-/// Relays one attempt's output into the state until pi exits or the attempt is cancelled.
+/// Turns one attempt's pi into its state until pi answers or the attempt stops.
 struct Relay {
     inner: Arc<Mutex<Inner>>,
     revision: watch::Sender<u64>,
     attempt: u64,
-    answers: Arc<Mutex<Vec<String>>>,
 }
 
 impl Relay {
-    async fn run(self, mut child: Child, stdout: ChildStdout, cancelled: oneshot::Receiver<()>) {
-        let signed_in = tokio::select! {
-            // The sender is dropped when the attempt is replaced, cancelled or shut down.
-            _ = cancelled => {
-                if let Some(pid) = child.id() {
-                    crate::runtime::kill_group(pid);
+    async fn run(
+        self,
+        pi: Arc<Pi>,
+        mut events: mpsc::Receiver<Event>,
+        command: serde_json::Value,
+        stopped: oneshot::Receiver<()>,
+    ) {
+        let work = async {
+            // The command's reply comes only once the sign-in ends, and pi-setup.js says how first.
+            let call = pi.call(command);
+            tokio::pin!(call);
+            let mut called = false;
+            loop {
+                tokio::select! {
+                    event = events.recv() => match event {
+                        None => bail!("pi exited before it signed in"),
+                        Some(event) => if let Some(answer) = pi_setup::answer(&event) {
+                            return answer.map(drop);
+                        } else {
+                            self.step(event);
+                        },
+                    },
+                    called_back = &mut call, if !called => {
+                        called = true;
+                        called_back?;
+                    }
                 }
-                drop(child.wait().await);
-                return;
             }
-            status = async {
-                self.read(stdout).await;
-                child.wait().await
-            } => status.is_ok_and(|status| status.success()),
         };
-        self.update(true, |s| {
-            s.waiting = false;
-            s.signed_in = Some(signed_in);
-        });
-    }
-
-    async fn read(&self, mut stdout: ChildStdout) {
-        let mut raw = String::new();
-        let mut buf = [0; 4096];
-        loop {
-            match tokio::time::timeout(SETTLE, stdout.read(&mut buf)).await {
-                Err(_) => {
-                    let waiting = !raw.ends_with('\n') && !raw.trim().is_empty();
-                    self.update(false, |s| s.waiting = waiting);
-                }
-                Ok(Ok(0) | Err(_)) => return,
-                Ok(Ok(n)) => {
-                    raw.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    if raw.len() > KEPT {
-                        let mut cut = raw.len() - KEPT;
-                        while !raw.is_char_boundary(cut) {
-                            cut += 1;
-                        }
-                        raw.drain(..cut);
-                    }
-                    let mut output = crate::text::plain(&raw);
-                    for answer in self.answers.lock().expect("lock poisoned").iter() {
-                        output = output.replace(answer.as_str(), HIDDEN);
-                    }
-                    self.update(false, |s| {
-                        s.output = output;
-                        s.waiting = false;
-                    });
-                }
-            }
+        let outcome = tokio::select! {
+            // The sender is dropped when the attempt is replaced, cancelled or shut down.
+            _ = stopped => None,
+            outcome = tokio::time::timeout(TIMEOUT, work) => Some(match outcome {
+                Ok(Ok(())) => Outcome { signed_in: true, error: None },
+                Ok(Err(e)) => Outcome { signed_in: false, error: Some(format!("{e:#}")) },
+                Err(_) => Outcome { signed_in: false, error: Some("It took too long.".to_owned()) },
+            }),
+        };
+        if let Some(outcome) = outcome {
+            self.update(true, |s| {
+                s.prompt = None;
+                s.result = Some(outcome);
+            });
+        }
+        if let Err(e) = pi.stop(Duration::ZERO).await {
+            eprintln!("stopping the pi that signed in: {e:#}");
         }
     }
 
-    fn update(&self, exited: bool, change: impl FnOnce(&mut State)) {
-        let mut inner = self.inner.lock().expect("lock poisoned");
-        if inner.state.attempt != self.attempt || inner.running.is_none() {
+    fn step(&self, event: Event) {
+        let Event::ExtensionUiRequest {
+            id,
+            method,
+            title,
+            message,
+            options,
+            placeholder,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let text = if method == "notify" { message } else { title };
+        let Some(body) = text
+            .and_then(|t| serde_json::from_str::<Step>(&t).ok())
+            .map(|s| s.ludolph_sign_in)
+        else {
+            return;
+        };
+        if let Some(asked) = body.prompt {
+            let prompt = Prompt {
+                id,
+                kind: asked.kind,
+                message: asked.message,
+                placeholder,
+                options: options.unwrap_or_default(),
+            };
+            self.update(false, |s| s.prompt = Some(prompt));
             return;
         }
-        if exited {
+        if body.ended {
+            self.update(false, |s| s.prompt = None);
+            return;
+        }
+        match body.event {
+            Some(AuthEvent::AuthUrl { url }) => {
+                // Only the current attempt opens pages, not one cancelled while this was queued.
+                if self.update(false, |s| s.browser = Some(url.clone())) {
+                    open(&url);
+                }
+            }
+            Some(AuthEvent::DeviceCode {
+                user_code,
+                verification_uri,
+                open_browser,
+            }) => {
+                let code = DeviceCode {
+                    code: user_code,
+                    url: verification_uri.clone(),
+                };
+                let current = self.update(false, |s| s.device_code = Some(code));
+                if current && open_browser != Some(false) {
+                    open(&verification_uri);
+                }
+            }
+            Some(AuthEvent::Info { message }) => {
+                self.update(false, |s| s.note = Some(message));
+            }
+            Some(AuthEvent::Other) | None => {}
+        }
+    }
+
+    /// Changes the state if this is still the current attempt, and says whether it was.
+    fn update(&self, ended: bool, change: impl FnOnce(&mut State)) -> bool {
+        let mut inner = self.inner.lock().expect("lock poisoned");
+        if inner.state.attempt != self.attempt || inner.running.is_none() {
+            return false;
+        }
+        if ended {
             inner.running.take();
         }
         change(&mut inner.state);
         drop(inner);
         self.revision.send_modify(|r| *r += 1);
+        true
     }
 }
 
-/// Removes the credentials pi stored for `provider`. Environment variables and models.json stay.
-pub async fn sign_out(program: &Path, home: &Path, provider: &str) -> Result<()> {
-    let output = Command::new(program)
-        .args(["auth", "logout", provider])
-        .current_dir(home)
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .with_context(|| format!("starting {}", program.display()))?;
-    if !output.status.success() {
-        let why = String::from_utf8_lossy(&output.stderr);
-        bail!("{}", crate::text::plain(why.trim()));
+/// Opens a sign-in page in the user's browser. pi gives https pages and local callbacks.
+fn open(url: &str) {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        eprintln!("not opening a sign-in page that isn't on the web: {url}");
+        return;
     }
-    Ok(())
+    let mut open = tokio::process::Command::new("/usr/bin/open");
+    open.arg(url);
+    tokio::spawn(async move {
+        if let Err(e) = open.status().await {
+            eprintln!("opening a sign-in page: {e}");
+        }
+    });
 }

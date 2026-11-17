@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use super::{Page, State, Window};
 use crate::client::Subscription;
 use crate::data::{
-    Account, GuiTool, LinkStatus, Pairing, PhoneLink, RelayLink, Resource, ResourceKind, Settings,
-    Setup, SignIn, ToolStatus, ToolStatuses,
+    Account, GuiTool, LinkStatus, Pairing, PhoneLink, PromptKind, RelayLink, Resource,
+    ResourceKind, Settings, Setup, SignIn, ToolStatus, ToolStatuses,
 };
 use crate::update;
 
@@ -73,8 +73,11 @@ pub struct Accounts {
     pub signing_out: Option<String>,
     /// The engine's sign-in this page shows; other states are late replies about earlier ones.
     attempt: Option<u64>,
-    /// A start was sent and its attempt isn't known yet.
-    starting: bool,
+    /// The start sent last, while its attempt isn't known yet. A reply for another start is late.
+    starting: Option<u64>,
+    starts: u64,
+    /// The user pastes the browser's code, since its page couldn't reach Ludolph.
+    pub paste: bool,
     feed: Option<Subscription>,
 }
 
@@ -246,6 +249,7 @@ impl State {
     }
 
     pub fn choose_provider(&mut self, provider: &str) {
+        self.close_sign_in();
         if let Some(page) = self.settings_page_mut() {
             page.accounts.chosen = Some(provider.to_owned());
         }
@@ -260,7 +264,10 @@ impl State {
         };
         let accounts = &mut page.accounts;
         accounts.answer = TextEdit::default();
-        accounts.starting = true;
+        accounts.paste = false;
+        accounts.starts += 1;
+        let start = accounts.starts;
+        accounts.starting = Some(start);
         accounts.attempt = None;
         accounts.sign_in = SignIn {
             provider: Some(provider.clone()),
@@ -277,18 +284,19 @@ impl State {
         self.api.call(
             "sign_in",
             json!({"provider": provider, "apiKey": api_key}),
-            |s, result: Result<SignIn, String>, _| s.started_sign_in(result),
+            move |s, result: Result<SignIn, String>, _| s.started_sign_in(start, result),
         );
     }
 
-    fn started_sign_in(&mut self, result: Result<SignIn, String>) {
+    fn started_sign_in(&mut self, start: u64, result: Result<SignIn, String>) {
         let page = self.settings_page_mut();
-        let wanted = page.as_ref().is_some_and(|p| p.accounts.starting);
+        let wanted = page.is_some_and(|p| p.accounts.starting == Some(start));
         match result {
+            // Cancelling names the attempt, so it does nothing once a newer start replaced it.
             Ok(state) if !wanted => self.cancel_sign_in(state.attempt),
             Ok(state) => {
                 if let Some(page) = self.settings_page_mut() {
-                    page.accounts.starting = false;
+                    page.accounts.starting = None;
                     page.accounts.attempt = Some(state.attempt);
                 }
                 self.show_sign_in(state);
@@ -297,7 +305,7 @@ impl State {
             }
             Err(e) => {
                 if let Some(page) = self.settings_page_mut().filter(|_| wanted) {
-                    page.accounts.starting = false;
+                    page.accounts.starting = None;
                     page.accounts.sign_in = SignIn::default();
                 }
                 self.fail("Couldn't start signing in", e);
@@ -323,32 +331,53 @@ impl State {
         if page.accounts.attempt != Some(state.attempt) {
             return;
         }
-        let finished = page.accounts.sign_in.signed_in.is_none() && state.signed_in == Some(true);
-        page.accounts.sign_in = state;
-        if finished {
+        let accounts = &mut page.accounts;
+        let signed_in =
+            accounts.sign_in.result.is_none() && state.result.as_ref().is_some_and(|r| r.signed_in);
+        if accounts.sign_in.prompt.as_ref().map(|p| &p.id) != state.prompt.as_ref().map(|p| &p.id) {
+            accounts.answer = TextEdit::default();
+        }
+        accounts.sign_in = state;
+        if signed_in {
+            accounts.chosen = None;
             self.load_accounts();
+            // The user approved it in the browser, so Ludolph comes back to show it worked.
+            self.api.app().focus();
         }
     }
 
-    pub fn answer_sign_in(&mut self) {
+    /// Answers pi's question with `choice`, or with what the field holds.
+    pub fn answer_sign_in(&mut self, choice: Option<String>) {
         let Some(page) = self.settings_page_mut() else {
             return;
         };
-        let Some(attempt) = page.accounts.attempt else {
+        let Some(prompt) = &page.accounts.sign_in.prompt else {
             return;
         };
-        let text = std::mem::take(&mut page.accounts.answer).text.clone();
-        if text.trim().is_empty() {
+        let id = prompt.id.clone();
+        // A text question may take a blank answer, such as GitHub's "blank for github.com".
+        let blank_ok = prompt.kind == PromptKind::Text;
+        let value = match choice {
+            Some(choice) => choice,
+            None => std::mem::take(&mut page.accounts.answer).text.clone(),
+        };
+        if value.trim().is_empty() && !blank_ok {
             return;
         }
         self.api.call(
             "answer_sign_in",
-            json!({"attempt": attempt, "text": text}),
+            json!({"prompt": id, "value": value}),
             |s, result: Result<SignIn, String>, _| match result {
                 Ok(state) => s.show_sign_in(state),
-                Err(e) => s.fail("Couldn't answer pi", e),
+                Err(e) => s.fail("Couldn't sign in", e),
             },
         );
+    }
+
+    pub fn paste_sign_in_code(&mut self) {
+        if let Some(page) = self.settings_page_mut() {
+            page.accounts.paste = true;
+        }
     }
 
     /// Stops a running sign-in, or clears how the last one ended.
@@ -358,7 +387,8 @@ impl State {
         };
         let accounts = &mut page.accounts;
         let attempt = accounts.attempt.take();
-        accounts.starting = false;
+        accounts.starting = None;
+        accounts.paste = false;
         accounts.sign_in = SignIn::default();
         accounts.feed = None;
         // A start still on its way is cancelled when its reply comes.
@@ -376,6 +406,7 @@ impl State {
     }
 
     pub fn sign_out(&mut self, provider: &str) {
+        self.close_sign_in();
         let Some(page) = self.settings_page_mut() else {
             return;
         };

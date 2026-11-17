@@ -2460,7 +2460,7 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_sign_in_relays_pis_prompt_and_the_users_answer() {
+async fn a_sign_in_relays_pis_steps_and_the_users_answer() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), Duration::from_secs(60)).await;
     let state_until = |check: fn(&Value) -> bool| {
@@ -2482,23 +2482,42 @@ async fn a_sign_in_relays_pis_prompt_and_the_users_answer() {
         }
     };
 
-    // The account prompt echoes the pasted code, like pi's does.
-    for (api_key, prompt, key, signed_in) in [
-        (true, "Enter fake API key: ", "bad-key", false),
-        (false, "Paste the fake code: ", "good-key", true),
-    ] {
-        let args = json!({"provider": "fake", "apiKey": api_key});
-        let started = tool(&engine, "sign_in", args).await.unwrap();
-        let asking = state_until(|s| s["waiting"] == true).await;
-        assert_eq!(asking["output"], prompt);
-        let answer = json!({"attempt": started["attempt"], "text": key});
-        tool(&engine, "answer_sign_in", answer).await.unwrap();
-        let done = state_until(|s| !s["signedIn"].is_null()).await;
-        assert_eq!(done["signedIn"], signed_in, "{done}");
-        assert!(!done["output"].as_str().unwrap().contains(key), "{done}");
-    }
-    let saved = std::fs::read_to_string(dir.path().join("pi.log-auth")).unwrap();
-    assert_eq!(saved, "fake\n");
+    let asked = |s: &Value| !s["prompt"].is_null();
+    let ended = |s: &Value| !s["result"].is_null();
+    let answer =
+        |state: &Value, value: &str| json!({"prompt": state["prompt"]["id"], "value": value});
+
+    let args = json!({"provider": "fake", "apiKey": true});
+    tool(&engine, "sign_in", args).await.unwrap();
+    let asking = state_until(asked).await;
+    assert_eq!(asking["prompt"]["kind"], "secret");
+    assert_eq!(asking["prompt"]["message"], "Enter Fake API key");
+    tool(&engine, "answer_sign_in", answer(&asking, "bad-key"))
+        .await
+        .unwrap();
+    let failed = state_until(ended).await;
+    assert_eq!(
+        failed["result"],
+        json!({"signedIn": false, "error": "that key is wrong"})
+    );
+
+    tool(&engine, "sign_in", json!({"provider": "fake"}))
+        .await
+        .unwrap();
+    let asking = state_until(asked).await;
+    let code = json!({"code": "ABCD-1234", "url": "https://example.com/device"});
+    assert_eq!(asking["deviceCode"], code);
+    tool(&engine, "answer_sign_in", answer(&asking, "good-key"))
+        .await
+        .unwrap();
+    let done = state_until(ended).await;
+    assert_eq!(done["result"]["signedIn"], true, "{done}");
+    let accounts = tool(&engine, "list_accounts", json!({})).await.unwrap();
+    assert_eq!(accounts[0]["provider"], "fake", "{accounts}");
+    let after = tool(&engine, "sign_out", json!({"provider": "fake"}))
+        .await
+        .unwrap();
+    assert_eq!(after, json!([]));
 
     let old = tool(&engine, "sign_in", json!({"provider": "fake"}))
         .await
@@ -2506,19 +2525,21 @@ async fn a_sign_in_relays_pis_prompt_and_the_users_answer() {
     let new = tool(&engine, "sign_in", json!({"provider": "fake"}))
         .await
         .unwrap();
-    state_until(|s| s["waiting"] == true).await;
-    // A late answer or cancel for a replaced sign-in leaves the new one alone.
-    let late = json!({"attempt": old["attempt"], "text": "x"});
-    assert!(tool(&engine, "answer_sign_in", late).await.is_err());
+    let asking = state_until(asked).await;
+    // A late cancel for a replaced sign-in leaves the new one alone.
     let late = json!({"attempt": old["attempt"]});
     let still = tool(&engine, "cancel_sign_in", late).await.unwrap();
-    assert_eq!(still["waiting"], true, "{still}");
+    assert_eq!(still["prompt"], asking["prompt"], "{still}");
     let cancel = json!({"attempt": new["attempt"]});
     let cleared = tool(&engine, "cancel_sign_in", cancel).await.unwrap();
     assert!(cleared["provider"].is_null(), "{cleared}");
+    let stale = tool(&engine, "answer_sign_in", answer(&asking, "x")).await;
+    assert!(stale.is_err());
+    let setup = dir.path().join("extensions/pi-setup.js");
     let running = || {
         let pgrep = std::process::Command::new("pgrep")
-            .args(["-f", "fake-pi.py auth login"])
+            .arg("-f")
+            .arg(&setup)
             .output()
             .unwrap();
         !pgrep.stdout.is_empty()
