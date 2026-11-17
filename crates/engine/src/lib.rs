@@ -17,6 +17,7 @@ pub mod pi;
 pub mod power;
 pub mod relay;
 pub mod repo;
+pub mod resources;
 pub mod runtime;
 pub mod seal;
 pub mod server;

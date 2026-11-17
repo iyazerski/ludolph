@@ -474,6 +474,23 @@ mod tests {
     }
 }
 
+/// A skill or extension from pi's own setup, and whether pi loads it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Resource {
+    pub kind: ResourceKind,
+    pub name: String,
+    pub path: String,
+    pub group: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResourceKind {
+    Extensions,
+    Skills,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {

@@ -9,7 +9,8 @@ use super::widgets::{self, busy, dot, model_options};
 use super::{icons, theme};
 use crate::app::{Outcome, QR_SIZE, Section, SettingsPage, State, Update};
 use crate::data::{
-    GuiTool, LinkStatus, Notify, Pairing, RelayLink, SendBehavior, ToolStatus, levels_of,
+    GuiTool, LinkStatus, Notify, Pairing, RelayLink, ResourceKind, SendBehavior, ToolStatus,
+    levels_of,
 };
 use crate::labels::reasoning_name;
 use crate::prefs::{Accent, TextSize};
@@ -41,6 +42,7 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                 .child(caption(k, "Chat model picker"))
                 .child(group(k, chat_models(s, page, k)))
         }),
+        Section::Resources => resources(page, k),
         Section::Phone => loaded(page, k, || group(k, phone(page, k))),
         Section::About => group(k, vec![about(page, k)]),
     };
@@ -93,6 +95,7 @@ fn title(section: Section) -> &'static str {
         Section::Appearance => "Appearance",
         Section::AgentTools => "Agent tools",
         Section::Model => "Model",
+        Section::Resources => "Skills and extensions",
         Section::Phone => "Phone",
         Section::About => "About",
     }
@@ -104,6 +107,7 @@ fn key(section: Section) -> &'static str {
         Section::Appearance => "appearance",
         Section::AgentTools => "agent-tools",
         Section::Model => "model",
+        Section::Resources => "resources",
         Section::Phone => "phone",
         Section::About => "about",
     }
@@ -115,6 +119,7 @@ fn icon(section: Section) -> &'static Icon {
         Section::Appearance => &icons::APPEARANCE,
         Section::AgentTools => &icons::EXTENSIONS,
         Section::Model => &icons::MODELS,
+        Section::Resources => &icons::SKILL,
         Section::Phone => &icons::PHONE,
         Section::About => &icons::INFO,
     }
@@ -124,17 +129,64 @@ fn icon(section: Section) -> &'static Icon {
 fn loaded(page: &SettingsPage, k: &Kit, content: impl FnOnce() -> El) -> El {
     match (&page.settings, &page.error) {
         (Some(_), _) => content(),
-        (None, Some(why)) => text(format!("Couldn't load the settings: {why}"))
-            .font(k.ty.ui)
-            .color(k.c.text_muted)
-            .wrap()
-            .pl(4.0),
-        (None, None) => row()
-            .w_full()
-            .py(24.0)
-            .justify_center()
-            .child(busy(18.0, k)),
+        (None, Some(why)) => failed(k, format!("Couldn't load the settings: {why}")),
+        (None, None) => loading(k),
     }
+}
+
+fn failed(k: &Kit, why: String) -> El {
+    text(why).font(k.ty.ui).color(k.c.text_muted).wrap().pl(4.0)
+}
+
+fn loading(k: &Kit) -> El {
+    row()
+        .w_full()
+        .py(24.0)
+        .justify_center()
+        .child(busy(18.0, k))
+}
+
+fn resources(page: &SettingsPage, k: &Kit) -> El {
+    let list = match &page.resources {
+        None => return loading(k),
+        Some(Err(why)) => {
+            return failed(
+                k,
+                format!("Couldn't list pi's skills and extensions: {why}"),
+            );
+        }
+        Some(Ok(list)) => list,
+    };
+    let kinds = [
+        (ResourceKind::Skills, "Skills"),
+        (ResourceKind::Extensions, "Extensions"),
+    ];
+    kinds
+        .into_iter()
+        .fold(col().w_full().gap(12.0), |out, (kind, label)| {
+            let rows: Vec<El> = list
+                .iter()
+                .filter(|r| r.kind == kind)
+                .map(|r| {
+                    let path = r.path.clone();
+                    let pick = Switch::new(r.enabled)
+                        .hide_label()
+                        .label(format!("Load {}", r.name))
+                        .disabled(page.resource_saving)
+                        .on_toggle(move |s: &mut State| s.toggle_resource(kind, &path))
+                        .build(k);
+                    compact(k, &r.name, Some(&r.group), pick).key(r.path.clone())
+                })
+                .collect();
+            if rows.is_empty() {
+                return out;
+            }
+            out.child(caption(k, label)).child(group(k, rows))
+        })
+        .child(note(
+            k,
+            "These are pi's own settings, so pi in the terminal uses them too. Chats pick changes up when they start, and open chats after they idle.",
+        ))
 }
 
 fn accents(s: &State, k: &Kit) -> El {

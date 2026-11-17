@@ -21,6 +21,7 @@ use crate::models::{Available, Catalog, Model, Sources};
 use crate::pi::{Event, Options, Pi, Session};
 pub use crate::relay::SecretStore;
 use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone, Phones};
+use crate::resources;
 use crate::runtime::Runtime;
 use crate::seal;
 use crate::session::{Outcome, Spent, Summary};
@@ -94,6 +95,8 @@ struct Inner {
     pairing: watch::Sender<Option<Pairing>>,
     /// The latest attachment cleanup; each waits for the one before, so they never race.
     cleanup: Mutex<Option<JoinHandle<()>>>,
+    /// Each resource change rewrites pi's settings, so they run one at a time.
+    resources: tokio::sync::Mutex<()>,
 }
 
 impl Drop for Inner {
@@ -365,6 +368,7 @@ impl Engine {
             pairing_task: Mutex::default(),
             pairing: watch::channel(None).0,
             cleanup: Mutex::default(),
+            resources: tokio::sync::Mutex::default(),
             config,
         }));
         tokio::spawn(engine.clone().reconnect());
@@ -1053,6 +1057,14 @@ impl Engine {
             .lock()
             .expect("the settings lock isn't poisoned")
             .clone()
+    }
+
+    /// The user's skills and extensions, after `change` if given. Chats pick changes up when their
+    /// pi next starts.
+    pub async fn resources(&self, change: Option<&resources::Change>) -> Result<Value> {
+        let _one = self.0.resources.lock().await;
+        let config = &self.0.config;
+        resources::call(&config.pi, &config.extensions, config.grace, change).await
     }
 
     pub async fn set_settings(&self, settings: Settings) -> Result<Settings> {

@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 
 use super::{Page, State, Window};
 use crate::data::{
-    GuiTool, LinkStatus, Pairing, PhoneLink, RelayLink, Settings, Setup, ToolStatus, ToolStatuses,
+    GuiTool, LinkStatus, Pairing, PhoneLink, RelayLink, Resource, ResourceKind, Settings, Setup,
+    ToolStatus, ToolStatuses,
 };
 use crate::update;
 
@@ -21,16 +22,18 @@ pub enum Section {
     Appearance,
     AgentTools,
     Model,
+    Resources,
     Phone,
     About,
 }
 
 impl Section {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::General,
         Self::Appearance,
         Self::AgentTools,
         Self::Model,
+        Self::Resources,
         Self::Phone,
         Self::About,
     ];
@@ -45,6 +48,10 @@ pub struct SettingsPage {
     pub gui_model: ComboboxState,
     pub gui_thinking: ComboboxState,
     pub tools: Tools,
+    /// Listing them starts a pi, so they load when their section first shows.
+    pub resources: Option<Result<Vec<Resource>, String>>,
+    /// A switch is saving; the next one waits, since each rewrites pi's settings.
+    pub resource_saving: bool,
     pub phone: Phone,
     pub update: Update,
     previous: Option<String>,
@@ -144,6 +151,8 @@ impl State {
                 gui_model: ComboboxState::default(),
                 gui_thinking: ComboboxState::default(),
                 tools: Tools::default(),
+                resources: None,
+                resource_saving: false,
                 phone: Phone {
                     state: None,
                     relay: TextEdit::default(),
@@ -164,9 +173,49 @@ impl State {
     }
 
     pub fn show_settings_section(&mut self, section: Section) {
-        if let Some(page) = self.settings_page_mut() {
-            page.section = section;
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        page.section = section;
+        if section == Section::Resources && page.resources.is_none() {
+            self.resources_call("list_resources", json!({}));
         }
+    }
+
+    pub fn toggle_resource(&mut self, kind: ResourceKind, path: &str) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        let Some(Ok(list)) = page.resources.as_mut() else {
+            return;
+        };
+        let Some(item) = list.iter_mut().find(|r| r.kind == kind && r.path == path) else {
+            return;
+        };
+        if page.resource_saving {
+            return;
+        }
+        item.enabled = !item.enabled;
+        let args = json!({"kind": kind, "path": path, "enabled": item.enabled});
+        page.resource_saving = true;
+        self.resources_call("set_resource", args);
+    }
+
+    fn resources_call(&mut self, tool: &'static str, args: Value) {
+        self.api.call(
+            tool,
+            args,
+            move |s, result: Result<Vec<Resource>, String>, _| {
+                if let (Err(e), "set_resource") = (&result, tool) {
+                    s.fail("Couldn't change pi's settings", e.clone());
+                    return s.resources_call("list_resources", json!({}));
+                }
+                if let Some(page) = s.settings_page_mut() {
+                    page.resources = Some(result);
+                    page.resource_saving = false;
+                }
+            },
+        );
     }
 
     pub fn close_settings(&mut self) {

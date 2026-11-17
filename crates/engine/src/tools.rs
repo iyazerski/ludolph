@@ -56,6 +56,8 @@ pub enum Tool {
     SetSettings,
     AgentToolStatus,
     SetUpAgentTool,
+    ListResources,
+    SetResource,
     GetPhoneLink,
     LinkPhone,
     StopLinkingPhone,
@@ -63,7 +65,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    /// Phone calls must not change this Mac's settings or redirect its relay.
+    /// Phone calls must not change this Mac's or pi's settings, or redirect its relay.
     /// The phone doesn't show tool output, so the relay never carries it.
     pub fn for_phone(self) -> bool {
         !matches!(
@@ -72,6 +74,8 @@ impl Tool {
                 | Self::SetSettings
                 | Self::AgentToolStatus
                 | Self::SetUpAgentTool
+                | Self::ListResources
+                | Self::SetResource
                 | Self::GetPhoneLink
                 | Self::LinkPhone
                 | Self::StopLinkingPhone
@@ -115,6 +119,8 @@ impl FromStr for Tool {
             "set_settings" => Self::SetSettings,
             "agent_tool_status" => Self::AgentToolStatus,
             "set_up_agent_tool" => Self::SetUpAgentTool,
+            "list_resources" => Self::ListResources,
+            "set_resource" => Self::SetResource,
             "get_phone_link" => Self::GetPhoneLink,
             "link_phone" => Self::LinkPhone,
             "stop_linking_phone" => Self::StopLinkingPhone,
@@ -218,6 +224,8 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
             let args: AgentToolArgs = parse(args)?;
             Ok(serde_json::to_value(args.tool.set_up().await)?)
         }
+        Tool::ListResources => engine.resources(None).await,
+        Tool::SetResource => engine.resources(Some(&parse(args)?)).await,
         Tool::GetPhoneLink => Ok(phone_link(engine)),
         Tool::LinkPhone => {
             let args: LinkArgs = parse(args)?;
