@@ -24,6 +24,20 @@ jobs:
       - name: Test phone UI and requests
         run: bun test crates/relay/tests
 
+  extensions:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: extensions
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test
+
   rust:
     runs-on: macos-26
 
@@ -39,6 +53,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+      - uses: oven-sh/setup-bun@v2
       - name: Bundle
         run: |
           cargo build --locked

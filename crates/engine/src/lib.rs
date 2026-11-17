@@ -3,6 +3,7 @@ pub const VERSION: &str = match option_env!("LUDOLPH_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
+pub mod agent_tools;
 pub mod attachments;
 pub mod engine;
 pub mod feed;

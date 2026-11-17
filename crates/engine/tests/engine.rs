@@ -40,6 +40,7 @@ async fn engine(dir: &Path, idle: Duration) -> Engine {
         grace: Duration::from_secs(2),
         home: dir.to_owned(),
         app: Some(dir.join("Ludolph.app")),
+        extensions: dir.join("extensions"),
         secrets: SecretStore::File,
     };
     Engine::start(config)
@@ -166,7 +167,15 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
     );
 
     let log = log_until(dir.path(), 2).await;
-    assert_eq!(log[0], format!("start --mode rpc --session-id {id}"));
+    let extensions = dir.path().join("extensions");
+    assert_eq!(
+        log[0],
+        format!(
+            "start --mode rpc --session-id {id} --extension {} --extension {}",
+            extensions.join("routing.js").display(),
+            extensions.join("second-opinion.js").display()
+        )
+    );
     assert_eq!(log[1], "exit");
     engine.send(&id, "again", Vec::new()).await.unwrap();
     until(&engine, |c| last_prompt(&c[0]) == Some("again")).await;
@@ -1059,7 +1068,10 @@ async fn chats_are_titled_as_soon_as_they_start() {
         format!("{refused:#}").contains("no model fake/none"),
         "{refused:#}"
     );
-    let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true, "sendBehavior": "queue"});
+    let unknown = json!({"guiModel": "fake/none"});
+    assert!(tool(&engine, "set_settings", unknown).await.is_err());
+    let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true, "sendBehavior": "queue",
+        "toolRouting": false, "secondOpinion": false, "browserUse": true, "computerUse": false, "guiModel": "fake/quick", "guiThinking": "low"});
     let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
     assert_eq!(saved, picked);
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
@@ -1070,6 +1082,28 @@ async fn chats_are_titled_as_soon_as_they_start() {
     assert_eq!(
         tool(&engine, "get_settings", json!({})).await.unwrap(),
         picked
+    );
+    let gui = engine.create(dir.path()).await.unwrap();
+    engine
+        .send(&gui, "open the page", Vec::new())
+        .await
+        .unwrap();
+    until(&engine, |c| {
+        c.iter()
+            .any(|c| c.id == gui && last_prompt(c) == Some("open the page"))
+    })
+    .await;
+    let log = std::fs::read_to_string(dir.path().join("pi.log")).unwrap();
+    let start = log
+        .lines()
+        .find(|l| l.starts_with("start") && l.contains(&gui))
+        .unwrap();
+    assert!(
+        start.ends_with(&format!(
+            " --extension {}",
+            dir.path().join("extensions/gui.js").display()
+        )),
+        "{start}"
     );
     let kept = Settings::load(&engine.config().state_dir).unwrap();
     assert_eq!(

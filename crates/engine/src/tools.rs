@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use crate::agent_tools::GuiTool;
 use crate::attachments::Attachment;
 use crate::engine::{
     ChatInfo, Composer, Config, Delivery, Dialog, Engine, Question, Reply, Status,
@@ -53,6 +54,8 @@ pub enum Tool {
     PolishDictation,
     GetSettings,
     SetSettings,
+    AgentToolStatus,
+    SetUpAgentTool,
     GetPhoneLink,
     LinkPhone,
     StopLinkingPhone,
@@ -67,6 +70,8 @@ impl Tool {
             self,
             Self::ToolOutput
                 | Self::SetSettings
+                | Self::AgentToolStatus
+                | Self::SetUpAgentTool
                 | Self::GetPhoneLink
                 | Self::LinkPhone
                 | Self::StopLinkingPhone
@@ -108,6 +113,8 @@ impl FromStr for Tool {
             "polish_dictation" => Self::PolishDictation,
             "get_settings" => Self::GetSettings,
             "set_settings" => Self::SetSettings,
+            "agent_tool_status" => Self::AgentToolStatus,
+            "set_up_agent_tool" => Self::SetUpAgentTool,
             "get_phone_link" => Self::GetPhoneLink,
             "link_phone" => Self::LinkPhone,
             "stop_linking_phone" => Self::StopLinkingPhone,
@@ -202,6 +209,15 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::SetSettings => Ok(serde_json::to_value(
             engine.set_settings(parse(args)?).await?,
         )?),
+        Tool::AgentToolStatus => {
+            let (browser, computer) =
+                tokio::join!(GuiTool::Browser.status(), GuiTool::Computer.status());
+            Ok(json!({"browser": browser?, "computer": computer?}))
+        }
+        Tool::SetUpAgentTool => {
+            let args: AgentToolArgs = parse(args)?;
+            Ok(serde_json::to_value(args.tool.set_up().await?)?)
+        }
         Tool::GetPhoneLink => Ok(phone_link(engine)),
         Tool::LinkPhone => {
             let args: LinkArgs = parse(args)?;
@@ -223,6 +239,12 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
 fn parse<T: DeserializeOwned>(args: Value) -> Result<T> {
     let args = if args.is_null() { json!({}) } else { args };
     serde_json::from_value(args).context("invalid arguments")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentToolArgs {
+    tool: GuiTool,
 }
 
 #[derive(Deserialize)]

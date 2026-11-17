@@ -6,7 +6,9 @@ use rune_kit::{ComboboxState, ShortcutRecorderState};
 use serde_json::{Value, json};
 
 use super::{Page, State, Window};
-use crate::data::{LinkStatus, Pairing, PhoneLink, RelayLink, Settings};
+use crate::data::{
+    GuiTool, LinkStatus, Pairing, PhoneLink, RelayLink, Settings, ToolStatus, ToolStatuses,
+};
 use crate::update;
 
 pub const QR_SIZE: f32 = 184.0;
@@ -17,9 +19,23 @@ pub struct SettingsPage {
     pub error: Option<String>,
     pub shortcut: ShortcutRecorderState,
     pub model: ComboboxState,
+    pub gui_model: ComboboxState,
+    pub gui_thinking: ComboboxState,
+    pub tools: Tools,
     pub phone: Phone,
     pub update: Update,
     previous: Option<String>,
+}
+
+/// Browser and computer use need command-line tools and macOS permissions before they can run.
+#[derive(Default)]
+pub struct Tools {
+    pub status: Option<ToolStatuses>,
+    pub failed: Option<String>,
+    /// The tool whose install waits for the user's go-ahead.
+    pub confirm: Option<GuiTool>,
+    pub running: Option<GuiTool>,
+    pub error: Option<(GuiTool, String)>,
 }
 
 pub enum Update {
@@ -95,6 +111,9 @@ impl State {
                 error: None,
                 shortcut,
                 model: ComboboxState::default(),
+                gui_model: ComboboxState::default(),
+                gui_thinking: ComboboxState::default(),
+                tools: Tools::default(),
                 phone: Phone {
                     state: None,
                     relay: TextEdit::default(),
@@ -107,6 +126,7 @@ impl State {
             }));
             self.check_update();
             self.load_settings();
+            self.load_tools();
             self.load_phone();
             self.load_catalog();
         }
@@ -292,6 +312,78 @@ impl State {
                 s.show_expand_tools(saved.expand_tools);
                 if let Some(page) = s.settings_page_mut() {
                     page.settings = Some(saved);
+                }
+            },
+        );
+    }
+
+    fn load_tools(&mut self) {
+        self.api.call(
+            "agent_tool_status",
+            json!({}),
+            |s, result: Result<ToolStatuses, String>, _| {
+                if let Some(page) = s.settings_page_mut() {
+                    match result {
+                        Ok(status) => page.tools.status = Some(status),
+                        Err(e) => page.tools.failed = Some(e),
+                    }
+                }
+            },
+        );
+    }
+
+    pub fn toggle_gui_tool(&mut self, tool: GuiTool) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        if page.settings.as_ref().is_some_and(|v| v.gui_tool(tool)) {
+            return self.change_settings(|v| v.set_gui_tool(tool, false));
+        }
+        page.tools.error = None;
+        match page.tools.status.map(|status| status.get(tool)) {
+            Some(ToolStatus::Ready) => self.change_settings(|v| v.set_gui_tool(tool, true)),
+            Some(ToolStatus::Missing) => page.tools.confirm = Some(tool),
+            Some(ToolStatus::NeedsPermissions) => self.set_up_gui_tool(tool),
+            None => {}
+        }
+    }
+
+    pub fn cancel_gui_setup(&mut self) {
+        if let Some(page) = self.settings_page_mut() {
+            page.tools.confirm = None;
+        }
+    }
+
+    /// Install the tool if needed and ask for its permissions, then turn it on.
+    pub fn set_up_gui_tool(&mut self, tool: GuiTool) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        page.tools.confirm = None;
+        page.tools.running = Some(tool);
+        self.api.call(
+            "set_up_agent_tool",
+            json!({"tool": tool}),
+            move |s, result: Result<ToolStatus, String>, _| {
+                let Some(page) = s.settings_page_mut() else {
+                    return;
+                };
+                page.tools.running = None;
+                match result {
+                    Ok(status) => {
+                        if let Some(all) = page.tools.status.as_mut() {
+                            all.set(tool, status);
+                        }
+                        if status == ToolStatus::Ready {
+                            s.change_settings(|v| v.set_gui_tool(tool, true));
+                        } else {
+                            page.tools.error = Some((
+                                tool,
+                                "Accessibility and Screen Recording are still off.".to_owned(),
+                            ));
+                        }
+                    }
+                    Err(e) => page.tools.error = Some((tool, e)),
                 }
             },
         );

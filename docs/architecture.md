@@ -77,6 +77,14 @@ An idle terminal pi writes nothing, so this can't catch it. The real fix is an a
 
 Titles come from the sidecar model through `pi -p` with no session, tools, extensions, skills, or context files. The engine stores a title with `set_session_name` only if the session still has no name. It never replaces a title set by a person or by pi. Setting a title doesn't count as activity, so it doesn't move a chat up the list.
 
+### Agent tools
+
+Ludolph's pi extensions live in `extensions/` and ship as one JS file each in `Contents/Resources/pi`. The engine passes the ones turned on in Settings to each chat's pi with `--extension`, and the GUI model and roles through `LUDOLPH_GUI_*` variables. So a settings change reaches a chat when its pi next starts.
+
+- Ludolph never writes to pi's folder or installs pi packages, so a terminal pi stays as the user set it up.
+- The sidecar and the second-opinion reviewer load no extensions. A GUI subagent loads only `gui.js` in its role mode, which adds no subagent tools. So no child can start another.
+- Browser and computer use install browse or Cua Driver only after the user confirms. Both run their MCP server inside a subagent, so a chat's pi doesn't start them until a task needs them.
+
 ## Turn changes
 
 A run, not pi's `turn_start`, is the unit of a diff: everything from the prompt that starts it until pi settles, including steering messages. The engine snapshots the working tree before it forwards the prompt and again when the run settles, so no tool can change a file before the first snapshot.
