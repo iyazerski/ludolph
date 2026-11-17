@@ -64,18 +64,27 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
 
 /// The settings sections, shown in the main sidebar in place of the chats.
 pub fn sidebar(page: &SettingsPage, k: &Kit) -> El {
+    let back = SidebarRow::new("Back to chats")
+        .icon(&icons::BACK)
+        .detail("Esc")
+        .on_select(|s: &mut State, _| s.close_settings())
+        .build(k)
+        .key("back");
     Section::ALL
         .into_iter()
-        .fold(Sidebar::new().label("Settings"), |bar, section| {
-            bar.child(
-                SidebarRow::new(title(section))
-                    .icon(icon(section))
-                    .selected(page.section == section)
-                    .on_select(move |s: &mut State, _| s.show_settings_section(section))
-                    .build(k)
-                    .key(key(section)),
-            )
-        })
+        .fold(
+            Sidebar::new().label("Settings").header(back),
+            |bar, section| {
+                bar.child(
+                    SidebarRow::new(title(section))
+                        .icon(icon(section))
+                        .selected(page.section == section)
+                        .on_select(move |s: &mut State, _| s.show_settings_section(section))
+                        .build(k)
+                        .key(key(section)),
+                )
+            },
+        )
         .build(k)
 }
 
