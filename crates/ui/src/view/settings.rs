@@ -10,7 +10,7 @@ use super::{icons, theme};
 use crate::app::{Outcome, QR_SIZE, Section, SettingsPage, State, Update};
 use crate::data::{
     Account, GuiTool, LinkStatus, Notify, Pairing, PromptKind, RelayLink, ResourceKind,
-    SendBehavior, SignInPrompt, ToolStatus, levels_of,
+    ReviewModel, SendBehavior, Settings, SignInPrompt, ToolStatus, levels_of,
 };
 use crate::labels::reasoning_name;
 use crate::prefs::{Accent, TextSize};
@@ -25,6 +25,7 @@ const GAP: f32 = 8.0;
 /// The sidecar picker's id for pi's default model, which follows pi's
 /// settings; a model's id has a `/`.
 const DEFAULT_MODEL: &str = "default";
+const NO_REVIEWER: &str = "unset";
 /// browse and Cua Driver set up on macOS only, and macOS runs the app and the engine together.
 const GUI_TOOLS: bool = cfg!(target_os = "macos");
 /// Only Ludolph.app has a login item.
@@ -43,6 +44,14 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                     k,
                     std::iter::once(sidecar(s, page, k, layer))
                         .chain(GUI_TOOLS.then(|| gui_model(s, page, k, layer)))
+                        .collect(),
+                ))
+                .child(caption(k, "Second opinion"))
+                .child(group(
+                    k,
+                    [ReviewFamily::Claude, ReviewFamily::Gpt]
+                        .into_iter()
+                        .map(|family| review_model(s, page, k, layer, family))
                         .collect(),
                 ))
                 .child(caption(k, "Chat model picker"))
@@ -697,10 +706,7 @@ fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>, en
         (Some(models), Some(model)) => levels_of(models, model),
         _ => &[],
     };
-    let options: Vec<_> = levels
-        .iter()
-        .map(|level| ComboboxOption::new(level.clone(), reasoning_name(level)))
-        .collect();
+    let options = reasoning_options(levels);
     // The extension's default, when the setting is unset.
     let current = settings
         .and_then(|v| v.gui_thinking.as_deref())
@@ -708,15 +714,7 @@ fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>, en
     let current = levels.iter().any(|l| l == current).then_some(current);
     let disabled = !enabled || levels.len() < 2;
     let label = "Browser and computer use reasoning";
-    // The default trigger takes the list's width, but the list can't be narrower than
-    // Rune's 200-point popover.
-    let trigger = Select::new::<&str>("gui-thinking-value", &[])
-        .current(current.map(reasoning_name).as_deref())
-        .label(label)
-        .appearance(SelectAppearance::Field)
-        .width(THINKING)
-        .disabled(disabled)
-        .trigger(k);
+    let trigger = reasoning_trigger(k, "gui-thinking", label, current, disabled);
     Combobox::new(
         "gui-thinking",
         &page.gui_thinking,
@@ -741,6 +739,158 @@ fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>, en
     .build(k, layer)
 }
 
+fn reasoning_options(levels: &[String]) -> Vec<ComboboxOption> {
+    levels
+        .iter()
+        .map(|level| ComboboxOption::new(level.clone(), reasoning_name(level)))
+        .collect()
+}
+
+fn reasoning_trigger(k: &Kit, key: &str, label: &str, current: Option<&str>, disabled: bool) -> El {
+    // Keep the field narrow without shrinking Rune's 200-point popover.
+    Select::new::<&str>(format!("{key}-value"), &[])
+        .current(current.map(reasoning_name).as_deref())
+        .label(label)
+        .appearance(SelectAppearance::Field)
+        .width(THINKING)
+        .disabled(disabled)
+        .trigger(k)
+}
+
+#[derive(Clone, Copy)]
+enum ReviewFamily {
+    Claude,
+    Gpt,
+}
+
+impl ReviewFamily {
+    fn matches(self, id: &str) -> bool {
+        let prefix = match self {
+            Self::Claude => "claude-",
+            Self::Gpt => "gpt-",
+        };
+        id.rsplit_once('/')
+            .is_some_and(|(_, model)| model.starts_with(prefix))
+    }
+
+    fn choice(self, settings: &Settings) -> &Option<ReviewModel> {
+        match self {
+            Self::Claude => &settings.second_opinion_claude,
+            Self::Gpt => &settings.second_opinion_gpt,
+        }
+    }
+
+    fn choice_mut(self, settings: &mut Settings) -> &mut Option<ReviewModel> {
+        match self {
+            Self::Claude => &mut settings.second_opinion_claude,
+            Self::Gpt => &mut settings.second_opinion_gpt,
+        }
+    }
+}
+
+fn review_model(
+    s: &State,
+    page: &SettingsPage,
+    k: &Kit,
+    layer: &mut Vec<El>,
+    family: ReviewFamily,
+) -> El {
+    let (label, key, controls) = match family {
+        ReviewFamily::Claude => ("Claude reviewer", "review-claude", &page.claude_review),
+        ReviewFamily::Gpt => ("GPT reviewer", "review-gpt", &page.gpt_review),
+    };
+    let controls_mut: fn(&mut SettingsPage) -> &mut _ = match family {
+        ReviewFamily::Claude => |p| &mut p.claude_review,
+        ReviewFamily::Gpt => |p| &mut p.gpt_review,
+    };
+    let choice = page
+        .settings
+        .as_ref()
+        .and_then(|v| family.choice(v).as_ref());
+    let models = s.catalog.ready().unwrap_or_default();
+    let mut options = vec![ComboboxOption::new(NO_REVIEWER, "Not set")];
+    options.extend(model_options(
+        models
+            .iter()
+            .filter(|m| family.matches(&m.id) && !m.reasoning_levels.is_empty()),
+    ));
+    let placeholder = choice.map_or_else(String::new, |peer| {
+        if s.catalog.ready().is_some() {
+            format!("{} (unavailable)", peer.model)
+        } else {
+            peer.model.clone()
+        }
+    });
+    let picker = Combobox::new(key, &controls.model, &options, move |s: &mut State| {
+        &mut controls_mut(
+            s.settings_page_mut()
+                .expect("the picker is on the settings page"),
+        )
+        .model
+    })
+    .label(label)
+    .current(Some(choice.map_or(NO_REVIEWER, |peer| peer.model.as_str())))
+    .placeholder(placeholder)
+    .search_placeholder("Search models")
+    .width(CONTROL - THINKING - GAP)
+    .on_choose(move |s: &mut State, id, _| {
+        let choice = if id == NO_REVIEWER {
+            None
+        } else {
+            let levels = levels_of(s.catalog.ready().unwrap_or_default(), id);
+            let Some(thinking) = levels
+                .iter()
+                .find(|level| level.as_str() == "medium")
+                .or_else(|| levels.first())
+            else {
+                return;
+            };
+            Some(ReviewModel {
+                model: id.to_owned(),
+                thinking: thinking.clone(),
+            })
+        };
+        s.change_settings(|v| *family.choice_mut(v) = choice);
+    })
+    .build(k, layer);
+
+    let levels = choice.map_or(&[][..], |peer| levels_of(models, &peer.model));
+    let current = choice
+        .map(|peer| peer.thinking.as_str())
+        .filter(|level| levels.iter().any(|supported| supported == level));
+    let disabled = levels.is_empty() || (levels.len() == 1 && current.is_some());
+    let thinking_label = format!("{label} reasoning");
+    let thinking_key = format!("{key}-thinking");
+    let trigger = reasoning_trigger(k, &thinking_key, &thinking_label, current, disabled);
+    let thinking = Combobox::new(
+        thinking_key,
+        &controls.thinking,
+        &reasoning_options(levels),
+        move |s: &mut State| {
+            &mut controls_mut(
+                s.settings_page_mut()
+                    .expect("the picker is on the settings page"),
+            )
+            .thinking
+        },
+    )
+    .label(thinking_label)
+    .current(current)
+    .trigger(trigger)
+    .placement(Placement::BottomEnd)
+    .width(200.0)
+    .disabled(disabled)
+    .on_choose(move |s: &mut State, level, _| {
+        s.change_settings(|v| {
+            if let Some(peer) = family.choice_mut(v) {
+                peer.thinking = level.to_owned();
+            }
+        });
+    })
+    .build(k, layer);
+    wide(k, label, row().gap(GAP).child(picker).child(thinking))
+}
+
 fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
     let on = |get: fn(&crate::data::Settings) -> bool| page.settings.as_ref().is_some_and(get);
     let mut rows = vec![
@@ -757,7 +907,7 @@ fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
         compact(
             k,
             "Second opinion",
-            Some("Lets the agent ask GPT or Claude for a review."),
+            Some("Choose GPT and Claude reviewers in Model settings."),
             Switch::new(on(|v| v.second_opinion))
                 .hide_label()
                 .label("Second opinion")

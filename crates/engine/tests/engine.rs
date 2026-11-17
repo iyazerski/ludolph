@@ -171,9 +171,8 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
     assert_eq!(
         log[0],
         format!(
-            "start --mode rpc --session-id {id} --extension {} --extension {}",
-            extensions.join("routing.js").display(),
-            extensions.join("second-opinion.js").display()
+            "start --mode rpc --session-id {id} --extension {}",
+            extensions.join("routing.js").display()
         )
     );
     assert_eq!(log[1], "exit");
@@ -1078,8 +1077,8 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let unknown = json!({"guiModel": "fake/none"});
     assert!(tool(&engine, "set_settings", unknown).await.is_err());
     let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true, "sendBehavior": "queue",
-        "toolRouting": false, "secondOpinion": false, "browserUse": true, "computerUse": false, "guiModel": "fake/quick", "guiThinking": "low",
-        "chatModels": []});
+        "toolRouting": false, "secondOpinion": true, "browserUse": true, "computerUse": false, "guiModel": "fake/quick", "guiThinking": "low",
+        "secondOpinionClaude": null, "secondOpinionGpt": {"model": "fake/gpt-reviewer", "thinking": "high"}, "chatModels": []});
     let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
     assert_eq!(saved, picked);
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
@@ -1108,7 +1107,8 @@ async fn chats_are_titled_as_soon_as_they_start() {
         .unwrap();
     assert!(
         start.ends_with(&format!(
-            " --extension {}",
+            " --extension {} --extension {}",
+            dir.path().join("extensions/second-opinion.js").display(),
             dir.path().join("extensions/gui.js").display()
         )),
         "{start}"

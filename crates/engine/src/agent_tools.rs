@@ -25,7 +25,27 @@ pub fn pi_options(dir: &Path, settings: &Settings) -> (Vec<PathBuf>, Vec<(String
         extensions.push(dir.join("routing.js"));
     }
     if settings.second_opinion {
-        extensions.push(dir.join("second-opinion.js"));
+        let reviewers = [
+            (
+                "LUDOLPH_REVIEW_CLAUDE_MODEL",
+                "LUDOLPH_REVIEW_CLAUDE_THINKING",
+                &settings.second_opinion_claude,
+            ),
+            (
+                "LUDOLPH_REVIEW_GPT_MODEL",
+                "LUDOLPH_REVIEW_GPT_THINKING",
+                &settings.second_opinion_gpt,
+            ),
+        ];
+        for (model, thinking, choice) in reviewers {
+            if let Some(choice) = choice {
+                env.push((model.to_owned(), choice.model.clone()));
+                env.push((thinking.to_owned(), choice.thinking.clone()));
+            }
+        }
+        if !env.is_empty() {
+            extensions.push(dir.join("second-opinion.js"));
+        }
     }
     let gui: Vec<&str> = [
         (settings.browser_use, "browser"),

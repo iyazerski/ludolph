@@ -14,6 +14,8 @@ pub struct Settings {
     pub send_behavior: SendBehavior,
     pub tool_routing: bool,
     pub second_opinion: bool,
+    pub second_opinion_claude: Option<ReviewModel>,
+    pub second_opinion_gpt: Option<ReviewModel>,
     pub browser_use: bool,
     pub computer_use: bool,
     /// `provider/model` for browser and computer use; None uses pi's default.
@@ -33,6 +35,8 @@ impl Default for Settings {
             send_behavior: SendBehavior::default(),
             tool_routing: true,
             second_opinion: true,
+            second_opinion_claude: None,
+            second_opinion_gpt: None,
             // They install tools and ask for macOS permissions, so only on request.
             browser_use: false,
             computer_use: false,
@@ -41,6 +45,14 @@ impl Default for Settings {
             chat_models: Vec::new(),
         }
     }
+}
+
+/// A provider-qualified reviewer and its selected pi thinking level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewModel {
+    pub model: String,
+    pub thinking: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
