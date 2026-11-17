@@ -479,6 +479,69 @@ pub struct Settings {
     pub open_at_login: bool,
     pub expand_tools: bool,
     pub send_behavior: SendBehavior,
+    pub tool_routing: bool,
+    pub second_opinion: bool,
+    pub browser_use: bool,
+    pub computer_use: bool,
+    pub gui_model: Option<String>,
+    pub gui_thinking: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GuiTool {
+    Browser,
+    Computer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolStatus {
+    Missing,
+    NeedsPermissions,
+    Ready,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct ToolStatuses {
+    pub browser: ToolStatus,
+    pub computer: ToolStatus,
+}
+
+impl ToolStatuses {
+    pub fn get(&self, tool: GuiTool) -> ToolStatus {
+        match tool {
+            GuiTool::Browser => self.browser,
+            GuiTool::Computer => self.computer,
+        }
+    }
+
+    fn get_mut(&mut self, tool: GuiTool) -> &mut ToolStatus {
+        match tool {
+            GuiTool::Browser => &mut self.browser,
+            GuiTool::Computer => &mut self.computer,
+        }
+    }
+
+    pub fn set(&mut self, tool: GuiTool, status: ToolStatus) {
+        *self.get_mut(tool) = status;
+    }
+}
+
+impl Settings {
+    pub fn gui_tool(&self, tool: GuiTool) -> bool {
+        match tool {
+            GuiTool::Browser => self.browser_use,
+            GuiTool::Computer => self.computer_use,
+        }
+    }
+
+    pub fn set_gui_tool(&mut self, tool: GuiTool, on: bool) {
+        match tool {
+            GuiTool::Browser => self.browser_use = on,
+            GuiTool::Computer => self.computer_use = on,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

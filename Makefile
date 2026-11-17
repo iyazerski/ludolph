@@ -16,14 +16,19 @@ install:
 
 test:
 	cargo test --workspace --locked
+	cd extensions && bun install --frozen-lockfile && bun run typecheck && bun test
 
-engine:
+# Development engines load the extensions from target/pi.
+extensions:
+	cd extensions && bun install --frozen-lockfile && bun run build $(CURDIR)/target/pi
+
+engine: extensions
 	LUDOLPH_DIR=$(CURDIR)/target/dev cargo run --locked -- engine
 
-app:
+app: extensions
 	LUDOLPH_DIR=$(CURDIR)/target/dev cargo run --locked
 
 licenses:
 	cargo about generate --workspace --fail about.hbs > THIRD_PARTY_LICENSES.md
 
-.PHONY: install test engine app licenses
+.PHONY: install test extensions engine app licenses

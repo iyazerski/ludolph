@@ -12,6 +12,7 @@ use tokio::sync::{OwnedMutexGuard, broadcast, mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::Instant;
 
+use crate::agent_tools;
 use crate::attachments::{self, Attachment};
 use crate::index::{self, Index};
 use crate::live::{self, Live};
@@ -50,6 +51,8 @@ pub struct Config {
     pub home: PathBuf,
     /// `None` outside Ludolph.app; development engines must not change its login item.
     pub app: Option<PathBuf>,
+    /// Ludolph's bundled pi extensions.
+    pub extensions: PathBuf,
     pub secrets: SecretStore,
 }
 
@@ -1053,10 +1056,13 @@ impl Engine {
     }
 
     pub async fn set_settings(&self, settings: Settings) -> Result<Settings> {
-        if let Some(model) = &settings.sidecar_model
-            && self.0.catalog.find(model).await?.is_none()
+        for model in [&settings.sidecar_model, &settings.gui_model]
+            .into_iter()
+            .flatten()
         {
-            bail!("pi has no model {model}");
+            if self.0.catalog.find(model).await?.is_none() {
+                bail!("pi has no model {model}");
+            }
         }
         let config = &self.0.config;
         login::apply(&config.home, config.app.as_deref(), settings.open_at_login)?;
@@ -1555,12 +1561,14 @@ impl Engine {
         if !cwd.is_dir() {
             bail!("this chat's folder, {}, no longer exists", cwd.display());
         }
+        let (extensions, env) =
+            agent_tools::pi_options(&self.0.config.extensions, &self.settings());
         let options = Options {
             program: self.0.config.pi.clone(),
             cwd,
             session,
-            extensions: Vec::new(),
-            env: Vec::new(),
+            extensions,
+            env,
         };
         let sources = self.0.catalog.sources()?;
         let (pi, events) = Pi::start(&options)?;

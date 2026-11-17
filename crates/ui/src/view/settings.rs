@@ -7,7 +7,10 @@ use rune_kit::{
 use super::theme;
 use super::widgets::{busy, dot, model_options};
 use crate::app::{QR_SIZE, SettingsPage, State, Update};
-use crate::data::{LinkStatus, Notify, Pairing, RelayLink, SendBehavior};
+use crate::data::{
+    GuiTool, LinkStatus, Notify, Pairing, RelayLink, SendBehavior, ToolStatus, levels_of,
+};
+use crate::labels::reasoning_name;
 use crate::prefs::Accent;
 
 const MAX_WIDTH: f32 = 640.0;
@@ -33,7 +36,16 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                 .child(section(k, "General"))
                 .child(group(k, general(s, page, k)))
                 .child(section(k, "Model"))
-                .child(group(k, vec![sidecar(s, page, k, layer)]))
+                .child(group(
+                    k,
+                    vec![
+                        sidecar(s, page, k, layer),
+                        gui_model(s, page, k, layer),
+                        gui_thinking(s, page, k, layer),
+                    ],
+                ))
+                .child(section(k, "Agent tools"))
+                .child(group(k, agent_tools(page, k)))
                 .child(section(k, "Phone"))
                 .child(group(k, phone(page, k)));
         }
@@ -217,6 +229,201 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
         k,
         "Names new chats and cleans up dictation, without thinking. A small, fast model works best.",
     )
+}
+
+fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
+    let current = page.settings.as_ref().and_then(|v| v.gui_model.as_deref());
+    let default = s.catalog.default_model().map(|id| s.catalog.label(id));
+    let default = default.map_or("Default model".to_owned(), |name| {
+        format!("{name} (default)")
+    });
+    let mut options = vec![ComboboxOption::new(DEFAULT_MODEL, default)];
+    if let Some(models) = s.catalog.ready() {
+        options.extend(model_options(models));
+    }
+    let picker = Combobox::new("gui-model", &page.gui_model, &options, |s: &mut State| {
+        &mut s
+            .settings_page_mut()
+            .expect("the picker is on the settings page")
+            .gui_model
+    })
+    .label("Browser and computer use")
+    .current(Some(current.unwrap_or(DEFAULT_MODEL)))
+    .search_placeholder("Search models")
+    .width(CONTROL)
+    .on_choose(|s: &mut State, id, _| {
+        let model = (id != DEFAULT_MODEL).then(|| id.to_owned());
+        s.change_settings(|v| v.gui_model = model);
+    })
+    .build(k, layer);
+    with_hint(
+        wide(k, "Browser and computer use", picker),
+        k,
+        "Runs browser and desktop tasks for the agent. It must read images, and a fast model works best.",
+    )
+}
+
+fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
+    let settings = page.settings.as_ref();
+    let model = settings
+        .and_then(|v| v.gui_model.as_deref())
+        .or_else(|| s.catalog.default_model());
+    let levels = match (s.catalog.ready(), model) {
+        (Some(models), Some(model)) => levels_of(models, model),
+        _ => &[],
+    };
+    let options: Vec<_> = levels
+        .iter()
+        .map(|level| ComboboxOption::new(level.clone(), reasoning_name(level)))
+        .collect();
+    // The extension's default, when the setting is unset.
+    let current = settings
+        .and_then(|v| v.gui_thinking.as_deref())
+        .unwrap_or("medium");
+    let picker = Combobox::new(
+        "gui-thinking",
+        &page.gui_thinking,
+        &options,
+        |s: &mut State| {
+            &mut s
+                .settings_page_mut()
+                .expect("the picker is on the settings page")
+                .gui_thinking
+        },
+    )
+    .label("Reasoning")
+    .current(levels.iter().any(|l| l == current).then_some(current))
+    .width(CONTROL)
+    .disabled(levels.len() < 2)
+    .on_choose(|s: &mut State, level, _| {
+        let level = level.to_owned();
+        s.change_settings(|v| v.gui_thinking = Some(level));
+    })
+    .build(k, layer);
+    wide(k, "Reasoning", picker)
+}
+
+fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
+    let on = |get: fn(&crate::data::Settings) -> bool| page.settings.as_ref().is_some_and(get);
+    let mut rows = vec![
+        compact(
+            k,
+            "Tool routing",
+            Some(
+                "Tells the agent which tool fits each job, and hints when it drifts. It saves turns and tokens.",
+            ),
+            Switch::new(on(|v| v.tool_routing))
+                .hide_label()
+                .label("Tool routing")
+                .on_toggle(|s: &mut State| s.change_settings(|v| v.tool_routing = !v.tool_routing))
+                .build(k),
+        ),
+        compact(
+            k,
+            "Second opinion",
+            Some(
+                "Lets the agent ask the other model family, GPT or Claude, for a read-only review.",
+            ),
+            Switch::new(on(|v| v.second_opinion))
+                .hide_label()
+                .label("Second opinion")
+                .on_toggle(|s: &mut State| {
+                    s.change_settings(|v| v.second_opinion = !v.second_opinion)
+                })
+                .build(k),
+        ),
+    ];
+    rows.extend(gui_tool(page, k, GuiTool::Browser));
+    rows.extend(gui_tool(page, k, GuiTool::Computer));
+    if let Some(why) = &page.tools.failed {
+        rows.push(error_line(k, format!("Couldn't check the tools: {why}")));
+    }
+    rows.push(
+        row().w_full().px(PAD).py(8.0).child(
+            text("Changes apply to new chats, and to open chats after they idle.")
+                .font(k.ty.text_small)
+                .color(k.c.text_muted)
+                .wrap(),
+        ),
+    );
+    rows
+}
+
+fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
+    let (label, about, install) = match tool {
+        GuiTool::Browser => (
+            "Browser use",
+            "Hands tasks in your Chrome to a subagent, through browse.",
+            "Install browse from opencode.ai? It then opens Chrome to add its extension.",
+        ),
+        GuiTool::Computer => (
+            "Computer use",
+            "Hands tasks in Mac apps to a subagent, through Cua Driver.",
+            "Install Cua Driver from cua.ai? It then asks for Accessibility and Screen Recording.",
+        ),
+    };
+    let tools = &page.tools;
+    let on = page.settings.as_ref().is_some_and(|v| v.gui_tool(tool));
+    let status = tools.status.map(|all| all.get(tool));
+    let hint = match status {
+        Some(ToolStatus::Missing) if !on => format!("{about} Turning it on installs it."),
+        Some(ToolStatus::NeedsPermissions) => {
+            format!("{about} It needs Accessibility and Screen Recording.")
+        }
+        _ => about.to_owned(),
+    };
+    let control = if tools.running == Some(tool) {
+        busy(16.0, k)
+    } else {
+        Switch::new(on)
+            .hide_label()
+            .label(label)
+            // Turning it on may install it, so wait until the status says whether it must.
+            .disabled(status.is_none() || tools.running.is_some())
+            .on_toggle(move |s: &mut State| s.toggle_gui_tool(tool))
+            .build(k)
+    };
+    let mut rows = vec![compact(k, label, Some(&hint), control)];
+    if tools.confirm == Some(tool) {
+        let buttons = row()
+            .gap(8.0)
+            .child(
+                Button::new("Cancel")
+                    .variant(ButtonVariant::Outline)
+                    .on_press(State::cancel_gui_setup)
+                    .build(k),
+            )
+            .child(
+                Button::new("Install")
+                    .variant(ButtonVariant::Neutral)
+                    .on_press(move |s: &mut State| s.set_up_gui_tool(tool))
+                    .build(k),
+            );
+        let question = text(install.to_owned())
+            .font(k.ty.ui)
+            .color(k.c.text_base)
+            .wrap()
+            .grow(1.0)
+            .min_w(0.0);
+        rows.push(status_row(question, buttons));
+    }
+    if let Some((failed, why)) = &tools.error
+        && *failed == tool
+    {
+        rows.push(error_line(
+            k,
+            format!("Couldn't set up {}: {why}", label.to_lowercase()),
+        ));
+    }
+    rows
+}
+
+fn error_line(k: &Kit, why: String) -> El {
+    row()
+        .w_full()
+        .px(PAD)
+        .py(8.0)
+        .child(text(why).font(k.ty.text_small).color(k.c.danger.fg).wrap())
 }
 
 fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {

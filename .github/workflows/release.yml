@@ -9,6 +9,7 @@ on:
       - "crates/ui/**"
       - "crates/json-file/**"
       - "crates/relay-proto/**"
+      - "extensions/**"
       - "build.rs"
       - "assets/**"
       - "scripts/bundle.sh"
@@ -58,6 +59,7 @@ jobs:
       - name: Check version
         run: strings "target/$TARGET/release/ludolph" | grep -q "<string>$VERSION</string>"
       - uses: astral-sh/setup-uv@v10.3.3
+      - uses: oven-sh/setup-bun@v2
       # A self-signed certificate, the same for every release, so macOS keeps
       # the microphone, speech and Keychain grants when Ludolph updates.
       - name: Import signing certificate

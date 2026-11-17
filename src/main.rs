@@ -46,6 +46,15 @@ async fn engine() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".pi/agent"));
     let exe = std::env::current_exe().context("finding the ludolph binary")?;
+    // Development builds use the extensions the Makefile builds into target/pi.
+    let extensions = match bundle_of(&exe) {
+        Some(bundle) => bundle.join("Contents/Resources/pi"),
+        None => exe
+            .ancestors()
+            .nth(2)
+            .context("finding the target folder")?
+            .join("pi"),
+    };
     let app = bundle_of(&exe)
         .filter(|_| std::env::var_os("LUDOLPH_DIR").is_none())
         .map(Path::to_owned);
@@ -57,6 +66,7 @@ async fn engine() -> Result<()> {
         grace: GRACE,
         home,
         app,
+        extensions,
         secrets: SecretStore::Keychain,
     };
     std::fs::create_dir_all(&config.state_dir)

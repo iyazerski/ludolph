@@ -17,6 +17,10 @@ Ludolph uses only pi's RPC mode (`docs/rpc.md`, `docs/rpc-extension-ui.md`) and 
 - RPC mode refuses to open a session whose `cwd` no longer exists.
 - A fresh `pi --mode rpc` answers `get_state` in about 250 ms. Resuming a 45 MB session takes about 270 ms. A loaded pi uses 135 to 300 MB.
 
+## Extensions
+
+- `--extension <file>` loads a plain `.js` file next to installed packages. Its imports of `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai` and `typebox` resolve to pi's own copies, so the bundles leave them out.
+
 ## Session files
 
 - The first line is the header, with `id` and `cwd`.

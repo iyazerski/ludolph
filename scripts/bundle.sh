@@ -13,6 +13,9 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/ludolph"
 cp assets/Ludolph.icns "$app/Contents/Resources/Ludolph.icns"
 cp LICENSE THIRD_PARTY_LICENSES.md "$app/Contents/Resources/"
+# Ludolph's own pi extensions, one file each, which the engine loads into the chats it runs.
+resources=$(cd "$app/Contents/Resources" && pwd)
+(cd extensions && bun install --frozen-lockfile >/dev/null && bun run build "$resources/pi" >/dev/null)
 sed -e "s/@VERSION@/$version/g" assets/Info.plist >"$app/Contents/Info.plist"
 codesign --force --sign "${LUDOLPH_SIGN_IDENTITY:--}" ${LUDOLPH_SIGN_KEYCHAIN:+--keychain "$LUDOLPH_SIGN_KEYCHAIN"} \
   --identifier "$id" "$app"
