@@ -26,12 +26,12 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
     dialogs::chat_dialog(s, k, &mut layer);
     layer.extend(toast(s, k));
+    let menu = match s.settings_page() {
+        Some(page) => widgets::page(settings::sidebar(page, panels), "settings-menu"),
+        None => widgets::page(sidebar::view(s, panels), "chats-menu"),
+    };
     let split = SplitView::new(pane)
-        .sidebar(
-            &s.sidebar,
-            |s: &mut State| &mut s.sidebar,
-            sidebar::view(s, panels),
-        )
+        .sidebar(&s.sidebar, |s: &mut State| &mut s.sidebar, menu)
         .toolbar(bar)
         .titlebar_inset(cx.titlebar_inset())
         .sidebar_toggle(SidebarToggle::new().in_header().shortcut("⌃⌘S"))

@@ -4,6 +4,7 @@ use rune::Icon;
 pub use rune_theme_opencode::icons::OUTLINE_BRAIN as THOUGHT;
 pub use rune_theme_opencode::icons::OUTLINE_EXPAND as EXPAND;
 pub use rune_theme_opencode::icons::SETTINGS_GEAR as SETTINGS;
+pub use rune_theme_opencode::icons::{APPEARANCE, EXTENSIONS, MODELS, SLIDERS};
 pub use rune_theme_opencode::icons::{EDIT as NEW_CHAT, FOLDER};
 
 const fn icon(name: &'static str, view: f32, body: &'static str) -> Icon {
@@ -14,6 +15,12 @@ pub static FOLDER_OPEN: Icon = icon(
     "folder-open",
     16.0,
     r#"<path d="M1.33337 13.3333V2H6.66671L8.66671 4H13.3334V6.66667M1.33337 13.3333L3.33337 6.66667H15.3334L13.3334 13.3333H1.33337Z" stroke="currentColor" stroke-miterlimit="10" stroke-linecap="square" stroke-linejoin="round" fill="none"/>"#,
+);
+
+pub static PHONE: Icon = icon(
+    "phone",
+    16.0,
+    r#"<g fill="none" stroke="currentColor" stroke-linejoin="round"><rect x="4" y="1.5" width="8" height="13" rx="1.5"/><path d="M7 12.5H9" stroke-linecap="round"/></g>"#,
 );
 
 pub static INFO: Icon = icon(

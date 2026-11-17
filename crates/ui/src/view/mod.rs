@@ -138,6 +138,8 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
         if key.is_command('f') {
+            // The search field lives in the chat list, which Settings replaces.
+            s.close_settings();
             s.sidebar.set_open(true);
             if let Some(page) = s.chat_mut() {
                 page.composer.focused = false;

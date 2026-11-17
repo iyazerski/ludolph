@@ -44,7 +44,6 @@ pub fn view(s: &State, k: &Kit) -> El {
             SidebarRow::new("Settings")
                 .icon(&icons::SETTINGS)
                 .detail("⌘,")
-                .selected(s.settings_page().is_some())
                 .on_select(|s: &mut State, _| s.open_settings())
                 .build(k)
                 .key("settings"),

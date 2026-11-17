@@ -1,12 +1,13 @@
-use rune::{Color, El, SurfaceFit, Tx, col, el, row, text};
+use rune::{Color, El, Icon, SurfaceFit, Tx, col, el, row, text};
+use rune_kit::shell::{Sidebar, SidebarRow};
 use rune_kit::{
     Button, ButtonVariant, Combobox, ComboboxOption, Kit, Placement, SegmentedControl, Select,
     SelectAppearance, ShortcutRecorder, Switch, TextInput, shortcut_error_message,
 };
 
-use super::theme;
-use super::widgets::{busy, dot, model_options};
-use crate::app::{Outcome, QR_SIZE, SettingsPage, State, Update};
+use super::widgets::{self, busy, dot, model_options};
+use super::{icons, theme};
+use crate::app::{Outcome, QR_SIZE, Section, SettingsPage, State, Update};
 use crate::data::{
     GuiTool, LinkStatus, Notify, Pairing, RelayLink, SendBehavior, ToolStatus, levels_of,
 };
@@ -25,55 +26,107 @@ const GAP: f32 = 8.0;
 const DEFAULT_MODEL: &str = "default";
 
 pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>) -> El {
-    let mut body = col()
+    let content = match page.section {
+        Section::General => loaded(page, k, || general(s, page, k)),
+        Section::Appearance => group(k, vec![accents(s, k)]),
+        Section::AgentTools => loaded(page, k, || agent_tools(page, k)),
+        Section::Model => loaded(page, k, || {
+            vec![sidecar(s, page, k, layer), gui_model(s, page, k, layer)]
+        }),
+        Section::Phone => loaded(page, k, || phone(page, k)),
+        Section::About => group(k, vec![about(page, k)]),
+    };
+    let body = col()
         .w_full()
         .max_w(MAX_WIDTH)
-        .gap(8.0)
+        .gap(12.0)
         .px(24.0)
         .py(20.0)
-        .child(section(k, "Appearance"))
-        .child(group(k, vec![accents(s, k)]));
-    match (&page.settings, &page.error) {
-        (Some(_), _) => {
-            body = body
-                .child(section(k, "General"))
-                .child(group(k, general(s, page, k)))
-                .child(section(k, "Agent tools"))
-                .child(group(k, agent_tools(page, k)))
-                .child(section(k, "Model"))
-                .child(group(
-                    k,
-                    vec![sidecar(s, page, k, layer), gui_model(s, page, k, layer)],
-                ))
-                .child(section(k, "Phone"))
-                .child(group(k, phone(page, k)));
-        }
-        (None, Some(why)) => {
-            body = body.child(
-                text(format!("Couldn't load the settings: {why}"))
-                    .font(k.ty.ui)
-                    .color(k.c.text_muted)
-                    .wrap(),
-            );
-        }
-        (None, None) => {
-            body = body.child(
-                row()
-                    .w_full()
-                    .py(24.0)
-                    .justify_center()
-                    .child(busy(18.0, k)),
-            );
-        }
-    }
-    body = body.child(col().w_full().pt(8.0).child(group(k, vec![about(page, k)])));
-    col()
-        .w_full()
-        .h_full()
-        .scroll(rune::ScrollSpec {
-            stick_bottom: false,
+        .child(
+            text(title(page.section))
+                .font(k.ty.body_medium)
+                .color(k.c.text_base)
+                .pl(4.0),
+        )
+        .child(content);
+    // Keyed by section so each one opens scrolled to its top.
+    widgets::page(
+        col()
+            .w_full()
+            .h_full()
+            .scroll(rune::ScrollSpec {
+                stick_bottom: false,
+            })
+            .child(row().w_full().justify_center().child(body)),
+        key(page.section),
+    )
+}
+
+/// The settings sections, shown in the main sidebar in place of the chats.
+pub fn sidebar(page: &SettingsPage, k: &Kit) -> El {
+    Section::ALL
+        .into_iter()
+        .fold(Sidebar::new().label("Settings"), |bar, section| {
+            bar.child(
+                SidebarRow::new(title(section))
+                    .icon(icon(section))
+                    .selected(page.section == section)
+                    .on_select(move |s: &mut State, _| s.show_settings_section(section))
+                    .build(k)
+                    .key(key(section)),
+            )
         })
-        .child(row().w_full().justify_center().child(body))
+        .build(k)
+}
+
+fn title(section: Section) -> &'static str {
+    match section {
+        Section::General => "General",
+        Section::Appearance => "Appearance",
+        Section::AgentTools => "Agent tools",
+        Section::Model => "Model",
+        Section::Phone => "Phone",
+        Section::About => "About",
+    }
+}
+
+fn key(section: Section) -> &'static str {
+    match section {
+        Section::General => "general",
+        Section::Appearance => "appearance",
+        Section::AgentTools => "agent-tools",
+        Section::Model => "model",
+        Section::Phone => "phone",
+        Section::About => "about",
+    }
+}
+
+fn icon(section: Section) -> &'static Icon {
+    match section {
+        Section::General => &icons::SLIDERS,
+        Section::Appearance => &icons::APPEARANCE,
+        Section::AgentTools => &icons::EXTENSIONS,
+        Section::Model => &icons::MODELS,
+        Section::Phone => &icons::PHONE,
+        Section::About => &icons::INFO,
+    }
+}
+
+/// The rows of a section that needs the engine's settings, once they load.
+fn loaded(page: &SettingsPage, k: &Kit, rows: impl FnOnce() -> Vec<El>) -> El {
+    match (&page.settings, &page.error) {
+        (Some(_), _) => group(k, rows()),
+        (None, Some(why)) => text(format!("Couldn't load the settings: {why}"))
+            .font(k.ty.ui)
+            .color(k.c.text_muted)
+            .wrap()
+            .pl(4.0),
+        (None, None) => row()
+            .w_full()
+            .py(24.0)
+            .justify_center()
+            .child(busy(18.0, k)),
+    }
 }
 
 fn accents(s: &State, k: &Kit) -> El {
@@ -788,14 +841,6 @@ fn about(page: &SettingsPage, k: &Kit) -> El {
                 .on_press_tx(|_: &mut State, tx| tx.quit())
                 .build(k),
         )
-}
-
-fn section(k: &Kit, title: &str) -> El {
-    col().w_full().pt(8.0).pl(4.0).child(
-        text(title.to_owned())
-            .font(k.ty.text_small_medium)
-            .color(k.c.text_muted),
-    )
 }
 
 fn group(k: &Kit, rows: Vec<El>) -> El {
