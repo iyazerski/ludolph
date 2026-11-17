@@ -22,7 +22,8 @@ pub struct State {
     /// Cancels name the attempt they're for, so a late one can't stop the next.
     pub attempt: u64,
     pub provider: Option<String>,
-    /// The page pi signs in on, already opened in the browser.
+    /// The page pi signs in on. The app opens it, since the browser is where the app is, which
+    /// isn't this computer when the engine runs in WSL.
     pub browser: Option<String>,
     pub device_code: Option<DeviceCode>,
     pub prompt: Option<Prompt>,
@@ -37,6 +38,8 @@ pub struct State {
 pub struct DeviceCode {
     pub code: String,
     pub url: String,
+    /// pi asks to open `url` in the browser, which the app does.
+    pub open: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -326,10 +329,7 @@ impl Relay {
         }
         match body.event {
             Some(AuthEvent::AuthUrl { url }) => {
-                // Only the current attempt opens pages, not one cancelled while this was queued.
-                if self.update(false, |s| s.browser = Some(url.clone())) {
-                    open(&url);
-                }
+                self.update(false, |s| s.browser = Some(url));
             }
             Some(AuthEvent::DeviceCode {
                 user_code,
@@ -338,12 +338,10 @@ impl Relay {
             }) => {
                 let code = DeviceCode {
                     code: user_code,
-                    url: verification_uri.clone(),
+                    url: verification_uri,
+                    open: open_browser != Some(false),
                 };
-                let current = self.update(false, |s| s.device_code = Some(code));
-                if current && open_browser != Some(false) {
-                    open(&verification_uri);
-                }
+                self.update(false, |s| s.device_code = Some(code));
             }
             Some(AuthEvent::Info { message }) => {
                 self.update(false, |s| s.note = Some(message));
@@ -366,19 +364,4 @@ impl Relay {
         self.revision.send_modify(|r| *r += 1);
         true
     }
-}
-
-/// Opens a sign-in page in the user's browser. pi gives https pages and local callbacks.
-fn open(url: &str) {
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        eprintln!("not opening a sign-in page that isn't on the web: {url}");
-        return;
-    }
-    let mut open = tokio::process::Command::new("/usr/bin/open");
-    open.arg(url);
-    tokio::spawn(async move {
-        if let Err(e) = open.status().await {
-            eprintln!("opening a sign-in page: {e}");
-        }
-    });
 }

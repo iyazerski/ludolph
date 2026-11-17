@@ -359,7 +359,12 @@ impl State {
         draft.project_menu.search.focused = false;
         let options = FileDialogOptions {
             title: "Choose project folder".into(),
-            directory: draft.project.as_ref().map(PathBuf::from),
+            // On Windows the project is a path inside WSL, which the dialog can't start in.
+            directory: draft
+                .project
+                .as_ref()
+                .filter(|_| cfg!(not(windows)))
+                .map(PathBuf::from),
             ..Default::default()
         };
         tx.open_folder(options, move |s: &mut State, result, _| {
@@ -367,7 +372,21 @@ impl State {
                 return;
             }
             match result {
+                #[cfg(not(windows))]
                 Ok(Some(path)) => s.add_project(path),
+                #[cfg(windows)]
+                Ok(Some(path)) => s.api.run(
+                    move |_| async move { crate::paths::to_wsl(&path).await },
+                    move |s, path, _| {
+                        if s.page_at(nav).and_then(|p| p.draft_mut()).is_none() {
+                            return;
+                        }
+                        match path {
+                            Ok(path) => s.add_project(PathBuf::from(path)),
+                            Err(e) => s.fail("Couldn't use the folder", e),
+                        }
+                    },
+                ),
                 Ok(None) => {}
                 Err(error) => s.fail("Couldn't choose the project", error.to_string()),
             }

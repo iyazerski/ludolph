@@ -4,7 +4,9 @@ How Ludolph fits together, and the rules that hold across modules. Module detail
 
 ## Scope
 
-A Mac app for pi only, and an alternative to pi's terminal UI: it aims for the same features and controls, through pi's RPC mode. Chats grouped by project, a main window, a quick window on a global shortcut, and a phone web app through a self-hosted relay. No other agents, Ludolph accounts, sync, terminals, worktrees, or Windows and Linux.
+A Mac app for pi only, and an alternative to pi's terminal UI: it aims for the same features and controls, through pi's RPC mode. Chats grouped by project, a main window, a quick window on a global shortcut, and a phone web app through a self-hosted relay. No other agents, Ludolph accounts, sync, terminals, or worktrees.
+
+Linux, and Windows with the engine in WSL, get a reduced app: what needs macOS (dictation, browser and computer use, Open at login, the Keychain, installing updates, battery and idle checks for the phone) is left out rather than rebuilt. Windows runs only the app, because pi and the tools it runs belong in WSL.
 
 ## Processes
 
@@ -24,6 +26,8 @@ A Mac app for pi only, and an alternative to pi's terminal UI: it aims for the s
 
 Both processes run from the same binary. A development run (`LUDOLPH_DIR` set, or outside a bundle) leaves the installed engine's job and login item alone.
 
+Outside macOS there's no launchd. The app runs `ludolph connect`, which joins its stdin and stdout to `engine.sock`, and first starts the engine in its own process group if nothing answers. `engine.lock` keeps a second engine from starting. The Windows app runs the same command in the default WSL distribution with `wsl.exe`, so it needs no open port, and the socket's 0600 mode stays the only access check. Paths in the API are the engine's, so the Windows app maps folders it picks into WSL with `wslpath`, refuses folders in another distribution, and doesn't open files inside WSL.
+
 ## Sources of truth
 
 | Data | Where | Owner |
@@ -35,7 +39,7 @@ Both processes run from the same binary. A development run (`LUDOLPH_DIR` set, o
 | UI state (seen turns, window frames, accent, shortcut) | `ui.json` in the state folder | app |
 | Attached images | `~/.pi/agent/attachments/<session id>/` | engine |
 
-The state folder is `~/Library/Application Support/Ludolph`.
+The state folder is `~/Library/Application Support/Ludolph` on macOS, `$XDG_STATE_HOME/ludolph` (`~/.local/state/ludolph`) on Linux, and `%LOCALAPPDATA%\Ludolph` for the Windows app's `ui.json`.
 
 pi's session files are the only chat history. Ludolph never keeps a second transcript store. Its index is a cache that can be rebuilt from the files, except for the "interrupted by the engine" mark.
 
@@ -46,7 +50,7 @@ Ludolph changes sessions only through pi (`prompt`, `set_session_name`, and so o
 - The transcript is the path from the current leaf (the last entry appended) back to the root, following `parentId`. It's never "every `message` entry", because `/tree` leaves old branches in the file.
 - Anything keyed by an entry id is keyed by session id and entry id together, because forks copy entries with their ids.
 - Files are append-only, so the index parses only complete lines after its saved offset. A file that got smaller or changed its header is parsed again from the start. Parsing streams line by line, so a large file never sits in memory whole.
-- FSEvents is a hint, not a log. On start, and whenever FSEvents reports dropped events, the engine compares every file's size and mtime with the index.
+- FSEvents and inotify are hints, not logs. On start, and whenever they report dropped events, the engine compares every file's size and mtime with the index. inotify also misses files written into a new folder before its watch begins, so a new folder does the same.
 
 ### Projects
 

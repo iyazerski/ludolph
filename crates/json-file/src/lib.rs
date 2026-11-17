@@ -1,4 +1,5 @@
 use std::io::{ErrorKind, Write};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,10 +36,12 @@ pub fn save_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
         }
         _ => {}
     }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // On Windows only the app writes here, in the user's own AppData.
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
         .open(&tmp)
         .with_context(|| format!("writing {}", tmp.display()))?;
     file.write_all(bytes)?;

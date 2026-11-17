@@ -16,7 +16,7 @@ pub struct Runtime {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Process {
     pid: u32,
-    /// Start time in epoch microseconds; a reused pid is not the same process.
+    /// The process's start time, in the system's own unit; a reused pid is not the same process.
     started: u64,
     running: bool,
 }
@@ -95,6 +95,7 @@ impl Runtime {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn start_time(pid: u32) -> Option<u64> {
     let pid = libc::c_int::try_from(pid).ok()?;
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
@@ -116,6 +117,15 @@ fn start_time(pid: u32) -> Option<u64> {
     // SAFETY: proc_pidinfo filled the whole struct, and it was zeroed before.
     let info = unsafe { info.assume_init() };
     Some(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+}
+
+/// Clock ticks after boot, field 22 of `/proc/<pid>/stat`.
+#[cfg(target_os = "linux")]
+fn start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name in field 2 may hold spaces and parentheses, so count after its end.
+    let (_, fields) = stat.rsplit_once(')')?;
+    fields.split_whitespace().nth(19)?.parse().ok()
 }
 
 fn signal(pid: u32, signal: libc::c_int) {

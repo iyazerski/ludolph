@@ -4,7 +4,7 @@ The phone app talks to the Mac through a relay the user hosts (`crates/relay`, s
 
 ## Trust
 
-- **Keys:** the engine makes a 32-byte secret for each linked phone and passes it in the QR code's URL fragment, so no server log sees it. Two HMAC-SHA256s of the secret give the phone's id and an AES-256-GCM key. The relay sees only the id. The engine keeps secrets in the Keychain. The phone keeps a non-exportable WebCrypto key in IndexedDB, and the secret goes nowhere.
+- **Keys:** the engine makes a 32-byte secret for each linked phone and passes it in the QR code's URL fragment, so no server log sees it. Two HMAC-SHA256s of the secret give the phone's id and an AES-256-GCM key. The relay sees only the id. The engine keeps secrets in the Keychain on macOS, and elsewhere in a file only the user can read (mode 0600) in the state folder, so any process running as the user can read them there. The phone keeps a non-exportable WebCrypto key in IndexedDB, and the secret goes nowhere.
 - **Sealed:** every call with its tool and arguments, every answer, watch request, frame, and notice. `crates/engine/src/seal.rs` and `crates/relay/assets/seal.js` share the format and test vectors.
 - **Binding:** the associated data names what a message is. An answer is bound to its call's nonce, and a frame to its watch and its place in the stream. So the relay can't swap, reorder, drop, or replay messages without opening failing.
 - **Replays:** the engine refuses calls sealed more than 5 minutes ago, or ones it already took. It saves accepted nonces in `relay-replays/<phone id>.json` before running a request, so a restart doesn't reopen the window. If that file can't be read or saved, requests are blocked, not let through.
@@ -25,6 +25,6 @@ The relay gives up on a call after 30 s, but a send can take longer while pi sta
 
 An open chat streams to the phone over server-sent events (`GET /api/watch/{machine}`), as the Mac's feed frames. A phone 32 frames behind loses its stream rather than a frame, since a skipped frame would leave its page wrong. Reconnecting starts with a reset. The service worker leaves `/api/` alone, since a stream never ends.
 
-Notices are sealed once per phone. A notice the service worker can't open still shows, as "A chat changed", because a web push must show something. Notices are dropped, not delayed, if the Mac was used in the last 2 minutes, unless the user picked "always".
+Notices are sealed once per phone. A notice the service worker can't open still shows, as "A chat changed", because a web push must show something. Notices are dropped, not delayed, if the Mac was used in the last 2 minutes, unless the user picked "always". Off macOS the engine can't tell, so it always sends them.
 
 The relay protocol version is `PROTOCOL` in `crates/relay-proto`. The relay refuses other versions.

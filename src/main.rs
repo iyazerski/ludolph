@@ -1,31 +1,46 @@
+// A GUI app on Windows, which opens no console window.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+#[cfg(target_os = "macos")]
 mod agent;
+#[cfg(target_os = "linux")]
+mod connect;
+#[cfg(unix)]
+mod engine;
+#[cfg(unix)]
 mod shell;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
-use ludolph_engine::engine::{Config, Engine, SecretStore};
-use ludolph_engine::server;
-use tokio::signal::unix::{SignalKind, signal};
+use anyhow::{Context, Result};
 
-const IDLE: Duration = Duration::from_secs(5 * 60);
-const GRACE: Duration = Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const USAGE: &str = "usage: ludolph [--hidden]\n       ludolph engine\n       ludolph uninstall";
+#[cfg(target_os = "linux")]
+const USAGE: &str = "usage: ludolph [--hidden]\n       ludolph engine\n       ludolph connect";
+#[cfg(windows)]
+const USAGE: &str = "usage: ludolph [--hidden]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["engine"] => {
-            // SAFETY: the engine's runtime, and so its threads, start after.
-            unsafe { shell::adopt_login_env() };
-            engine()
-        }
         [] => app(false),
         ["--hidden"] => app(true),
+        #[cfg(unix)]
+        // The state folder comes first, so the login shell can't move it away from
+        // where `ludolph connect` looks.
+        ["engine"] => state_dir().and_then(|dir| {
+            // SAFETY: the engine's runtime, and so its threads, start after.
+            unsafe { shell::adopt_login_env() };
+            engine::run(dir)
+        }),
+        #[cfg(target_os = "linux")]
+        ["connect"] => state_dir().and_then(|dir| connect::run(&dir)),
+        #[cfg(target_os = "macos")]
         ["uninstall"] => uninstall(),
         _ => {
-            eprintln!("usage: ludolph [--hidden]\n       ludolph engine\n       ludolph uninstall");
+            eprintln!("{USAGE}");
             return ExitCode::from(2);
         }
     };
@@ -38,71 +53,27 @@ fn main() -> ExitCode {
     }
 }
 
-#[tokio::main]
-async fn engine() -> Result<()> {
-    let home = home()?;
-    let state_dir = state_dir(&home);
-    let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".pi/agent"));
-    let exe = std::env::current_exe().context("finding the ludolph binary")?;
-    // Development builds use the extensions the Makefile builds into target/pi.
-    let extensions = match bundle_of(&exe) {
-        Some(bundle) => bundle.join("Contents/Resources/pi"),
-        None => exe
-            .ancestors()
-            .nth(2)
-            .context("finding the target folder")?
-            .join("pi"),
-    };
-    let app = bundle_of(&exe)
-        .filter(|_| std::env::var_os("LUDOLPH_DIR").is_none())
-        .map(Path::to_owned);
-    let config = Config {
-        pi: find_pi(&home)?,
-        sessions_dir: agent_dir.join("sessions"),
-        state_dir,
-        idle: IDLE,
-        grace: GRACE,
-        home,
-        app,
-        extensions,
-        secrets: SecretStore::Keychain,
-    };
-    std::fs::create_dir_all(&config.state_dir)
-        .with_context(|| format!("creating {}", config.state_dir.display()))?;
-    let socket = config.state_dir.join("engine.sock");
-    let listener = server::bind(&socket)?;
-    let engine = Engine::start(config).await?;
-    let mut term = signal(SignalKind::terminate())?;
-    let mut int = signal(SignalKind::interrupt())?;
-    tokio::select! {
-        result = server::serve(engine.clone(), listener) => result?,
-        _ = term.recv() => {}
-        _ = int.recv() => {}
-    }
-    // New clients get refused at once, rather than wait on a stopping engine.
-    drop(std::fs::remove_file(&socket));
-    engine.shutdown().await
-}
-
 fn app(hidden: bool) -> Result<()> {
-    let home = home()?;
-    let state_dir = state_dir(&home);
+    let state_dir = state_dir()?;
     // Outside the bundle, or with a development folder, you run the engine yourself.
-    let exe = std::env::current_exe().context("finding the ludolph binary")?;
-    if bundle_of(&exe).is_some() && std::env::var_os("LUDOLPH_DIR").is_none() {
-        let state_dir = state_dir.clone();
-        // launchd may take seconds to let an old engine go; the windows don't wait.
-        std::thread::spawn(move || {
-            if let Err(e) = agent::start(&home, &state_dir) {
-                eprintln!("ludolph: {e:#}");
-            }
-        });
+    // Elsewhere the app reaches the engine through `ludolph connect`, which starts it.
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe().context("finding the ludolph binary")?;
+        if engine::bundle_of(&exe).is_some() && std::env::var_os("LUDOLPH_DIR").is_none() {
+            let (home, state_dir) = (home()?, state_dir.clone());
+            // launchd may take seconds to let an old engine go; the windows don't wait.
+            std::thread::spawn(move || {
+                if let Err(e) = agent::start(&home, &state_dir) {
+                    eprintln!("ludolph: {e:#}");
+                }
+            });
+        }
     }
     ludolph_ui::run(ludolph_ui::Opts { state_dir, hidden })
 }
 
+#[cfg(target_os = "macos")]
 fn uninstall() -> Result<()> {
     let stopped = agent::stop()?;
     let item = ludolph_engine::login::path(&home()?);
@@ -127,35 +98,28 @@ fn uninstall() -> Result<()> {
     Ok(())
 }
 
-fn bundle_of(exe: &Path) -> Option<&Path> {
-    exe.ancestors()
-        .nth(3)
-        .filter(|app| app.extension().is_some_and(|e| e == "app"))
-}
-
+#[cfg(unix)]
 fn home() -> Result<PathBuf> {
     Ok(PathBuf::from(
         std::env::var_os("HOME").context("HOME isn't set")?,
     ))
 }
 
-fn state_dir(home: &Path) -> PathBuf {
-    std::env::var_os("LUDOLPH_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join("Library/Application Support/Ludolph"))
-}
-
-/// launchd has a short PATH; also check pi's installer locations.
-fn find_pi(home: &Path) -> Result<PathBuf> {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let extra = [".local/bin", ".bun/bin", ".npm-global/bin"].map(|dir| home.join(dir));
-    let fixed = ["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from);
-    let candidates = std::env::split_paths(&path).chain(extra).chain(fixed);
-    for dir in candidates {
-        let pi = dir.join("pi");
-        if pi.is_file() {
-            return Ok(pi);
-        }
+fn state_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("LUDOLPH_DIR") {
+        return Ok(PathBuf::from(dir));
     }
-    bail!("can't find pi: install it from https://pi.dev")
+    #[cfg(target_os = "macos")]
+    let dir = home()?.join("Library/Application Support/Ludolph");
+    #[cfg(target_os = "linux")]
+    let dir = match std::env::var_os("XDG_STATE_HOME").map(PathBuf::from) {
+        Some(state) if state.is_absolute() => state,
+        _ => home()?.join(".local/state"),
+    }
+    .join("ludolph");
+    // The app's own state: the engine and its state are in WSL.
+    #[cfg(windows)]
+    let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA isn't set")?)
+        .join("Ludolph");
+    Ok(dir)
 }

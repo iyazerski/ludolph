@@ -65,7 +65,7 @@ fn toast(s: &State, k: &Kit) -> Option<El> {
     let release = s.release_notice.as_ref().map(|version| {
         Toast::new("release", format!("Ludolph {version} is out"))
             .description("Updating restarts Ludolph and stops running chats.")
-            .action(k, "Update", true, |s: &mut State, _| s.install_release())
+            .action(k, "Update", true, |s: &mut State, tx| s.install_release(tx))
             .on_close(State::dismiss_release)
     });
     let note = s.toast.as_ref().map(|t| {

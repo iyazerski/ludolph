@@ -12,9 +12,13 @@ mod jsonl;
 pub mod live;
 pub mod login;
 pub mod models;
+#[cfg_attr(target_os = "macos", path = "notify/libsystem.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "notify/none.rs")]
 mod notify;
 pub mod pi;
 pub mod pi_setup;
+#[cfg_attr(target_os = "macos", path = "power/iokit.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "power/none.rs")]
 pub mod power;
 pub mod relay;
 pub mod repo;

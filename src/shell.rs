@@ -1,4 +1,5 @@
-//! launchd has a bare environment; import the login shell's tool paths, API keys and proxy settings.
+//! launchd, and on Linux whatever ran `ludolph connect`, gives a bare environment; import the
+//! login shell's tool paths, API keys and proxy settings.
 
 use std::ffi::CStr;
 use std::io::Read;
@@ -13,7 +14,7 @@ const MARK: &str = "_LUDOLPH_ENV_";
 const SKIP: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 /// Add the login shell's environment to the engine's from now on, or keep
-/// launchd's alone if it can't be read.
+/// the inherited one alone if it can't be read.
 ///
 /// # Safety
 ///
@@ -26,7 +27,7 @@ pub unsafe fn adopt_login_env() {
                 unsafe { std::env::set_var(name, value) };
             }
         }
-        Err(e) => eprintln!("keeping launchd's environment: {e:#}"),
+        Err(e) => eprintln!("keeping the inherited environment: {e:#}"),
     }
 }
 

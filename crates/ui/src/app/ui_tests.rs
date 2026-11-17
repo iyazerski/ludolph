@@ -15,7 +15,7 @@ fn runtime(width: f32, window: Window) -> (tokio::runtime::Runtime, Runtime<Stat
     let path = std::env::temp_dir().join(format!("ludolph-ui-{}", uuid::Uuid::new_v4()));
     let shared = Shared::start(
         rt.handle().clone(),
-        path.join("engine.sock"),
+        crate::client::Link::nowhere(),
         path.join("ui.json"),
     );
     let app = App::new(AppSpec::new(
