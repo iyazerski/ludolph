@@ -14,7 +14,30 @@ use crate::update;
 pub const QR_SIZE: f32 = 184.0;
 const RELEASE_CHECK_EVERY: TimeDelta = TimeDelta::days(1);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Section {
+    #[default]
+    General,
+    Appearance,
+    AgentTools,
+    Model,
+    Phone,
+    About,
+}
+
+impl Section {
+    pub const ALL: [Self; 6] = [
+        Self::General,
+        Self::Appearance,
+        Self::AgentTools,
+        Self::Model,
+        Self::Phone,
+        Self::About,
+    ];
+}
+
 pub struct SettingsPage {
+    pub section: Section,
     pub settings: Option<Settings>,
     pub error: Option<String>,
     pub shortcut: ShortcutRecorderState,
@@ -113,6 +136,7 @@ impl State {
             self.leave_page();
             self.nav += 1;
             self.page = Page::Settings(Box::new(SettingsPage {
+                section: Section::default(),
                 settings: None,
                 error: None,
                 shortcut,
@@ -137,6 +161,12 @@ impl State {
             self.load_catalog();
         }
         self.open();
+    }
+
+    pub fn show_settings_section(&mut self, section: Section) {
+        if let Some(page) = self.settings_page_mut() {
+            page.section = section;
+        }
     }
 
     pub fn close_settings(&mut self) {
