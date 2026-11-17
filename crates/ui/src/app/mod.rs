@@ -32,7 +32,7 @@ pub use self::page::{
     ChangeTarget, Changes, ChatPage, Existing, FileLinks, LEVELS_KEPT, Overlay, Pending,
     QuestionForm, SkillList, Target, Top, Voice,
 };
-pub use self::settings::{QR_SIZE, SettingsPage, Update};
+pub use self::settings::{Outcome, QR_SIZE, SettingsPage, Update};
 
 const LIST_LIMIT: usize = 200;
 pub const GROUP_CHATS: usize = 5;
