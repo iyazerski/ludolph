@@ -1,4 +1,4 @@
-use rune::{Color, El, SurfaceFit, col, el, row, text};
+use rune::{Color, El, SurfaceFit, Tx, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, Combobox, ComboboxOption, Kit, Placement, SegmentedControl, Select,
     SelectAppearance, ShortcutRecorder, Switch, TextInput, shortcut_error_message,
@@ -6,7 +6,7 @@ use rune_kit::{
 
 use super::theme;
 use super::widgets::{busy, dot, model_options};
-use crate::app::{QR_SIZE, SettingsPage, State, Update};
+use crate::app::{Outcome, QR_SIZE, SettingsPage, State, Update};
 use crate::data::{
     GuiTool, LinkStatus, Notify, Pairing, RelayLink, SendBehavior, ToolStatus, levels_of,
 };
@@ -375,16 +375,18 @@ fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
 }
 
 fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
-    let (label, about, install) = match tool {
+    let (label, about, install, done) = match tool {
         GuiTool::Browser => (
             "Browser use",
             "Hands tasks in your Chrome to a subagent, through browse.",
             "Install browse from opencode.ai? It then opens Chrome to add its extension.",
+            "browse is connected to your browser.",
         ),
         GuiTool::Computer => (
             "Computer use",
             "Hands tasks in Mac apps to a subagent, through Cua Driver.",
             "Install Cua Driver from cua.ai? It then asks for Accessibility and Screen Recording.",
+            "Cua Driver is ready.",
         ),
     };
     let tools = &page.tools;
@@ -394,6 +396,11 @@ fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
         Some(ToolStatus::Missing) if !on => format!("{about} Turning it on installs it."),
         Some(ToolStatus::NeedsPermissions) => {
             format!("{about} It needs Accessibility and Screen Recording.")
+        }
+        Some(ToolStatus::Unpaired) => {
+            format!(
+                "{about} It needs its extension in Chrome. Turning it on opens Chrome to add it."
+            )
         }
         _ => about.to_owned(),
     };
@@ -432,13 +439,31 @@ fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
             .min_w(0.0);
         rows.push(status_row(question, buttons));
     }
-    if let Some((failed, why)) = &tools.error
-        && *failed == tool
-    {
-        rows.push(error_line(
-            k,
-            format!("Couldn't set up {}: {why}", label.to_lowercase()),
-        ));
+    match &tools.outcome {
+        Some((ended, Outcome::Done)) if *ended == tool => rows.push(
+            row().w_full().px(PAD).py(8.0).child(
+                text(done.to_owned())
+                    .font(k.ty.text_small)
+                    .color(k.c.success.fg)
+                    .wrap(),
+            ),
+        ),
+        Some((ended, Outcome::Failed { error, log })) if *ended == tool => {
+            let why = text(format!("Couldn't set up {}: {error}", label.to_lowercase()))
+                .font(k.ty.text_small)
+                .color(k.c.danger.fg)
+                .wrap()
+                .grow(1.0)
+                .min_w(0.0);
+            let copy = log.clone().map(|log| {
+                Button::new("Copy log")
+                    .variant(ButtonVariant::Outline)
+                    .on_press_tx(move |_: &mut State, tx: &mut Tx| tx.copy(log.clone()))
+                    .build(k)
+            });
+            rows.push(status_row(why, row().children(copy)));
+        }
+        _ => {}
     }
     rows
 }

@@ -216,7 +216,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         }
         Tool::SetUpAgentTool => {
             let args: AgentToolArgs = parse(args)?;
-            Ok(serde_json::to_value(args.tool.set_up().await?)?)
+            Ok(serde_json::to_value(args.tool.set_up().await)?)
         }
         Tool::GetPhoneLink => Ok(phone_link(engine)),
         Tool::LinkPhone => {

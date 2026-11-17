@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::{Page, State, Window};
 use crate::data::{
-    GuiTool, LinkStatus, Pairing, PhoneLink, RelayLink, Settings, ToolStatus, ToolStatuses,
+    GuiTool, LinkStatus, Pairing, PhoneLink, RelayLink, Settings, Setup, ToolStatus, ToolStatuses,
 };
 use crate::update;
 
@@ -35,7 +35,13 @@ pub struct Tools {
     /// The tool whose install waits for the user's go-ahead.
     pub confirm: Option<GuiTool>,
     pub running: Option<GuiTool>,
-    pub error: Option<(GuiTool, String)>,
+    /// How the last setup ended, shown under its tool until the next toggle.
+    pub outcome: Option<(GuiTool, Outcome)>,
+}
+
+pub enum Outcome {
+    Done,
+    Failed { error: String, log: Option<String> },
 }
 
 pub enum Update {
@@ -339,11 +345,11 @@ impl State {
         if page.settings.as_ref().is_some_and(|v| v.gui_tool(tool)) {
             return self.change_settings(|v| v.set_gui_tool(tool, false));
         }
-        page.tools.error = None;
+        page.tools.outcome = None;
         match page.tools.status.map(|status| status.get(tool)) {
             Some(ToolStatus::Ready) => self.change_settings(|v| v.set_gui_tool(tool, true)),
             Some(ToolStatus::Missing) => page.tools.confirm = Some(tool),
-            Some(ToolStatus::NeedsPermissions) => self.set_up_gui_tool(tool),
+            Some(ToolStatus::NeedsPermissions | ToolStatus::Unpaired) => self.set_up_gui_tool(tool),
             None => {}
         }
     }
@@ -354,7 +360,7 @@ impl State {
         }
     }
 
-    /// Install the tool if needed and ask for its permissions, then turn it on.
+    /// Install the tool if needed, ask for its permissions or pair it, then turn it on.
     pub fn set_up_gui_tool(&mut self, tool: GuiTool) {
         let Some(page) = self.settings_page_mut() else {
             return;
@@ -364,26 +370,42 @@ impl State {
         self.api.call(
             "set_up_agent_tool",
             json!({"tool": tool}),
-            move |s, result: Result<ToolStatus, String>, _| {
+            move |s, result: Result<Setup, String>, _| {
                 let Some(page) = s.settings_page_mut() else {
                     return;
                 };
                 page.tools.running = None;
-                match result {
-                    Ok(status) => {
+                let outcome = match result {
+                    Ok(Setup::Done(status)) => {
                         if let Some(all) = page.tools.status.as_mut() {
                             all.set(tool, status);
                         }
-                        if status == ToolStatus::Ready {
-                            s.change_settings(|v| v.set_gui_tool(tool, true));
-                        } else {
-                            page.tools.error = Some((
-                                tool,
-                                "Accessibility and Screen Recording are still off.".to_owned(),
-                            ));
+                        let error = match status {
+                            ToolStatus::Ready => None,
+                            ToolStatus::NeedsPermissions => {
+                                Some("Accessibility and Screen Recording are still off.")
+                            }
+                            ToolStatus::Unpaired => Some("No browser has the browse extension."),
+                            ToolStatus::Missing => Some("It still isn't installed."),
+                        };
+                        match error {
+                            None => Outcome::Done,
+                            Some(error) => Outcome::Failed {
+                                error: error.to_owned(),
+                                log: None,
+                            },
                         }
                     }
-                    Err(e) => page.tools.error = Some((tool, e)),
+                    Ok(Setup::Failed { error, log }) => Outcome::Failed { error, log },
+                    Err(error) => Outcome::Failed { error, log: None },
+                };
+                let done = matches!(outcome, Outcome::Done);
+                page.tools.outcome = Some((tool, outcome));
+                if done {
+                    s.change_settings(|v| v.set_gui_tool(tool, true));
+                } else {
+                    // A failed setup may still have installed the tool.
+                    s.load_tools();
                 }
             },
         );

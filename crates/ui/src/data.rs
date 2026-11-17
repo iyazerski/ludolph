@@ -499,7 +499,15 @@ pub enum GuiTool {
 pub enum ToolStatus {
     Missing,
     NeedsPermissions,
+    Unpaired,
     Ready,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Setup {
+    Done(ToolStatus),
+    Failed { error: String, log: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
