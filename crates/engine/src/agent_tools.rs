@@ -59,6 +59,8 @@ pub enum GuiTool {
 pub enum Status {
     Missing,
     NeedsPermissions,
+    /// browse is installed, but no browser has added its extension, so its tools can't run yet.
+    Unpaired,
     Ready,
 }
 
@@ -103,11 +105,10 @@ impl GuiTool {
 
     fn installer(self) -> &'static str {
         match self {
-            // The extension runs browse in a subagent, so no agent's config gets it. The installer
-            // opens the Chrome Web Store for browse's extension. Without --no-wait it fails when
-            // the extension doesn't connect within 90 seconds, though browse installed fine.
+            // The extension runs browse in a subagent, so no agent's config gets it. Pairing with
+            // the browser is a step of its own in `set_up`.
             Self::Browser => {
-                "curl -fsSL https://opencode.ai/browse/install | bash -s -- --agent none --no-wait"
+                "curl -fsSL https://opencode.ai/browse/install | bash -s -- --agent none --no-wait --no-open"
             }
             Self::Computer => "curl -fsSL https://cua.ai/driver/install.sh | bash",
         }
@@ -119,10 +120,20 @@ impl GuiTool {
             return Ok(Status::Missing);
         };
         match self {
-            Self::Browser => Ok(Status::Ready),
+            Self::Browser => {
+                let paired = run(Command::new(program).args(["pair", "--list"]))
+                    .await
+                    .context("browse couldn't list its paired browsers")?;
+                Ok(if paired.starts_with("No paired browsers") {
+                    Status::Unpaired
+                } else {
+                    Status::Ready
+                })
+            }
             Self::Computer => {
-                let output =
-                    run(Command::new(program).args(["permissions", "status", "--json"])).await?;
+                let output = run(Command::new(program).args(["permissions", "status", "--json"]))
+                    .await
+                    .context("cua-driver couldn't check its permissions")?;
                 let granted: Permissions =
                     serde_json::from_str(&output).context("reading cua-driver's permissions")?;
                 Ok(if granted.accessibility && granted.screen_recording {
@@ -134,13 +145,21 @@ impl GuiTool {
         }
     }
 
-    /// Install the tool if it's missing, then ask for the macOS permissions it needs.
+    /// Install the tool if it's missing, then ask for the macOS permissions it needs, or pair
+    /// browse with a browser.
     pub async fn set_up(self) -> Setup {
         match self.try_set_up().await {
             Ok(status) => Setup::Done(status),
-            Err(e) => Setup::Failed {
-                error: format!("{e:#}"),
-                log: e.downcast_ref::<CommandFailed>().map(|f| f.log.clone()),
+            Err(e) => match e.downcast_ref::<CommandFailed>() {
+                // The log has the command's own words, so only the step that failed is shown.
+                Some(failed) => Setup::Failed {
+                    error: e.to_string(),
+                    log: Some(failed.log.clone()),
+                },
+                None => Setup::Failed {
+                    error: format!("{e:#}"),
+                    log: None,
+                },
             },
         }
     }
@@ -150,7 +169,7 @@ impl GuiTool {
         if self.status().await? == Status::Missing {
             run(Command::new("/bin/bash").args(["-c", self.installer()]))
                 .await
-                .with_context(|| format!("installing {command}"))?;
+                .with_context(|| format!("{command}'s installer failed"))?;
         }
         match self.status().await? {
             Status::Missing => bail!(
@@ -161,8 +180,29 @@ impl GuiTool {
                 // Opens a guide through both switches in System Settings and waits until it's done.
                 run(Command::new(program).args(["permissions", "grant"]))
                     .await
-                    .context("asking for Accessibility and Screen Recording")?;
+                    .context("cua-driver couldn't ask for Accessibility and Screen Recording")?;
                 self.status().await
+            }
+            Status::Unpaired => {
+                let program = on_path(command).context("browse disappeared")?;
+                // Opens the Chrome Web Store, or the extension's setup page with a one-time code
+                // once it's added, and waits for the browser to connect. It fails when none does.
+                let paired = run(Command::new(program).args([
+                    "install",
+                    "--agent",
+                    "none",
+                    "--no-modify-path",
+                    "--wait-seconds",
+                    "180",
+                ]))
+                .await;
+                let status = self.status().await?;
+                if status == Status::Unpaired {
+                    paired.context(
+                        "no browser connected in time. Add the browse extension in Chrome, then try again",
+                    )?;
+                }
+                Ok(status)
             }
             Status::Ready => Ok(Status::Ready),
         }

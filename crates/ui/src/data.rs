@@ -499,6 +499,7 @@ pub enum GuiTool {
 pub enum ToolStatus {
     Missing,
     NeedsPermissions,
+    Unpaired,
     Ready,
 }
 

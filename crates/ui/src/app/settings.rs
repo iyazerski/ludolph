@@ -349,7 +349,7 @@ impl State {
         match page.tools.status.map(|status| status.get(tool)) {
             Some(ToolStatus::Ready) => self.change_settings(|v| v.set_gui_tool(tool, true)),
             Some(ToolStatus::Missing) => page.tools.confirm = Some(tool),
-            Some(ToolStatus::NeedsPermissions) => self.set_up_gui_tool(tool),
+            Some(ToolStatus::NeedsPermissions | ToolStatus::Unpaired) => self.set_up_gui_tool(tool),
             None => {}
         }
     }
@@ -360,7 +360,7 @@ impl State {
         }
     }
 
-    /// Install the tool if needed and ask for its permissions, then turn it on.
+    /// Install the tool if needed, ask for its permissions or pair it, then turn it on.
     pub fn set_up_gui_tool(&mut self, tool: GuiTool) {
         let Some(page) = self.settings_page_mut() else {
             return;
@@ -380,14 +380,20 @@ impl State {
                         if let Some(all) = page.tools.status.as_mut() {
                             all.set(tool, status);
                         }
-                        if status == ToolStatus::Ready {
-                            Outcome::Done
-                        } else {
-                            Outcome::Failed {
-                                error: "Accessibility and Screen Recording are still off."
-                                    .to_owned(),
-                                log: None,
+                        let error = match status {
+                            ToolStatus::Ready => None,
+                            ToolStatus::NeedsPermissions => {
+                                Some("Accessibility and Screen Recording are still off.")
                             }
+                            ToolStatus::Unpaired => Some("No browser has the browse extension."),
+                            ToolStatus::Missing => Some("It still isn't installed."),
+                        };
+                        match error {
+                            None => Outcome::Done,
+                            Some(error) => Outcome::Failed {
+                                error: error.to_owned(),
+                                log: None,
+                            },
                         }
                     }
                     Ok(Setup::Failed { error, log }) => Outcome::Failed { error, log },
@@ -397,6 +403,9 @@ impl State {
                 page.tools.outcome = Some((tool, outcome));
                 if done {
                     s.change_settings(|v| v.set_gui_tool(tool, true));
+                } else {
+                    // A failed setup may still have installed the tool.
+                    s.load_tools();
                 }
             },
         );

@@ -380,7 +380,7 @@ fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
             "Browser use",
             "Hands tasks in your Chrome to a subagent, through browse.",
             "Install browse from opencode.ai? It then opens Chrome to add its extension.",
-            "Installed browse. Add its extension in the Chrome Web Store tab that opened.",
+            "browse is connected to your browser.",
         ),
         GuiTool::Computer => (
             "Computer use",
@@ -396,6 +396,11 @@ fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
         Some(ToolStatus::Missing) if !on => format!("{about} Turning it on installs it."),
         Some(ToolStatus::NeedsPermissions) => {
             format!("{about} It needs Accessibility and Screen Recording.")
+        }
+        Some(ToolStatus::Unpaired) => {
+            format!(
+                "{about} It needs its extension in Chrome. Turning it on opens Chrome to add it."
+            )
         }
         _ => about.to_owned(),
     };
