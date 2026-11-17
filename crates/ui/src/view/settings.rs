@@ -36,16 +36,9 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                 .child(section(k, "General"))
                 .child(group(k, general(s, page, k)))
                 .child(section(k, "Model"))
-                .child(group(
-                    k,
-                    vec![
-                        sidecar(s, page, k, layer),
-                        gui_model(s, page, k, layer),
-                        gui_thinking(s, page, k, layer),
-                    ],
-                ))
+                .child(group(k, vec![sidecar(s, page, k, layer)]))
                 .child(section(k, "Agent tools"))
-                .child(group(k, agent_tools(page, k)))
+                .child(group(k, agent_tools(s, page, k, layer)))
                 .child(section(k, "Phone"))
                 .child(group(k, phone(page, k)));
         }
@@ -247,7 +240,7 @@ fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El
             .expect("the picker is on the settings page")
             .gui_model
     })
-    .label("Browser and computer use")
+    .label("Subagent model")
     .current(Some(current.unwrap_or(DEFAULT_MODEL)))
     .search_placeholder("Search models")
     .width(CONTROL)
@@ -257,9 +250,9 @@ fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El
     })
     .build(k, layer);
     with_hint(
-        wide(k, "Browser and computer use", picker),
+        wide(k, "Subagent model", picker),
         k,
-        "Runs browser and desktop tasks for the agent. It must read images, and a fast model works best.",
+        "Runs browser and computer use tasks. It must read images, and a fast model works best.",
     )
 }
 
@@ -291,7 +284,7 @@ fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) ->
                 .gui_thinking
         },
     )
-    .label("Reasoning")
+    .label("Subagent reasoning")
     .current(levels.iter().any(|l| l == current).then_some(current))
     .width(CONTROL)
     .disabled(levels.len() < 2)
@@ -300,10 +293,10 @@ fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) ->
         s.change_settings(|v| v.gui_thinking = Some(level));
     })
     .build(k, layer);
-    wide(k, "Reasoning", picker)
+    wide(k, "Subagent reasoning", picker)
 }
 
-fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
+fn agent_tools(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
     let on = |get: fn(&crate::data::Settings) -> bool| page.settings.as_ref().is_some_and(get);
     let mut rows = vec![
         compact(
@@ -335,6 +328,10 @@ fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
     ];
     rows.extend(gui_tool(page, k, GuiTool::Browser));
     rows.extend(gui_tool(page, k, GuiTool::Computer));
+    if on(|v| v.browser_use || v.computer_use) {
+        rows.push(gui_model(s, page, k, layer));
+        rows.push(gui_thinking(s, page, k, layer));
+    }
     if let Some(why) = &page.tools.failed {
         rows.push(error_line(k, format!("Couldn't check the tools: {why}")));
     }
