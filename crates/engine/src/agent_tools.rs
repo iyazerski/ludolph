@@ -232,36 +232,9 @@ async fn run(command: &mut Command) -> Result<String> {
         let both = format!("{stdout}{}", String::from_utf8_lossy(&output.stderr));
         return Err(CommandFailed {
             status: output.status,
-            log: plain(&both),
+            log: crate::text::plain(&both),
         }
         .into());
     }
     Ok(stdout)
-}
-
-/// Terminal output as plain text: no color codes, and of the lines a progress bar redraws with
-/// `\r`, only the last.
-fn plain(output: &str) -> String {
-    let mut text = String::with_capacity(output.len());
-    let mut chars = output.chars();
-    while let Some(c) = chars.next() {
-        if c != '\x1b' {
-            text.push(c);
-        } else if chars.next() == Some('[') {
-            // A CSI sequence ends at its first byte in @..=~.
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
-            }
-        }
-    }
-    text.lines()
-        .map(|line| {
-            line.rsplit('\r')
-                .find(|part| !part.is_empty())
-                .unwrap_or("")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }

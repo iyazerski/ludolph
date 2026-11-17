@@ -1,15 +1,8 @@
 import { basename, dirname, relative } from "node:path";
-import {
-	DefaultPackageManager,
-	getAgentDir,
-	SettingsManager,
-	type ExtensionAPI,
-	type ResolvedResource,
-} from "@earendil-works/pi-coding-agent";
+import { DefaultPackageManager, SettingsManager, type ResolvedResource } from "@earendil-works/pi-coding-agent";
 
 /**
- * Lists and switches the user's skills and extensions the way `pi config` does, for Ludolph's
- * Settings. The engine runs it in a pi with no session and reads the answer from a notification.
+ * Lists and switches the user's skills and extensions the way `pi config` does.
  *
  * Only user scope: Settings aren't tied to a project. Extensions loaded with `--extension`, such as
  * Ludolph's own, aren't in pi's settings, so they aren't listed.
@@ -29,27 +22,10 @@ export interface Resource {
 	enabled: boolean;
 }
 
-interface Change {
+export interface Change {
 	kind: Kind;
 	path: string;
 	enabled: boolean;
-}
-
-export default function (pi: ExtensionAPI) {
-	pi.registerCommand("ludolph-resources", {
-		description: "List or switch skills and extensions for Ludolph's Settings",
-		handler: async (args, ctx) => {
-			let answer;
-			try {
-				const agentDir = getAgentDir();
-				const change: Change | undefined = args.trim() ? JSON.parse(args) : undefined;
-				answer = { resources: await resources(agentDir, ctx.cwd, change) };
-			} catch (e) {
-				answer = { error: e instanceof Error ? e.message : String(e) };
-			}
-			ctx.ui.notify(JSON.stringify({ ludolphResources: answer }), "info");
-		},
-	});
 }
 
 export async function resources(agentDir: string, cwd: string, change?: Change): Promise<Resource[]> {
@@ -57,10 +33,14 @@ export async function resources(agentDir: string, cwd: string, change?: Change):
 	const packages = new DefaultPackageManager({ cwd, agentDir, settingsManager: settings, builtinExtensions: BUILTINS });
 	let resolved = await packages.resolve(async () => "skip");
 	if (change) {
+		// A settings file pi couldn't read would be overwritten with only what it did read.
+		throwSettingsErrors(settings);
 		const found = resolved[change.kind].find(r => r.path === change.path && r.metadata.scope === "user");
 		if (!found) throw new Error(`${change.path} isn't one of your ${change.kind}`);
 		switchResource(settings, agentDir, change.kind, found, change.enabled);
 		await settings.flush();
+		// flush() records a failed write instead of throwing it.
+		throwSettingsErrors(settings);
 		resolved = await packages.resolve(async () => "skip");
 	}
 	const kinds: Kind[] = ["extensions", "skills"];
@@ -69,6 +49,11 @@ export async function resources(agentDir: string, cwd: string, change?: Change):
 			.filter(r => r.metadata.scope === "user")
 			.map(r => ({ kind, name: name(kind, r), path: r.path, group: group(r, agentDir), enabled: r.enabled })),
 	);
+}
+
+function throwSettingsErrors(settings: SettingsManager) {
+	const [first] = settings.drainErrors();
+	if (first) throw new Error(`pi's settings at ${first.path ?? first.scope}: ${first.error.message}`);
 }
 
 // Mirrors pi config's toggleTopLevelResource and togglePackageResource for user scope.

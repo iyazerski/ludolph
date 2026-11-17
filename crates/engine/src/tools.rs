@@ -58,6 +58,12 @@ pub enum Tool {
     SetUpAgentTool,
     ListResources,
     SetResource,
+    ListAccounts,
+    SignIn,
+    SignInState,
+    AnswerSignIn,
+    CancelSignIn,
+    SignOut,
     GetPhoneLink,
     LinkPhone,
     StopLinkingPhone,
@@ -76,6 +82,12 @@ impl Tool {
                 | Self::SetUpAgentTool
                 | Self::ListResources
                 | Self::SetResource
+                | Self::ListAccounts
+                | Self::SignIn
+                | Self::SignInState
+                | Self::AnswerSignIn
+                | Self::CancelSignIn
+                | Self::SignOut
                 | Self::GetPhoneLink
                 | Self::LinkPhone
                 | Self::StopLinkingPhone
@@ -121,6 +133,12 @@ impl FromStr for Tool {
             "set_up_agent_tool" => Self::SetUpAgentTool,
             "list_resources" => Self::ListResources,
             "set_resource" => Self::SetResource,
+            "list_accounts" => Self::ListAccounts,
+            "sign_in" => Self::SignIn,
+            "sign_in_state" => Self::SignInState,
+            "answer_sign_in" => Self::AnswerSignIn,
+            "cancel_sign_in" => Self::CancelSignIn,
+            "sign_out" => Self::SignOut,
             "get_phone_link" => Self::GetPhoneLink,
             "link_phone" => Self::LinkPhone,
             "stop_linking_phone" => Self::StopLinkingPhone,
@@ -226,6 +244,29 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         }
         Tool::ListResources => engine.resources(None).await,
         Tool::SetResource => engine.resources(Some(&parse(args)?)).await,
+        Tool::ListAccounts => engine.accounts().await,
+        Tool::SignIn => {
+            let args: SignInArgs = parse(args)?;
+            Ok(serde_json::to_value(
+                engine.start_sign_in(&args.provider, args.api_key)?,
+            )?)
+        }
+        Tool::SignInState => Ok(serde_json::to_value(engine.sign_in().state())?),
+        Tool::AnswerSignIn => {
+            let args: AnswerArgs = parse(args)?;
+            Ok(serde_json::to_value(
+                engine.sign_in().answer(args.attempt, &args.text).await?,
+            )?)
+        }
+        Tool::CancelSignIn => {
+            let args: AttemptArgs = parse(args)?;
+            engine.sign_in().cancel(args.attempt);
+            Ok(serde_json::to_value(engine.sign_in().state())?)
+        }
+        Tool::SignOut => {
+            let args: ProviderArgs = parse(args)?;
+            engine.sign_out(&args.provider).await
+        }
         Tool::GetPhoneLink => Ok(phone_link(engine)),
         Tool::LinkPhone => {
             let args: LinkArgs = parse(args)?;
@@ -253,6 +294,33 @@ fn parse<T: DeserializeOwned>(args: Value) -> Result<T> {
 #[serde(deny_unknown_fields)]
 struct AgentToolArgs {
     tool: GuiTool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignInArgs {
+    provider: String,
+    #[serde(default)]
+    api_key: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnswerArgs {
+    attempt: u64,
+    text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttemptArgs {
+    attempt: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderArgs {
+    provider: String,
 }
 
 #[derive(Deserialize)]

@@ -474,6 +474,30 @@ mod tests {
     }
 }
 
+/// A provider pi can sign in to, or already has credentials for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub provider: String,
+    pub name: String,
+    pub oauth: bool,
+    pub api_key: bool,
+    /// Where pi finds its credentials; only `stored` ones can be signed out of.
+    pub source: Option<String>,
+    pub label: Option<String>,
+}
+
+/// The engine's run of `pi auth login`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignIn {
+    pub attempt: u64,
+    pub provider: Option<String>,
+    pub output: String,
+    pub waiting: bool,
+    pub signed_in: Option<bool>,
+}
+
 /// A skill or extension from pi's own setup, and whether pi loads it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Resource {

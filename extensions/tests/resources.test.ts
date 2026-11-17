@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { resources } from "../resources.ts";
+import { resources } from "../lib/resources.ts";
 
 test("lists user skills and built-in extensions, and switches them as pi config does", async () => {
 	const root = await mkdtemp(join("/tmp", "pi-resources-test-"));
@@ -27,6 +27,10 @@ test("lists user skills and built-in extensions, and switches them as pi config 
 		const on = await resources(agentDir, root, { kind: "skills", path: skill, enabled: true });
 		expect(on.find(r => r.path === skill)?.enabled).toBe(true);
 		await expect(resources(agentDir, root, { kind: "skills", path: "/nope/SKILL.md", enabled: false })).rejects.toThrow();
+
+		await writeFile(join(agentDir, "settings.json"), "{ not json");
+		await expect(resources(agentDir, root, { kind: "skills", path: skill, enabled: false })).rejects.toThrow();
+		expect(await readFile(join(agentDir, "settings.json"), "utf8")).toBe("{ not json");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

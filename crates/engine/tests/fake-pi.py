@@ -66,6 +66,31 @@ def polish():
     print(f"\n{' '.join(words).capitalize()}. ({model}, {thinking})\n")
 
 
+def auth(action, provider):
+    """Sign in like `pi auth login`: `--api-key` reads the key without echo, and
+    an account reads a pasted code with it. The signed-in providers go in a file
+    next to the log."""
+    path = os.environ.get("FAKE_PI_LOG", "/dev/null") + "-auth"
+    if action == "logout":
+        print(f"Removed stored API key for {provider}.")
+        return 0
+    if "--api-key" in sys.argv:
+        import getpass
+        key = getpass.getpass(f"Enter {provider} API key: ")
+    else:
+        key = input(f"Paste the {provider} code: ")
+    if key != "good-key":
+        print("Failed to log in: that key is wrong")
+        return 1
+    with open(path, "a") as f:
+        f.write(provider + "\n")
+    print(f"Saved API key for {provider}.")
+    return 0
+
+
+if sys.argv[1:2] == ["auth"]:
+    sys.exit(auth(sys.argv[2], sys.argv[3]))
+
 if "-p" in sys.argv:
     prompt_arg = sys.argv[sys.argv.index("--system-prompt") + 1]
     polish() if "speech-to-text" in prompt_arg else title()

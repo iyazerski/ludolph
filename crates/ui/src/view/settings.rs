@@ -9,8 +9,8 @@ use super::widgets::{self, busy, dot, model_options};
 use super::{icons, theme};
 use crate::app::{Outcome, QR_SIZE, Section, SettingsPage, State, Update};
 use crate::data::{
-    GuiTool, LinkStatus, Notify, Pairing, RelayLink, ResourceKind, SendBehavior, ToolStatus,
-    levels_of,
+    Account, GuiTool, LinkStatus, Notify, Pairing, RelayLink, ResourceKind, SendBehavior,
+    ToolStatus, levels_of,
 };
 use crate::labels::reasoning_name;
 use crate::prefs::{Accent, TextSize};
@@ -42,6 +42,7 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                 .child(caption(k, "Chat model picker"))
                 .child(group(k, chat_models(s, page, k)))
         }),
+        Section::Accounts => accounts(page, k, layer),
         Section::Resources => resources(page, k),
         Section::Phone => loaded(page, k, || group(k, phone(page, k))),
         Section::About => group(k, vec![about(page, k)]),
@@ -93,6 +94,7 @@ fn title(section: Section) -> &'static str {
     match section {
         Section::General => "General",
         Section::Appearance => "Appearance",
+        Section::Accounts => "Accounts",
         Section::AgentTools => "Agent tools",
         Section::Model => "Model",
         Section::Resources => "Skills and extensions",
@@ -105,6 +107,7 @@ fn key(section: Section) -> &'static str {
     match section {
         Section::General => "general",
         Section::Appearance => "appearance",
+        Section::Accounts => "accounts",
         Section::AgentTools => "agent-tools",
         Section::Model => "model",
         Section::Resources => "resources",
@@ -117,6 +120,7 @@ fn icon(section: Section) -> &'static Icon {
     match section {
         Section::General => &icons::SLIDERS,
         Section::Appearance => &icons::APPEARANCE,
+        Section::Accounts => &icons::ACCOUNT,
         Section::AgentTools => &icons::EXTENSIONS,
         Section::Model => &icons::MODELS,
         Section::Resources => &icons::SKILL,
@@ -144,6 +148,214 @@ fn loading(k: &Kit) -> El {
         .py(24.0)
         .justify_center()
         .child(busy(18.0, k))
+}
+
+fn accounts(page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>) -> El {
+    let accounts = &page.accounts;
+    let list = match &accounts.list {
+        None => return loading(k),
+        Some(Err(why)) => return failed(k, format!("Couldn't list pi's providers: {why}")),
+        Some(Ok(list)) => list,
+    };
+    let signed_in: Vec<El> = list
+        .iter()
+        .filter_map(|a| {
+            let source = a.source.as_deref()?;
+            let hint = match (source, &a.label) {
+                ("stored", _) => "Signed in".to_owned(),
+                (_, Some(label)) => format!("From {label}"),
+                _ => "Set up outside sign-in".to_owned(),
+            };
+            let control = if accounts.signing_out.as_ref() == Some(&a.provider) {
+                busy(16.0, k)
+            } else if source == "stored" {
+                let provider = a.provider.clone();
+                Button::new("Sign out")
+                    .variant(ButtonVariant::Outline)
+                    .disabled(accounts.signing_out.is_some())
+                    .on_press(move |s: &mut State| s.sign_out(&provider))
+                    .build(k)
+            } else {
+                el()
+            };
+            Some(compact(k, &a.name, Some(&hint), control).key(a.provider.clone()))
+        })
+        .collect();
+    let mut out = col().w_full().gap(12.0);
+    if !signed_in.is_empty() {
+        out = out.child(group(k, signed_in));
+    }
+    out.child(caption(k, "Add a provider"))
+        .child(group(k, add_account(page, list, k, layer)))
+        .child(note(
+            k,
+            "Sign-ins are pi's own, so pi in the terminal uses them too.",
+        ))
+}
+
+fn add_account(
+    page: &SettingsPage,
+    list: &[Account],
+    k: &'static Kit,
+    layer: &mut Vec<El>,
+) -> Vec<El> {
+    let accounts = &page.accounts;
+    let running = accounts.sign_in.provider.is_some();
+    let options: Vec<ComboboxOption> = list
+        .iter()
+        .filter(|a| a.source.is_none())
+        .map(|a| {
+            let mut option = ComboboxOption::new(a.provider.clone(), a.name.clone());
+            option.detail.clone_from(&a.provider);
+            option
+        })
+        .collect();
+    let picker = Combobox::new("provider", &accounts.picker, &options, |s: &mut State| {
+        &mut s
+            .settings_page_mut()
+            .expect("the picker is on the settings page")
+            .accounts
+            .picker
+    })
+    .label("Provider")
+    .placeholder("Choose a provider")
+    .current(accounts.chosen.as_deref())
+    .search_placeholder("Search providers")
+    .width(CONTROL)
+    .disabled(running)
+    .on_choose(|s: &mut State, id, _| s.choose_provider(id))
+    .build(k, layer);
+    let mut rows = vec![wide(k, "Provider", picker)];
+    if let Some(chosen) = accounts.chosen().filter(|_| !running) {
+        let account = chosen.oauth.then(|| {
+            Button::new("Sign in")
+                .variant(ButtonVariant::Neutral)
+                .on_press(|s: &mut State| s.start_sign_in(false))
+                .build(k)
+        });
+        let key = chosen.api_key.then(|| {
+            Button::new("Use an API key")
+                .variant(ButtonVariant::Outline)
+                .on_press(|s: &mut State| s.start_sign_in(true))
+                .build(k)
+        });
+        let how = if chosen.oauth {
+            "Sign in opens your browser."
+        } else {
+            "It signs in with an API key."
+        };
+        let how = text(how)
+            .font(k.ty.text_small)
+            .color(k.c.text_muted)
+            .wrap()
+            .grow(1.0)
+            .min_w(0.0);
+        rows.push(status_row(
+            how,
+            row().gap(8.0).children(key).children(account),
+        ));
+    }
+    if let Some(provider) = &accounts.sign_in.provider {
+        rows.extend(sign_in(page, accounts.name(provider), k));
+    }
+    rows
+}
+
+fn sign_in(page: &SettingsPage, name: &str, k: &Kit) -> Vec<El> {
+    let state = &page.accounts.sign_in;
+    let mut rows = Vec::new();
+    match state.signed_in {
+        // pi's output matters only while it runs; afterwards one line says how it ended.
+        None => {
+            if !state.output.is_empty() {
+                rows.push(
+                    row().w_full().px(PAD).py(8.0).child(
+                        text(state.output.clone())
+                            .font(k.ty.mono)
+                            .color(k.c.text_base)
+                            // Sign-in URLs are one long word.
+                            .wrap_anywhere()
+                            .selectable(true)
+                            .min_w(0.0)
+                            .shrink(),
+                    ),
+                );
+            }
+            let answer = state.waiting.then(|| {
+                TextInput::new(&page.accounts.answer)
+                    .label("Answer")
+                    .placeholder("Answer pi")
+                    .secure()
+                    .width(Some(CONTROL - 80.0))
+                    .on_edit(|s: &mut State| {
+                        &mut s
+                            .settings_page_mut()
+                            .expect("the field is on the settings page")
+                            .accounts
+                            .answer
+                    })
+                    .on_submit(|s: &mut State, _| s.answer_sign_in())
+                    .build(k)
+            });
+            let waiting = if state.waiting {
+                "pi is asking for an answer."
+            } else {
+                "Waiting for pi…"
+            };
+            let why = text(waiting)
+                .font(k.ty.text_small)
+                .color(k.c.text_muted)
+                .wrap()
+                .grow(1.0)
+                .min_w(0.0);
+            let cancel = Button::new("Cancel")
+                .variant(ButtonVariant::Outline)
+                .on_press(State::close_sign_in)
+                .build(k);
+            rows.push(status_row(
+                why,
+                row().gap(8.0).children(answer).child(cancel),
+            ));
+        }
+        Some(true) => {
+            let done = text(format!("Signed in to {name}."))
+                .font(k.ty.text_small)
+                .color(k.c.success.fg)
+                .wrap()
+                .grow(1.0)
+                .min_w(0.0);
+            let close = Button::new("Done")
+                .variant(ButtonVariant::Outline)
+                .on_press(State::close_sign_in)
+                .build(k);
+            rows.push(status_row(done, close));
+        }
+        Some(false) => {
+            let why = text(format!("Couldn't sign in to {name}."))
+                .font(k.ty.text_small)
+                .color(k.c.danger.fg)
+                .wrap()
+                .grow(1.0)
+                .min_w(0.0);
+            let log = state.output.clone();
+            let buttons = row()
+                .gap(8.0)
+                .child(
+                    Button::new("Copy log")
+                        .variant(ButtonVariant::Outline)
+                        .on_press_tx(move |_: &mut State, tx: &mut Tx| tx.copy(log.clone()))
+                        .build(k),
+                )
+                .child(
+                    Button::new("Close")
+                        .variant(ButtonVariant::Outline)
+                        .on_press(State::close_sign_in)
+                        .build(k),
+                );
+            rows.push(status_row(why, buttons));
+        }
+    }
+    rows
 }
 
 fn resources(page: &SettingsPage, k: &Kit) -> El {

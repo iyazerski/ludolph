@@ -2458,3 +2458,77 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     assert!(!dir.path().join("state/relay.json").exists());
     engine.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_relays_pis_prompt_and_the_users_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let state_until = |check: fn(&Value) -> bool| {
+        let engine = engine.clone();
+        async move {
+            let mut changes = engine.sign_in().subscribe();
+            let wait = async {
+                loop {
+                    let state = tool(&engine, "sign_in_state", json!({})).await.unwrap();
+                    if check(&state) {
+                        return state;
+                    }
+                    changes.changed().await.unwrap();
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), wait)
+                .await
+                .expect("the sign-in never got there")
+        }
+    };
+
+    // The account prompt echoes the pasted code, like pi's does.
+    for (api_key, prompt, key, signed_in) in [
+        (true, "Enter fake API key: ", "bad-key", false),
+        (false, "Paste the fake code: ", "good-key", true),
+    ] {
+        let args = json!({"provider": "fake", "apiKey": api_key});
+        let started = tool(&engine, "sign_in", args).await.unwrap();
+        let asking = state_until(|s| s["waiting"] == true).await;
+        assert_eq!(asking["output"], prompt);
+        let answer = json!({"attempt": started["attempt"], "text": key});
+        tool(&engine, "answer_sign_in", answer).await.unwrap();
+        let done = state_until(|s| !s["signedIn"].is_null()).await;
+        assert_eq!(done["signedIn"], signed_in, "{done}");
+        assert!(!done["output"].as_str().unwrap().contains(key), "{done}");
+    }
+    let saved = std::fs::read_to_string(dir.path().join("pi.log-auth")).unwrap();
+    assert_eq!(saved, "fake\n");
+
+    let old = tool(&engine, "sign_in", json!({"provider": "fake"}))
+        .await
+        .unwrap();
+    let new = tool(&engine, "sign_in", json!({"provider": "fake"}))
+        .await
+        .unwrap();
+    state_until(|s| s["waiting"] == true).await;
+    // A late answer or cancel for a replaced sign-in leaves the new one alone.
+    let late = json!({"attempt": old["attempt"], "text": "x"});
+    assert!(tool(&engine, "answer_sign_in", late).await.is_err());
+    let late = json!({"attempt": old["attempt"]});
+    let still = tool(&engine, "cancel_sign_in", late).await.unwrap();
+    assert_eq!(still["waiting"], true, "{still}");
+    let cancel = json!({"attempt": new["attempt"]});
+    let cleared = tool(&engine, "cancel_sign_in", cancel).await.unwrap();
+    assert!(cleared["provider"].is_null(), "{cleared}");
+    let running = || {
+        let pgrep = std::process::Command::new("pgrep")
+            .args(["-f", "fake-pi.py auth login"])
+            .output()
+            .unwrap();
+        !pgrep.stdout.is_empty()
+    };
+    for _ in 0..50 {
+        if !running() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!running(), "a sign-in kept running");
+    engine.shutdown().await.unwrap();
+}

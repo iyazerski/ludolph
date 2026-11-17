@@ -22,6 +22,12 @@ Ludolph uses pi's RPC mode (`docs/rpc.md`, `docs/rpc-extension-ui.md`), its sess
 - `--extension <file>` loads a plain `.js` file next to installed packages. Its imports of `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai` and `typebox` resolve to pi's own copies, so the bundles leave them out.
 - `pi config` lists what `DefaultPackageManager.resolve()` returns, plus the built-in extensions, which `resolve()` lists only when given their names. Its switches write `+path` or `-path` to the user's `extensions` and `skills`, or to a package's filters. `resources.js` does the same.
 - An extension command sent as an RPC `prompt` runs before pi answers, so its `notify` comes first.
+- `ctx.modelRegistry` lists providers only through their models, so a provider whose catalog is empty until sign-in (`typesafe` in 1.5.2) isn't offered. `getProvider(id).auth` tells account sign-in (`oauth`) from API key login (`apiKey.login`).
+
+## Sign-in
+
+- `pi auth login` needs a terminal, and `/usr/bin/script` is enough. It prints each prompt without a trailing newline and reads the answer in raw mode, so the echo flag can't tell a secret from a question. An account sign-in opens the browser itself and waits for its local callback.
+- `pi auth logout` needs no terminal, and only removes what `auth.json` stores.
 
 ## Session files
 
