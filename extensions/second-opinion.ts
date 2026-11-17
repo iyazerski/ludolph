@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { resolveModel, runPi, type Thinking } from "./lib/child-pi.ts";
+import { resolveModel, runPi } from "./lib/child-pi.ts";
 
 /**
  * Get a read-only review from the other model family: GPT for Claude, Claude for everything else.
@@ -9,10 +9,6 @@ import { resolveModel, runPi, type Thinking } from "./lib/child-pi.ts";
  * extensions it has no second_opinion tool, so a review can't ask for another review.
  */
 
-const PEERS: Record<"claude" | "gpt", { model: string; thinking: Thinking }> = {
-	claude: { model: "claude-opus-5-5", thinking: "medium" },
-	gpt: { model: "gpt-6.1-sol", thinking: "high" },
-};
 const TIMEOUT_MS = 20 * 60_000;
 
 const REVIEW = `Review another agent's work. Give a concise review of bugs, edge cases, performance, and design flaws, most important first. Read files in the working directory to check details, but don't change anything.`;
@@ -34,9 +30,14 @@ export default function (pi: ExtensionAPI) {
 		parameters: params,
 
 		async execute(_toolCallId, { request }, signal, onUpdate, ctx) {
-			const peer = ctx.model?.id.startsWith("claude") ? PEERS.gpt : PEERS.claude;
-			const model = resolveModel(ctx, peer.model);
-			if (!model) throw new Error(`The second opinion needs ${peer.model}, and no logged-in provider offers it.`);
+			const family = ctx.model?.id.split("/").at(-1)?.startsWith("claude-") ? "GPT" : "Claude";
+			const key = `LUDOLPH_REVIEW_${family.toUpperCase()}`;
+			const requested = process.env[`${key}_MODEL`];
+			const thinking = process.env[`${key}_THINKING`];
+			const settings = "Ludolph Settings → Model → Second opinion";
+			if (!requested || !thinking) throw new Error(`Choose a ${family} reviewer in ${settings}.`);
+			const model = resolveModel(ctx, requested);
+			if (!model) throw new Error(`${requested} is unavailable. Choose a ${family} reviewer in ${settings}.`);
 			onUpdate?.({ content: [{ type: "text", text: `asking ${model.id}…` }], details: undefined });
 			const result = await runPi({
 				name: "second_opinion",
@@ -44,7 +45,7 @@ export default function (pi: ExtensionAPI) {
 					"--model",
 					model.id,
 					"--thinking",
-					peer.thinking,
+					thinking,
 					"--no-session",
 					"--no-extensions",
 					"--no-skills",

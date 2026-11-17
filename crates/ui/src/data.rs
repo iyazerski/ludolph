@@ -562,11 +562,19 @@ pub struct Settings {
     pub send_behavior: SendBehavior,
     pub tool_routing: bool,
     pub second_opinion: bool,
+    pub second_opinion_claude: Option<ReviewModel>,
+    pub second_opinion_gpt: Option<ReviewModel>,
     pub browser_use: bool,
     pub computer_use: bool,
     pub gui_model: Option<String>,
     pub gui_thinking: Option<String>,
     pub chat_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewModel {
+    pub model: String,
+    pub thinking: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

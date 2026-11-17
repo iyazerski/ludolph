@@ -50,6 +50,8 @@ pub struct SettingsPage {
     pub model: ComboboxState,
     pub gui_model: ComboboxState,
     pub gui_thinking: ComboboxState,
+    pub claude_review: ReviewPickers,
+    pub gpt_review: ReviewPickers,
     pub tools: Tools,
     /// Listing them starts a pi, so they load when their section first shows.
     pub resources: Option<Result<Vec<Resource>, String>>,
@@ -59,6 +61,12 @@ pub struct SettingsPage {
     pub phone: Phone,
     pub update: Update,
     previous: Option<String>,
+}
+
+#[derive(Default)]
+pub struct ReviewPickers {
+    pub model: ComboboxState,
+    pub thinking: ComboboxState,
 }
 
 /// pi's providers and their sign-in. Listing them starts a pi, so they load when their section
@@ -192,6 +200,8 @@ impl State {
                 model: ComboboxState::default(),
                 gui_model: ComboboxState::default(),
                 gui_thinking: ComboboxState::default(),
+                claude_review: ReviewPickers::default(),
+                gpt_review: ReviewPickers::default(),
                 tools: Tools::default(),
                 resources: None,
                 resource_saving: false,

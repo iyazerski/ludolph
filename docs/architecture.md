@@ -83,7 +83,7 @@ Titles come from the sidecar model through `pi -p` with no session, tools, exten
 
 ### Agent tools
 
-Ludolph's pi extensions live in `extensions/` and ship as one JS file each in `Contents/Resources/pi`. The engine passes the ones turned on in Settings to each chat's pi with `--extension`, and the GUI model and roles through `LUDOLPH_GUI_*` variables. So a settings change reaches a chat when its pi next starts.
+Ludolph's pi extensions live in `extensions/` and ship as one JS file each in `Contents/Resources/pi`. The engine passes the ones turned on in Settings to each chat's pi with `--extension`, and the GUI and reviewer selections through environment variables. So a settings change reaches a chat when its pi next starts.
 
 - Ludolph's extensions stay out of pi's own setup, so a terminal pi doesn't load them. Settings that are pi's own, such as sign-in or which skills load, change pi's setup as pi's terminal UI would, so a terminal pi sees them too.
 - The sidecar and the second-opinion reviewer load no extensions. A GUI subagent loads only `gui.js` in its role mode, which adds no subagent tools. So no child can start another.
