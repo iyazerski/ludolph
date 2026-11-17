@@ -349,6 +349,9 @@ pub struct Model {
     pub label: Option<String>,
     #[serde(default)]
     pub reasoning_levels: Vec<String>,
+    /// Left out of the chat model picker in Settings.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -485,6 +488,7 @@ pub struct Settings {
     pub computer_use: bool,
     pub gui_model: Option<String>,
     pub gui_thinking: Option<String>,
+    pub chat_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

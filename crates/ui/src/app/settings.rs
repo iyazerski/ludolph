@@ -319,6 +319,34 @@ impl State {
         );
     }
 
+    pub fn toggle_chat_model(&mut self, id: &str) {
+        let all: Vec<String> = self
+            .catalog
+            .ready()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        self.change_settings(|v| {
+            let mut picked = if v.chat_models.is_empty() {
+                all.clone()
+            } else {
+                v.chat_models.clone()
+            };
+            match picked.iter().position(|m| m == id) {
+                Some(at) => {
+                    picked.remove(at);
+                }
+                None => picked.push(id.to_owned()),
+            }
+            // Picking every model is the same as picking none, so new models show up too.
+            if all.iter().all(|m| picked.contains(m)) {
+                picked.clear();
+            }
+            v.chat_models = picked;
+        });
+    }
+
     pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
         let Some(page) = self.settings_page_mut() else {
             return;

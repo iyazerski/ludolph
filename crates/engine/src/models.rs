@@ -88,6 +88,11 @@ impl Catalog {
         self.changes.subscribe()
     }
 
+    /// Tells subscribers to list the models again, as when the picked chat models change.
+    pub fn changed(&self) {
+        self.changes.send_modify(|revision| *revision += 1);
+    }
+
     pub(crate) fn sources(&self) -> Result<Sources> {
         let sources = Sources::read(&self.files)?;
         let mut observed = self.observed.lock().expect("lock poisoned");

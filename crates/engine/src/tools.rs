@@ -498,7 +498,18 @@ async fn turn_changes(engine: &Engine, args: TurnArgs) -> Result<Value> {
 
 async fn list_models(engine: &Engine) -> Result<Value> {
     let available = engine.models().await?;
-    let models: Vec<Value> = available.models.iter().map(model).collect();
+    let picked = engine.settings().chat_models;
+    let models: Vec<Value> = available
+        .models
+        .iter()
+        .map(|m| {
+            let mut out = model(m);
+            if !picked.is_empty() && !picked.contains(&m.id) {
+                out["hidden"] = json!(true);
+            }
+            out
+        })
+        .collect();
     Ok(
         json!({"models": models, "default": available.default, "defaultReasoning": available.reasoning}),
     )

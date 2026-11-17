@@ -382,7 +382,11 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
     let model = model.or(s.catalog.default_model());
     let label = model.map_or("Default model".to_owned(), |id| s.catalog.label(id));
     let models = s.catalog.ready().unwrap_or_default();
-    let options = model_options(models);
+    let options = model_options(
+        models
+            .iter()
+            .filter(|m| !m.hidden || Some(m.id.as_str()) == model),
+    );
     let trigger = row()
         .gap(5.0)
         .px(6.0)

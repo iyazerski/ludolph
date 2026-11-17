@@ -27,13 +27,21 @@ const DEFAULT_MODEL: &str = "default";
 
 pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>) -> El {
     let content = match page.section {
-        Section::General => loaded(page, k, || general(s, page, k)),
+        Section::General => loaded(page, k, || group(k, general(s, page, k))),
         Section::Appearance => group(k, vec![accents(s, k), text_size(s, k)]),
-        Section::AgentTools => loaded(page, k, || agent_tools(page, k)),
+        Section::AgentTools => loaded(page, k, || group(k, agent_tools(page, k))),
         Section::Model => loaded(page, k, || {
-            vec![sidecar(s, page, k, layer), gui_model(s, page, k, layer)]
+            col()
+                .w_full()
+                .gap(12.0)
+                .child(group(
+                    k,
+                    vec![sidecar(s, page, k, layer), gui_model(s, page, k, layer)],
+                ))
+                .child(caption(k, "Chat model picker"))
+                .child(group(k, chat_models(s, page, k)))
         }),
-        Section::Phone => loaded(page, k, || phone(page, k)),
+        Section::Phone => loaded(page, k, || group(k, phone(page, k))),
         Section::About => group(k, vec![about(page, k)]),
     };
     let body = col()
@@ -112,10 +120,10 @@ fn icon(section: Section) -> &'static Icon {
     }
 }
 
-/// The rows of a section that needs the engine's settings, once they load.
-fn loaded(page: &SettingsPage, k: &Kit, rows: impl FnOnce() -> Vec<El>) -> El {
+/// A section that needs the engine's settings, once they load.
+fn loaded(page: &SettingsPage, k: &Kit, content: impl FnOnce() -> El) -> El {
     match (&page.settings, &page.error) {
-        (Some(_), _) => group(k, rows()),
+        (Some(_), _) => content(),
         (None, Some(why)) => text(format!("Couldn't load the settings: {why}"))
             .font(k.ty.ui)
             .color(k.c.text_muted)
@@ -299,6 +307,57 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
     )
 }
 
+fn chat_models(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
+    let Some(models) = s.catalog.ready() else {
+        return vec![note(k, "Loading models…")];
+    };
+    let picked = page
+        .settings
+        .as_ref()
+        .map_or(&[][..], |v| v.chat_models.as_slice());
+    let offered = |id: &String| picked.is_empty() || picked.contains(id);
+    let count = models.iter().filter(|m| offered(&m.id)).count();
+    let mut rows: Vec<El> = models
+        .iter()
+        .map(|m| {
+            let on = offered(&m.id);
+            let name = s.catalog.label(&m.id);
+            let provider = m.id.split_once('/').map_or("", |(p, _)| p);
+            let id = m.id.clone();
+            let pick = Switch::new(on)
+                .hide_label()
+                .label(format!("Offer {name}"))
+                // The picker can't be empty, and an empty list offers every model.
+                .disabled(on && count == 1)
+                .on_toggle(move |s: &mut State| s.toggle_chat_model(&id))
+                .build(k);
+            compact(k, &name, Some(provider), pick).key(m.id.clone())
+        })
+        .collect();
+    rows.push(note(
+        k,
+        "The models a chat's picker offers, here and on your phone. A chat keeps its model either way.",
+    ));
+    rows
+}
+
+fn note(k: &Kit, line: &str) -> El {
+    row().w_full().px(PAD).py(8.0).child(
+        text(line.to_owned())
+            .font(k.ty.text_small)
+            .color(k.c.text_muted)
+            .wrap(),
+    )
+}
+
+fn caption(k: &Kit, title: &str) -> El {
+    text(title.to_owned())
+        .font(k.ty.text_small_medium)
+        .color(k.c.text_muted)
+        .pl(4.0)
+        .pt(8.0)
+}
+
 fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let enabled = page
         .settings
@@ -432,14 +491,10 @@ fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
     if let Some(why) = &page.tools.failed {
         rows.push(error_line(k, format!("Couldn't check the tools: {why}")));
     }
-    rows.push(
-        row().w_full().px(PAD).py(8.0).child(
-            text("Changes apply to new chats, and to open chats after they idle.")
-                .font(k.ty.text_small)
-                .color(k.c.text_muted)
-                .wrap(),
-        ),
-    );
+    rows.push(note(
+        k,
+        "Changes apply to new chats, and to open chats after they idle.",
+    ));
     rows
 }
 

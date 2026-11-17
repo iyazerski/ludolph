@@ -1072,7 +1072,12 @@ impl Engine {
             .lock()
             .expect("the settings lock isn't poisoned");
         settings.save(&self.0.config.state_dir)?;
+        let picked = saved.chat_models != settings.chat_models;
         *saved = settings.clone();
+        drop(saved);
+        if picked {
+            self.0.catalog.changed();
+        }
         Ok(settings)
     }
 

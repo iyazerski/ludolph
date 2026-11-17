@@ -1071,7 +1071,8 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let unknown = json!({"guiModel": "fake/none"});
     assert!(tool(&engine, "set_settings", unknown).await.is_err());
     let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true, "sendBehavior": "queue",
-        "toolRouting": false, "secondOpinion": false, "browserUse": true, "computerUse": false, "guiModel": "fake/quick", "guiThinking": "low"});
+        "toolRouting": false, "secondOpinion": false, "browserUse": true, "computerUse": false, "guiModel": "fake/quick", "guiThinking": "low",
+        "chatModels": []});
     let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
     assert_eq!(saved, picked);
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
@@ -1173,6 +1174,17 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
         models["default"], "fake/deep",
         "the model a new pi starts on"
     );
+    let mut changes = engine.subscribe_models();
+    let picked = json!({"chatModels": ["fake/quick"]});
+    tool(&engine, "set_settings", picked).await.unwrap();
+    changes.changed().await.unwrap();
+    let models = tool(&engine, "list_models", json!({})).await.unwrap();
+    assert_eq!(
+        models["models"][0]["hidden"], true,
+        "left out of the picker"
+    );
+    assert_eq!(models["models"][1].get("hidden"), None);
+    tool(&engine, "set_settings", json!({})).await.unwrap();
 
     let quick = json!({"chat": id, "model": "fake/quick"});
     let saved = tool(&engine, "set_chat_model", quick).await.unwrap();

@@ -19,6 +19,8 @@ pub struct Settings {
     /// `provider/model` for browser and computer use; None uses pi's default.
     pub gui_model: Option<String>,
     pub gui_thinking: Option<String>,
+    /// `provider/model` ids the chat model picker offers; empty offers every model.
+    pub chat_models: Vec<String>,
 }
 
 impl Default for Settings {
@@ -36,6 +38,7 @@ impl Default for Settings {
             computer_use: false,
             gui_model: None,
             gui_thinking: None,
+            chat_models: Vec::new(),
         }
     }
 }

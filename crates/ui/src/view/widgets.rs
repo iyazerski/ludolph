@@ -77,9 +77,9 @@ pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
         .collect()
 }
 
-pub fn model_options(models: &[Model]) -> Vec<ComboboxOption> {
+pub fn model_options<'a>(models: impl IntoIterator<Item = &'a Model>) -> Vec<ComboboxOption> {
     models
-        .iter()
+        .into_iter()
         .map(|model| {
             let label = model
                 .label
