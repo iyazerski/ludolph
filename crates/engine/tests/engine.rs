@@ -1071,7 +1071,8 @@ async fn chats_are_titled_as_soon_as_they_start() {
     let unknown = json!({"guiModel": "fake/none"});
     assert!(tool(&engine, "set_settings", unknown).await.is_err());
     let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true, "sendBehavior": "queue",
-        "toolRouting": false, "secondOpinion": false, "browserUse": true, "computerUse": false, "guiModel": "fake/quick", "guiThinking": "low"});
+        "toolRouting": false, "secondOpinion": false, "browserUse": true, "computerUse": false, "guiModel": "fake/quick", "guiThinking": "low",
+        "chatModels": []});
     let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
     assert_eq!(saved, picked);
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();
@@ -1173,6 +1174,17 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
         models["default"], "fake/deep",
         "the model a new pi starts on"
     );
+    let mut changes = engine.subscribe_models();
+    let picked = json!({"chatModels": ["fake/quick"]});
+    tool(&engine, "set_settings", picked).await.unwrap();
+    changes.changed().await.unwrap();
+    let models = tool(&engine, "list_models", json!({})).await.unwrap();
+    assert_eq!(
+        models["models"][0]["hidden"], true,
+        "left out of the picker"
+    );
+    assert_eq!(models["models"][1].get("hidden"), None);
+    tool(&engine, "set_settings", json!({})).await.unwrap();
 
     let quick = json!({"chat": id, "model": "fake/quick"});
     let saved = tool(&engine, "set_chat_model", quick).await.unwrap();
@@ -2444,5 +2456,100 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
     assert_eq!(from_mac(&mut forgetting).await, json!({"type": "forget"}));
     forgetting.close(None).await.unwrap();
     assert!(!dir.path().join("state/relay.json").exists());
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_relays_pis_steps_and_the_users_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let state_until = |check: fn(&Value) -> bool| {
+        let engine = engine.clone();
+        async move {
+            let mut changes = engine.sign_in().subscribe();
+            let wait = async {
+                loop {
+                    let state = tool(&engine, "sign_in_state", json!({})).await.unwrap();
+                    if check(&state) {
+                        return state;
+                    }
+                    changes.changed().await.unwrap();
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), wait)
+                .await
+                .expect("the sign-in never got there")
+        }
+    };
+
+    let asked = |s: &Value| !s["prompt"].is_null();
+    let ended = |s: &Value| !s["result"].is_null();
+    let answer =
+        |state: &Value, value: &str| json!({"prompt": state["prompt"]["id"], "value": value});
+
+    let args = json!({"provider": "fake", "apiKey": true});
+    tool(&engine, "sign_in", args).await.unwrap();
+    let asking = state_until(asked).await;
+    assert_eq!(asking["prompt"]["kind"], "secret");
+    assert_eq!(asking["prompt"]["message"], "Enter Fake API key");
+    tool(&engine, "answer_sign_in", answer(&asking, "bad-key"))
+        .await
+        .unwrap();
+    let failed = state_until(ended).await;
+    assert_eq!(
+        failed["result"],
+        json!({"signedIn": false, "error": "that key is wrong"})
+    );
+
+    tool(&engine, "sign_in", json!({"provider": "fake"}))
+        .await
+        .unwrap();
+    let asking = state_until(asked).await;
+    let code = json!({"code": "ABCD-1234", "url": "https://example.com/device"});
+    assert_eq!(asking["deviceCode"], code);
+    tool(&engine, "answer_sign_in", answer(&asking, "good-key"))
+        .await
+        .unwrap();
+    let done = state_until(ended).await;
+    assert_eq!(done["result"]["signedIn"], true, "{done}");
+    let accounts = tool(&engine, "list_accounts", json!({})).await.unwrap();
+    assert_eq!(accounts[0]["provider"], "fake", "{accounts}");
+    let after = tool(&engine, "sign_out", json!({"provider": "fake"}))
+        .await
+        .unwrap();
+    assert_eq!(after, json!([]));
+
+    let old = tool(&engine, "sign_in", json!({"provider": "fake"}))
+        .await
+        .unwrap();
+    let new = tool(&engine, "sign_in", json!({"provider": "fake"}))
+        .await
+        .unwrap();
+    let asking = state_until(asked).await;
+    // A late cancel for a replaced sign-in leaves the new one alone.
+    let late = json!({"attempt": old["attempt"]});
+    let still = tool(&engine, "cancel_sign_in", late).await.unwrap();
+    assert_eq!(still["prompt"], asking["prompt"], "{still}");
+    let cancel = json!({"attempt": new["attempt"]});
+    let cleared = tool(&engine, "cancel_sign_in", cancel).await.unwrap();
+    assert!(cleared["provider"].is_null(), "{cleared}");
+    let stale = tool(&engine, "answer_sign_in", answer(&asking, "x")).await;
+    assert!(stale.is_err());
+    let setup = dir.path().join("extensions/pi-setup.js");
+    let running = || {
+        let pgrep = std::process::Command::new("pgrep")
+            .arg("-f")
+            .arg(&setup)
+            .output()
+            .unwrap();
+        !pgrep.stdout.is_empty()
+    };
+    for _ in 0..50 {
+        if !running() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!running(), "a sign-in kept running");
     engine.shutdown().await.unwrap();
 }

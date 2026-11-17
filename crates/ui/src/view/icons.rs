@@ -23,6 +23,12 @@ pub static PHONE: Icon = icon(
     r#"<g fill="none" stroke="currentColor" stroke-linejoin="round"><rect x="4" y="1.5" width="8" height="13" rx="1.5"/><path d="M7 12.5H9" stroke-linecap="round"/></g>"#,
 );
 
+pub static ACCOUNT: Icon = icon(
+    "account",
+    16.0,
+    r#"<g fill="none" stroke="currentColor" stroke-linecap="round"><circle cx="8" cy="5.5" r="2.75"/><path d="M2.5 14C3 11.25 5.25 9.75 8 9.75S13 11.25 13.5 14"/></g>"#,
+);
+
 pub static INFO: Icon = icon(
     "info",
     24.0,

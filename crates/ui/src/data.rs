@@ -349,6 +349,9 @@ pub struct Model {
     pub label: Option<String>,
     #[serde(default)]
     pub reasoning_levels: Vec<String>,
+    /// Left out of the chat model picker in Settings.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -471,6 +474,82 @@ mod tests {
     }
 }
 
+/// A provider pi can sign in to, or already has credentials for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub provider: String,
+    pub name: String,
+    pub oauth: bool,
+    pub api_key: bool,
+    /// Where pi finds its credentials; only `stored` ones can be signed out of.
+    pub source: Option<String>,
+    pub label: Option<String>,
+}
+
+/// The engine's run of `pi auth login`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignIn {
+    pub attempt: u64,
+    pub provider: Option<String>,
+    /// The sign-in page, already open in the browser.
+    pub browser: Option<String>,
+    pub device_code: Option<DeviceCode>,
+    pub prompt: Option<SignInPrompt>,
+    pub note: Option<String>,
+    pub result: Option<SignInResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DeviceCode {
+    pub code: String,
+    pub url: String,
+}
+
+/// A question pi asks, in its own words.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SignInPrompt {
+    pub id: String,
+    pub kind: PromptKind,
+    pub message: String,
+    pub placeholder: Option<String>,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptKind {
+    Text,
+    Secret,
+    Select,
+    ManualCode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignInResult {
+    pub signed_in: bool,
+    pub error: Option<String>,
+}
+
+/// A skill or extension from pi's own setup, and whether pi loads it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Resource {
+    pub kind: ResourceKind,
+    pub name: String,
+    pub path: String,
+    pub group: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResourceKind {
+    Extensions,
+    Skills,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -485,6 +564,7 @@ pub struct Settings {
     pub computer_use: bool,
     pub gui_model: Option<String>,
     pub gui_thinking: Option<String>,
+    pub chat_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

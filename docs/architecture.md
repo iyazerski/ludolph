@@ -4,7 +4,7 @@ How Ludolph fits together, and the rules that hold across modules. Module detail
 
 ## Scope
 
-A Mac app for pi only, through pi's RPC mode. Chats grouped by project, a main window, a quick window on a global shortcut, and a phone web app through a self-hosted relay. No other agents, accounts, sync, terminals, worktrees, or Windows and Linux.
+A Mac app for pi only, and an alternative to pi's terminal UI: it aims for the same features and controls, through pi's RPC mode. Chats grouped by project, a main window, a quick window on a global shortcut, and a phone web app through a self-hosted relay. No other agents, Ludolph accounts, sync, terminals, worktrees, or Windows and Linux.
 
 ## Processes
 
@@ -81,7 +81,7 @@ Titles come from the sidecar model through `pi -p` with no session, tools, exten
 
 Ludolph's pi extensions live in `extensions/` and ship as one JS file each in `Contents/Resources/pi`. The engine passes the ones turned on in Settings to each chat's pi with `--extension`, and the GUI model and roles through `LUDOLPH_GUI_*` variables. So a settings change reaches a chat when its pi next starts.
 
-- Ludolph never writes to pi's folder or installs pi packages, so a terminal pi stays as the user set it up.
+- Ludolph's extensions stay out of pi's own setup, so a terminal pi doesn't load them. Settings that are pi's own, such as sign-in or which skills load, change pi's setup as pi's terminal UI would, so a terminal pi sees them too.
 - The sidecar and the second-opinion reviewer load no extensions. A GUI subagent loads only `gui.js` in its role mode, which adds no subagent tools. So no child can start another.
 - Browser and computer use install browse or Cua Driver only after the user confirms. Both run their MCP server inside a subagent, so a chat's pi doesn't start them until a task needs them.
 

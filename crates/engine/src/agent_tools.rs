@@ -1,7 +1,7 @@
 //! Ludolph's own pi extensions, and the command-line tools its GUI extension drives.
 //!
-//! The extensions ship inside Ludolph.app and load only into the chats the engine runs. Ludolph
-//! never installs anything into pi, so a terminal pi stays as the user set it up.
+//! The extensions ship inside Ludolph.app and load only into the chats the engine runs, so a
+//! terminal pi doesn't load them.
 
 use std::fmt;
 use std::path::{Path, PathBuf};

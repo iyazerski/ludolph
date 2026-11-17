@@ -182,6 +182,11 @@ fn subscription(
             json!({"event": "models", "subscription": id}),
             out,
         ))),
+        "sign_in" => Ok(Box::pin(push(
+            engine.sign_in().subscribe(),
+            json!({"event": "sign_in", "subscription": id}),
+            out,
+        ))),
         "chats" => Ok(Box::pin(push(
             engine.subscribe(),
             json!({"event": "chats", "subscription": id}),

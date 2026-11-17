@@ -1867,7 +1867,7 @@ function chatView(machine, id, fromList) {
             onclick: () => l !== reasoning && pick({ reasoning: l }) }, reasoningName(l)))) : "",
           isWorking() ? h("div", { class: "note", style: { marginTop: "0" } }, "Changes apply from the next turn.") : "",
           h("div", { class: "group-label" }, "Model"),
-          h("div", { class: "group" }, models.map(m => itemRow({ label: m.label || m.id, value: check(m.id === current), cls: m.id === current ? "on" : "",
+          h("div", { class: "group" }, models.filter(m => !m.hidden || m.id === current).map(m => itemRow({ label: m.label || m.id, value: check(m.id === current), cls: m.id === current ? "on" : "",
             onclick: () => m.id !== current && pick({ model: m.id }) }))));
         if (first) body.querySelector(".item-row.on")?.scrollIntoView({ block: "nearest" });
         first = false;

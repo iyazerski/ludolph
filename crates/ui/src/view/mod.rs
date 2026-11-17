@@ -21,10 +21,12 @@ use rune_kit::Toast;
 use rune_kit::Kit;
 
 use super::app::{ChatPage, Overlay, Page, State, ToastKind, Window};
+use super::prefs::TextSize;
 
 pub const CORNER: f32 = 14.0;
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
+    cx.zoom(s.prefs.borrow().text_size.zoom());
     match s.window {
         Window::Quick => quick(s),
         Window::Main => main_window::view(s, cx),
@@ -154,6 +156,19 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if key.is_command('q') {
         tx.quit();
+        return true;
+    }
+    let size = s.prefs.borrow().text_size;
+    if key.is_command('=') || key.is_command('+') {
+        s.set_text_size(size.step(1));
+        return true;
+    }
+    if key.is_command('-') {
+        s.set_text_size(size.step(-1));
+        return true;
+    }
+    if key.is_command('0') {
+        s.set_text_size(TextSize::Default);
         return true;
     }
     if key.is_command('n') {

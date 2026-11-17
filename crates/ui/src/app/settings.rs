@@ -6,8 +6,10 @@ use rune_kit::{ComboboxState, ShortcutRecorderState};
 use serde_json::{Value, json};
 
 use super::{Page, State, Window};
+use crate::client::Subscription;
 use crate::data::{
-    GuiTool, LinkStatus, Pairing, PhoneLink, RelayLink, Settings, Setup, ToolStatus, ToolStatuses,
+    Account, GuiTool, LinkStatus, Pairing, PhoneLink, PromptKind, RelayLink, Resource,
+    ResourceKind, Settings, Setup, SignIn, ToolStatus, ToolStatuses,
 };
 use crate::update;
 
@@ -19,18 +21,22 @@ pub enum Section {
     #[default]
     General,
     Appearance,
+    Accounts,
     AgentTools,
     Model,
+    Resources,
     Phone,
     About,
 }
 
 impl Section {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::General,
         Self::Appearance,
+        Self::Accounts,
         Self::AgentTools,
         Self::Model,
+        Self::Resources,
         Self::Phone,
         Self::About,
     ];
@@ -45,9 +51,48 @@ pub struct SettingsPage {
     pub gui_model: ComboboxState,
     pub gui_thinking: ComboboxState,
     pub tools: Tools,
+    /// Listing them starts a pi, so they load when their section first shows.
+    pub resources: Option<Result<Vec<Resource>, String>>,
+    /// A switch is saving; the next one waits, since each rewrites pi's settings.
+    pub resource_saving: bool,
+    pub accounts: Accounts,
     pub phone: Phone,
     pub update: Update,
     previous: Option<String>,
+}
+
+/// pi's providers and their sign-in. Listing them starts a pi, so they load when their section
+/// first shows.
+#[derive(Default)]
+pub struct Accounts {
+    pub list: Option<Result<Vec<Account>, String>>,
+    pub picker: ComboboxState,
+    pub chosen: Option<String>,
+    pub sign_in: SignIn,
+    pub answer: TextEdit,
+    pub signing_out: Option<String>,
+    /// The engine's sign-in this page shows; other states are late replies about earlier ones.
+    attempt: Option<u64>,
+    /// The start sent last, while its attempt isn't known yet. A reply for another start is late.
+    starting: Option<u64>,
+    starts: u64,
+    /// The user pastes the browser's code, since its page couldn't reach Ludolph.
+    pub paste: bool,
+    feed: Option<Subscription>,
+}
+
+impl Accounts {
+    pub fn chosen(&self) -> Option<&Account> {
+        let list = self.list.as_ref()?.as_ref().ok()?;
+        list.iter()
+            .find(|a| Some(&a.provider) == self.chosen.as_ref())
+    }
+
+    pub fn name<'a>(&'a self, provider: &'a str) -> &'a str {
+        let list = self.list.as_ref().and_then(|l| l.as_ref().ok());
+        list.and_then(|l| l.iter().find(|a| a.provider == provider))
+            .map_or(provider, |a| a.name.as_str())
+    }
 }
 
 /// Browser and computer use need command-line tools and macOS permissions before they can run.
@@ -144,6 +189,9 @@ impl State {
                 gui_model: ComboboxState::default(),
                 gui_thinking: ComboboxState::default(),
                 tools: Tools::default(),
+                resources: None,
+                resource_saving: false,
+                accounts: Accounts::default(),
                 phone: Phone {
                     state: None,
                     relay: TextEdit::default(),
@@ -164,9 +212,252 @@ impl State {
     }
 
     pub fn show_settings_section(&mut self, section: Section) {
-        if let Some(page) = self.settings_page_mut() {
-            page.section = section;
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        page.section = section;
+        let (resources, accounts) = (page.resources.is_none(), page.accounts.list.is_none());
+        if section == Section::Resources && resources {
+            self.resources_call("list_resources", json!({}));
         }
+        if section == Section::Accounts && accounts {
+            self.load_accounts();
+        }
+    }
+
+    fn load_accounts(&mut self) {
+        self.api.call(
+            "list_accounts",
+            json!({}),
+            |s, result: Result<Vec<Account>, String>, _| s.show_accounts(result),
+        );
+    }
+
+    fn show_accounts(&mut self, result: Result<Vec<Account>, String>) {
+        if let Some(page) = self.settings_page_mut() {
+            let accounts = &mut page.accounts;
+            accounts.signing_out = None;
+            if let Ok(list) = &result
+                && list
+                    .iter()
+                    .any(|a| Some(&a.provider) == accounts.chosen.as_ref() && a.source.is_some())
+            {
+                accounts.chosen = None;
+            }
+            accounts.list = Some(result);
+        }
+    }
+
+    pub fn choose_provider(&mut self, provider: &str) {
+        self.close_sign_in();
+        if let Some(page) = self.settings_page_mut() {
+            page.accounts.chosen = Some(provider.to_owned());
+        }
+    }
+
+    pub fn start_sign_in(&mut self, api_key: bool) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        let Some(provider) = page.accounts.chosen.clone() else {
+            return;
+        };
+        let accounts = &mut page.accounts;
+        accounts.answer = TextEdit::default();
+        accounts.paste = false;
+        accounts.starts += 1;
+        let start = accounts.starts;
+        accounts.starting = Some(start);
+        accounts.attempt = None;
+        accounts.sign_in = SignIn {
+            provider: Some(provider.clone()),
+            ..SignIn::default()
+        };
+        if accounts.feed.is_none() {
+            let feed = self
+                .api
+                .subscribe("sign_in", json!({}), |s, _, _| s.refresh_sign_in());
+            if let Some(page) = self.settings_page_mut() {
+                page.accounts.feed = Some(feed);
+            }
+        }
+        self.api.call(
+            "sign_in",
+            json!({"provider": provider, "apiKey": api_key}),
+            move |s, result: Result<SignIn, String>, _| s.started_sign_in(start, result),
+        );
+    }
+
+    fn started_sign_in(&mut self, start: u64, result: Result<SignIn, String>) {
+        let page = self.settings_page_mut();
+        let wanted = page.is_some_and(|p| p.accounts.starting == Some(start));
+        match result {
+            // Cancelling names the attempt, so it does nothing once a newer start replaced it.
+            Ok(state) if !wanted => self.cancel_sign_in(state.attempt),
+            Ok(state) => {
+                if let Some(page) = self.settings_page_mut() {
+                    page.accounts.starting = None;
+                    page.accounts.attempt = Some(state.attempt);
+                }
+                self.show_sign_in(state);
+                // Updates sent before the attempt was known were dropped.
+                self.refresh_sign_in();
+            }
+            Err(e) => {
+                if let Some(page) = self.settings_page_mut().filter(|_| wanted) {
+                    page.accounts.starting = None;
+                    page.accounts.sign_in = SignIn::default();
+                }
+                self.fail("Couldn't start signing in", e);
+            }
+        }
+    }
+
+    fn refresh_sign_in(&mut self) {
+        self.api.call(
+            "sign_in_state",
+            json!({}),
+            |s, result: Result<SignIn, String>, _| match result {
+                Ok(state) => s.show_sign_in(state),
+                Err(e) => eprintln!("sign_in_state: {e}"),
+            },
+        );
+    }
+
+    fn show_sign_in(&mut self, state: SignIn) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        if page.accounts.attempt != Some(state.attempt) {
+            return;
+        }
+        let accounts = &mut page.accounts;
+        let signed_in =
+            accounts.sign_in.result.is_none() && state.result.as_ref().is_some_and(|r| r.signed_in);
+        if accounts.sign_in.prompt.as_ref().map(|p| &p.id) != state.prompt.as_ref().map(|p| &p.id) {
+            accounts.answer = TextEdit::default();
+        }
+        accounts.sign_in = state;
+        if signed_in {
+            accounts.chosen = None;
+            self.load_accounts();
+            // The user approved it in the browser, so Ludolph comes back to show it worked.
+            self.api.app().focus();
+        }
+    }
+
+    /// Answers pi's question with `choice`, or with what the field holds.
+    pub fn answer_sign_in(&mut self, choice: Option<String>) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        let Some(prompt) = &page.accounts.sign_in.prompt else {
+            return;
+        };
+        let id = prompt.id.clone();
+        // A text question may take a blank answer, such as GitHub's "blank for github.com".
+        let blank_ok = prompt.kind == PromptKind::Text;
+        let value = match choice {
+            Some(choice) => choice,
+            None => std::mem::take(&mut page.accounts.answer).text.clone(),
+        };
+        if value.trim().is_empty() && !blank_ok {
+            return;
+        }
+        self.api.call(
+            "answer_sign_in",
+            json!({"prompt": id, "value": value}),
+            |s, result: Result<SignIn, String>, _| match result {
+                Ok(state) => s.show_sign_in(state),
+                Err(e) => s.fail("Couldn't sign in", e),
+            },
+        );
+    }
+
+    pub fn paste_sign_in_code(&mut self) {
+        if let Some(page) = self.settings_page_mut() {
+            page.accounts.paste = true;
+        }
+    }
+
+    /// Stops a running sign-in, or clears how the last one ended.
+    pub fn close_sign_in(&mut self) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        let accounts = &mut page.accounts;
+        let attempt = accounts.attempt.take();
+        accounts.starting = None;
+        accounts.paste = false;
+        accounts.sign_in = SignIn::default();
+        accounts.feed = None;
+        // A start still on its way is cancelled when its reply comes.
+        if let Some(attempt) = attempt {
+            self.cancel_sign_in(attempt);
+        }
+    }
+
+    fn cancel_sign_in(&mut self, attempt: u64) {
+        self.api.call(
+            "cancel_sign_in",
+            json!({"attempt": attempt}),
+            |_, _: Result<Value, String>, _| {},
+        );
+    }
+
+    pub fn sign_out(&mut self, provider: &str) {
+        self.close_sign_in();
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        page.accounts.signing_out = Some(provider.to_owned());
+        self.api.call(
+            "sign_out",
+            json!({"provider": provider}),
+            |s, result: Result<Vec<Account>, String>, _| match result {
+                Ok(list) => s.show_accounts(Ok(list)),
+                Err(e) => {
+                    s.fail("Couldn't sign out", e);
+                    s.load_accounts();
+                }
+            },
+        );
+    }
+
+    pub fn toggle_resource(&mut self, kind: ResourceKind, path: &str) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        let Some(Ok(list)) = page.resources.as_mut() else {
+            return;
+        };
+        let Some(item) = list.iter_mut().find(|r| r.kind == kind && r.path == path) else {
+            return;
+        };
+        if page.resource_saving {
+            return;
+        }
+        item.enabled = !item.enabled;
+        let args = json!({"kind": kind, "path": path, "enabled": item.enabled});
+        page.resource_saving = true;
+        self.resources_call("set_resource", args);
+    }
+
+    fn resources_call(&mut self, tool: &'static str, args: Value) {
+        self.api.call(
+            tool,
+            args,
+            move |s, result: Result<Vec<Resource>, String>, _| {
+                if let (Err(e), "set_resource") = (&result, tool) {
+                    s.fail("Couldn't change pi's settings", e.clone());
+                    return s.resources_call("list_resources", json!({}));
+                }
+                if let Some(page) = s.settings_page_mut() {
+                    page.resources = Some(result);
+                    page.resource_saving = false;
+                }
+            },
+        );
     }
 
     pub fn close_settings(&mut self) {
@@ -174,7 +465,11 @@ impl State {
             return;
         };
         let pairing = page.phone.pairing().is_some();
+        let signing_in = page.accounts.sign_in.provider.is_some();
         let previous = page.previous.take();
+        if signing_in {
+            self.close_sign_in();
+        }
         if pairing {
             self.api.call(
                 "stop_linking_phone",
@@ -317,6 +612,34 @@ impl State {
                 }
             },
         );
+    }
+
+    pub fn toggle_chat_model(&mut self, id: &str) {
+        let all: Vec<String> = self
+            .catalog
+            .ready()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        self.change_settings(|v| {
+            let mut picked = if v.chat_models.is_empty() {
+                all.clone()
+            } else {
+                v.chat_models.clone()
+            };
+            match picked.iter().position(|m| m == id) {
+                Some(at) => {
+                    picked.remove(at);
+                }
+                None => picked.push(id.to_owned()),
+            }
+            // Picking every model is the same as picking none, so new models show up too.
+            if all.iter().all(|m| picked.contains(m)) {
+                picked.clear();
+            }
+            v.chat_models = picked;
+        });
     }
 
     pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {

@@ -19,12 +19,14 @@ use crate::live::{self, Live};
 use crate::login;
 use crate::models::{Available, Catalog, Model, Sources};
 use crate::pi::{Event, Options, Pi, Session};
+use crate::pi_setup;
 pub use crate::relay::SecretStore;
 use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone, Phones};
 use crate::runtime::Runtime;
 use crate::seal;
 use crate::session::{Outcome, Spent, Summary};
 use crate::settings::{SendBehavior, Settings};
+use crate::sign_in::{self, SignIn};
 
 use crate::skills::{self, Skill};
 use crate::title::Titler;
@@ -94,6 +96,9 @@ struct Inner {
     pairing: watch::Sender<Option<Pairing>>,
     /// The latest attachment cleanup; each waits for the one before, so they never race.
     cleanup: Mutex<Option<JoinHandle<()>>>,
+    /// Each resource change rewrites pi's settings, so they run one at a time.
+    resources: tokio::sync::Mutex<()>,
+    sign_in: SignIn,
 }
 
 impl Drop for Inner {
@@ -365,6 +370,8 @@ impl Engine {
             pairing_task: Mutex::default(),
             pairing: watch::channel(None).0,
             cleanup: Mutex::default(),
+            resources: tokio::sync::Mutex::default(),
+            sign_in: SignIn::default(),
             config,
         }));
         tokio::spawn(engine.clone().reconnect());
@@ -1055,6 +1062,42 @@ impl Engine {
             .clone()
     }
 
+    /// The user's skills and extensions, after `change` if given. Chats pick changes up when their
+    /// pi next starts.
+    pub async fn resources(&self, change: Option<&pi_setup::Change>) -> Result<Value> {
+        let _one = self.0.resources.lock().await;
+        self.pi_setup(json!({"topic": "resources", "change": change}))
+            .await
+    }
+
+    /// The providers pi can sign in to, and where it finds credentials for each.
+    pub async fn accounts(&self) -> Result<Value> {
+        self.pi_setup(json!({"topic": "accounts"})).await
+    }
+
+    async fn pi_setup(&self, request: Value) -> Result<Value> {
+        let config = &self.0.config;
+        pi_setup::ask(&config.pi, &config.extensions, config.grace, request).await
+    }
+
+    pub fn sign_in(&self) -> &SignIn {
+        &self.0.sign_in
+    }
+
+    pub fn start_sign_in(&self, provider: &str, api_key: bool) -> Result<sign_in::State> {
+        let config = &self.0.config;
+        self.0
+            .sign_in
+            .start(&config.pi, &config.extensions, provider, api_key)
+    }
+
+    /// Removes the credentials pi stored for `provider`. Environment variables and models.json stay.
+    pub async fn sign_out(&self, provider: &str) -> Result<Value> {
+        self.pi_setup(json!({"topic": "signOut", "provider": provider}))
+            .await?;
+        self.accounts().await
+    }
+
     pub async fn set_settings(&self, settings: Settings) -> Result<Settings> {
         for model in [&settings.sidecar_model, &settings.gui_model]
             .into_iter()
@@ -1072,7 +1115,12 @@ impl Engine {
             .lock()
             .expect("the settings lock isn't poisoned");
         settings.save(&self.0.config.state_dir)?;
+        let picked = saved.chat_models != settings.chat_models;
         *saved = settings.clone();
+        drop(saved);
+        if picked {
+            self.0.catalog.changed();
+        }
         Ok(settings)
     }
 
