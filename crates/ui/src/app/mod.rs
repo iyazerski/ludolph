@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use super::api::Api;
 use super::client::Subscription;
 use super::data::{Chat, Chats};
-use super::prefs::{Frame, Prefs, ProjectPick};
+use super::prefs::{Frame, Prefs, ProjectPick, TextSize};
 
 pub use self::actions::Answer;
 pub use self::attach::Prep;
@@ -252,6 +252,11 @@ impl State {
 
     pub fn save_prefs(&self) {
         self.api.save_prefs(&self.prefs.borrow());
+    }
+
+    pub fn set_text_size(&mut self, size: TextSize) {
+        self.prefs.borrow_mut().text_size = size;
+        self.save_prefs();
     }
 
     pub fn list_shown(&self) -> bool {

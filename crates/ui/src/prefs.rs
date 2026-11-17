@@ -18,6 +18,7 @@ pub struct Prefs {
     pub main_frame: Option<Frame>,
     pub show_details: bool,
     pub accent: Accent,
+    pub text_size: TextSize,
     pub release_checked: Option<DateTime<Utc>>,
     /// The release whose notice was closed, so it isn't offered again.
     pub dismissed_release: Option<String>,
@@ -40,9 +41,49 @@ impl Default for Prefs {
             main_frame: None,
             show_details: true,
             accent: Accent::default(),
+            text_size: TextSize::default(),
             release_checked: None,
             dismissed_release: None,
         }
+    }
+}
+
+/// A page zoom for both windows: text, icons and spacing scale together.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextSize {
+    Smaller,
+    #[default]
+    Default,
+    Larger,
+    Largest,
+}
+
+impl TextSize {
+    pub const ALL: [Self; 4] = [Self::Smaller, Self::Default, Self::Larger, Self::Largest];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Smaller => "Smaller",
+            Self::Default => "Default",
+            Self::Larger => "Larger",
+            Self::Largest => "Largest",
+        }
+    }
+
+    pub fn zoom(self) -> f32 {
+        match self {
+            Self::Smaller => 0.9,
+            Self::Default => 1.0,
+            Self::Larger => 1.15,
+            Self::Largest => 1.3,
+        }
+    }
+
+    /// The next size up (`step` 1) or down (-1), stopping at the ends.
+    pub fn step(self, step: isize) -> Self {
+        let at = Self::ALL.iter().position(|&s| s == self).unwrap_or(1);
+        Self::ALL[at.saturating_add_signed(step).min(Self::ALL.len() - 1)]
     }
 }
 

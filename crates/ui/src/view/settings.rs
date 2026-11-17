@@ -12,7 +12,7 @@ use crate::data::{
     GuiTool, LinkStatus, Notify, Pairing, RelayLink, SendBehavior, ToolStatus, levels_of,
 };
 use crate::labels::reasoning_name;
-use crate::prefs::Accent;
+use crate::prefs::{Accent, TextSize};
 
 const MAX_WIDTH: f32 = 640.0;
 const PAD: f32 = 12.0;
@@ -28,7 +28,7 @@ const DEFAULT_MODEL: &str = "default";
 pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>) -> El {
     let content = match page.section {
         Section::General => loaded(page, k, || general(s, page, k)),
-        Section::Appearance => group(k, vec![accents(s, k)]),
+        Section::Appearance => group(k, vec![accents(s, k), text_size(s, k)]),
         Section::AgentTools => loaded(page, k, || agent_tools(page, k)),
         Section::Model => loaded(page, k, || {
             vec![sidecar(s, page, k, layer), gui_model(s, page, k, layer)]
@@ -166,6 +166,22 @@ fn accents(s: &State, k: &Kit) -> El {
         compact(k, "Accent color", None, choices),
         k,
         "Colors user messages, links and inline code in both windows.",
+    )
+}
+
+fn text_size(s: &State, k: &Kit) -> El {
+    let current = s.prefs.borrow().text_size;
+    let picker = SegmentedControl::new(
+        &TextSize::ALL.map(TextSize::name),
+        TextSize::ALL.iter().position(|&size| size == current),
+    )
+    .width(Some(CONTROL))
+    .on_pick(|s: &mut State, i, _| s.set_text_size(TextSize::ALL[i]))
+    .build(k);
+    with_hint(
+        wide(k, "Text size", picker),
+        k,
+        "Scales text, icons and spacing in both windows. ⌘+ and ⌘− change it, and ⌘0 resets it.",
     )
 }
 
@@ -871,7 +887,11 @@ fn wide(k: &Kit, label: &str, control: El) -> El {
                 .font(k.ty.ui)
                 .color(k.c.text_base)
                 .wrap()
-                .w(LABEL),
+                .w(LABEL)
+                // A larger text size narrows the card, so the label wraps rather than push
+                // the control out of it.
+                .min_w(0.0)
+                .shrink(),
         )
         .child(row().grow(1.0).justify_end().child(control))
 }
