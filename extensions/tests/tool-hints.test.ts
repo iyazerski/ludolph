@@ -111,13 +111,18 @@ test("prefers the job tool over a detached watcher or foreground CI wait", async
 		name: "background_job", label: "Background job", description: "",
 		parameters: Type.Object({}), execute: async () => ({ content: [], details: undefined }),
 	});
-	for (const command of ["nohup sh /tmp/watch.sh >/dev/null 2>&1 &", "gh run watch 1 --exit-status"]) {
+	const cases: [string, boolean][] = [
+		["nohup sh /tmp/watch.sh >/dev/null 2>&1 &", true],
+		["gh run watch 1 --exit-status", true],
+		["bun dev > /tmp/dev.log 2>&1 & sleep 2; curl --fail http://localhost:3000", false],
+	];
+	for (const [command, expected] of cases) {
 		await withTestSession([hints, jobs], async (session) => {
 			const result = await session.extensionRunner.emitToolResult({
 				type: "tool_result", toolName: "bash", toolCallId: "call",
 				input: { command }, content: [], isError: false, details: undefined,
 			});
-			expect(JSON.stringify(result?.content)).toContain("Use `background_job`");
+			expect(JSON.stringify(result?.content ?? []).includes("Use `background_job`"), command).toBe(expected);
 		});
 	}
 });

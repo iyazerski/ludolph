@@ -2,7 +2,7 @@ import { type ExtensionAPI, isBashToolResult } from "@earendil-works/pi-coding-a
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { checkRisk, producesFile, shellCommands, shellEdits, waitsInForeground } from "./shell.ts";
+import { checkRisk, executable, producesFile, shellCommands, shellEdits, waitsInForeground } from "./shell.ts";
 
 /**
  * Add a one-line hint to a tool result when the call drifts from tool-routing.ts's list.
@@ -240,8 +240,8 @@ export default function (pi: ExtensionAPI) {
 		const command = event.toolName === "bash" && typeof event.input.command === "string" ? event.input.command : "";
 		if (command) {
 			for (const kind of commandHints(command)) hints.add(kind);
-			if (pi.getActiveTools().includes("background_job")
-				&& (hints.has("sleep") || shellCommands(localPart(command)).some(({ background }) => background))) {
+			if (pi.getActiveTools().includes("background_job") && (hints.has("sleep")
+				|| shellCommands(localPart(command)).some(({ words }) => ["nohup", "disown", "setsid"].includes(executable(words)[0])))) {
 				hints.delete("sleep");
 				hints.add("background");
 			}
