@@ -103,6 +103,13 @@ pub fn run(opts: Opts) -> Result<()> {
     if lock.try_lock().is_err() {
         bail!("Ludolph is already running");
     }
+    #[cfg(target_os = "windows")]
+    if let Err(error) = rune_notify::register(&rune_notify::Identity::new(
+        "dev.iyazerski.ludolph",
+        "Ludolph",
+    )) {
+        eprintln!("registering notifications: {error}");
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -134,6 +141,7 @@ pub fn run(opts: Opts) -> Result<()> {
     let quick = App::new(spec(SIZE, MIN_SIZE)).windowless();
     let main = App::new(spec(MAIN_SIZE, MAIN_MIN_SIZE)).windowless();
     let (quick_handle, main_handle) = (quick.handle(), main.handle());
+    let _job_notices = shared.job_notices(&main_handle);
     let dock = main_handle.clone();
     quick_handle.update(|s, _| s.register_saved_shortcut());
     if !opts.hidden {

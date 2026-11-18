@@ -22,6 +22,7 @@ pulldown-cmark.workspace = true
 qrcode.workspace = true
 rune = { workspace = true, features = ["native-file-dialog"] }
 rune-kit.workspace = true
+rune-notify.workspace = true
 rune-theme-opencode.workspace = true
 semver.workspace = true
 serde.workspace = true

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::agent_tools::GuiTool;
 use crate::attachments::Attachment;
 use crate::engine::{
-    ChatInfo, Composer, Config, Delivery, Dialog, Engine, Question, Reply, Status,
+    ChatInfo, Composer, Config, Delivery, Dialog, Engine, JobRequest, Question, Reply, Status,
 };
 use crate::models::Model;
 use crate::repo;
@@ -31,6 +31,7 @@ pub enum Tool {
     ListProjects,
     ChatView,
     ToolOutput,
+    BackgroundJob,
     ChatImage,
     SendMessage,
     EditQueuedMessage,
@@ -77,6 +78,7 @@ impl Tool {
         !matches!(
             self,
             Self::ToolOutput
+                | Self::BackgroundJob
                 | Self::SetSettings
                 | Self::AgentToolStatus
                 | Self::SetUpAgentTool
@@ -106,6 +108,7 @@ impl FromStr for Tool {
             "list_projects" => Self::ListProjects,
             "chat_view" => Self::ChatView,
             "tool_output" => Self::ToolOutput,
+            "background_job" => Self::BackgroundJob,
             "chat_image" => Self::ChatImage,
             "send_message" => Self::SendMessage,
             "edit_queued_message" => Self::EditQueuedMessage,
@@ -159,6 +162,15 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
             Ok(serde_json::to_value(
                 engine.tool_output(&args.chat, &args.call).await?,
             )?)
+        }
+        Tool::BackgroundJob => {
+            #[derive(Deserialize)]
+            struct Args {
+                chat: String,
+                request: JobRequest,
+            }
+            let Args { chat, request } = parse(args)?;
+            engine.background_job(&chat, request)
         }
         Tool::ChatImage => {
             let args: ImageArgs = parse(args)?;

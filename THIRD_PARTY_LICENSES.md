@@ -1617,6 +1617,7 @@ Used by:
 - windows-interface 0.59.3
 - windows-link 0.2.1
 - windows-numerics 0.3.1
+- windows-registry 0.6.1
 - windows-result 0.4.1
 - windows-strings 0.5.1
 - windows-sys 0.52.0
@@ -13141,6 +13142,7 @@ Used by:
 - rune 0.0.1
 - rune-highlights 0.0.1
 - rune-kit 0.0.1
+- rune-notify 0.0.1
 - rune-taffy 0.0.1
 - rune-theme-opencode 0.0.1
 - block2 0.5.1

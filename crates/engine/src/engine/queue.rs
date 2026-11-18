@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-use super::{Chat, Engine};
+use super::{Chat, Engine, Prompt};
 use crate::attachments::Attachment;
 use crate::skills;
 
@@ -132,7 +132,9 @@ impl Engine {
                 .cloned()
                 .context("this message has already started or was removed")?
         };
-        let result = self.send_locked(id, &draft.text, draft.images, stops).await;
+        let result = self
+            .send_locked(id, Prompt::User(&draft.text, draft.images), stops)
+            .await;
         let mut state = self.state();
         if let Some(chat) = state.chats.get_mut(id) {
             if result.is_ok() {
@@ -171,10 +173,30 @@ impl Engine {
                 {
                     bail!("the agent is still working");
                 }
+                if chat
+                    .process
+                    .as_ref()
+                    .is_some_and(|running| !running.questions.is_empty())
+                {
+                    return Ok(());
+                }
                 chat.waiting.front().cloned()
             };
-            let Some(draft) = draft else { return Ok(()) };
-            let result = self.send_locked(id, &draft.text, draft.images, stops).await;
+            let Some(draft) = draft else {
+                let message = self
+                    .state()
+                    .chats
+                    .get_mut(id)
+                    .filter(|chat| chat.stops == stops)
+                    .and_then(|chat| chat.job_results.pop_front());
+                if let Some(message) = message {
+                    self.send_locked(id, Prompt::Job(&message), stops).await?;
+                }
+                return Ok(());
+            };
+            let result = self
+                .send_locked(id, Prompt::User(&draft.text, draft.images), stops)
+                .await;
             let mut state = self.state();
             if let Some(chat) = state.chats.get_mut(id) {
                 if result.is_ok() {
@@ -195,14 +217,33 @@ impl Engine {
         }
     }
 
+    pub(super) fn resume_job(&self, id: &str, stops: u64, message: String) {
+        {
+            let mut state = self.state();
+            if state.stopping {
+                return;
+            }
+            let Some(chat) = state.chats.get_mut(id).filter(|chat| chat.stops == stops) else {
+                return;
+            };
+            if chat.job_results.len() >= MAX_MESSAGES {
+                eprintln!("chat {id}: the job continuation queue is full");
+                return;
+            }
+            chat.job_results.push_back(message);
+        }
+        self.queue_soon(id);
+    }
+
     /// Run outside the event reader, under the chat's `ops` lock.
     pub(super) fn queue_soon(&self, id: &str) {
-        if !self
-            .state()
-            .chats
-            .get(id)
-            .is_some_and(|chat| !chat.waiting.is_empty())
-        {
+        if !self.state().chats.get(id).is_some_and(|chat| {
+            (!chat.waiting.is_empty() || !chat.job_results.is_empty())
+                && chat
+                    .process
+                    .as_ref()
+                    .is_none_or(|running| !running.live.working() && running.questions.is_empty())
+        }) {
             return;
         }
         let (engine, id) = (self.clone(), id.to_owned());

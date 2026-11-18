@@ -746,6 +746,8 @@ async fn change(changes: &mut Option<Changes>) -> Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct Notice {
     kind: NoticeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job: Option<String>,
     chat: String,
     title: String,
     body: String,
@@ -754,6 +756,7 @@ struct Notice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum NoticeKind {
+    Job,
     Finished,
     Input,
     Failed,
@@ -796,9 +799,19 @@ async fn tell(engine: Engine, phones: Arc<Phones>, alert: Alert) -> Option<Up> {
 }
 
 async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
+    if let AlertKind::Job { id, title, status } = &alert.kind {
+        return Ok(Some(Notice {
+            kind: NoticeKind::Job,
+            job: Some(id.clone()),
+            chat: alert.chat.clone(),
+            title: title.clone(),
+            body: status.clone(),
+        }));
+    }
     let view = engine.view(&alert.chat, Window::Latest(1)).await?;
     let last = view.page.messages.last();
     let (kind, body) = match alert.kind {
+        AlertKind::Job { .. } => return Ok(None),
         AlertKind::Finished => (NoticeKind::Finished, last.map(text).unwrap_or_default()),
         AlertKind::Failed => {
             let error = last.and_then(error);
@@ -828,6 +841,7 @@ async fn notice(engine: &Engine, alert: &Alert) -> Result<Option<Notice>> {
         .unwrap_or_else(|| "Untitled chat".into());
     Ok(Some(Notice {
         kind,
+        job: None,
         chat: view.chat.id,
         title: one_line(&title, BODY_CHARS).unwrap_or_default(),
         body: one_line(&body, BODY_CHARS).unwrap_or_default(),

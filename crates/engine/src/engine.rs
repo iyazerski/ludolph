@@ -1,3 +1,4 @@
+mod jobs;
 mod queue;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -33,6 +34,7 @@ use crate::title::Titler;
 use crate::transcript::{self, Image, Page, Tail, ToolOutput, Transcripts, Window};
 use crate::turns::{Counts, Diff, Snapshot, Turns};
 use crate::watch::{Changes, Watcher};
+pub(crate) use jobs::Request as JobRequest;
 pub use queue::Queued;
 
 const WATCH_LATENCY: Duration = Duration::from_millis(100);
@@ -81,6 +83,7 @@ struct Inner {
     state: Mutex<State>,
     list: watch::Sender<u64>,
     alerts: broadcast::Sender<Alert>,
+    jobs: jobs::Jobs,
     transcripts: Arc<Mutex<Transcripts>>,
     watching: AbortHandle,
     titler: Arc<Titler>,
@@ -131,6 +134,7 @@ struct Chat {
     stops: u64,
     sent: VecDeque<i64>,
     waiting: VecDeque<queue::Waiting>,
+    job_results: VecDeque<String>,
     /// Another pi wrote a prompt to the session, so sending waits for a
     /// take-over.
     elsewhere: bool,
@@ -152,6 +156,7 @@ impl Default for Chat {
             stops: 0,
             sent: VecDeque::new(),
             waiting: VecDeque::new(),
+            job_results: VecDeque::new(),
             elsewhere: false,
             named: None,
             titling: false,
@@ -271,13 +276,24 @@ pub struct Alert {
     pub kind: AlertKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AlertKind {
     Finished,
     /// A failed run; explicitly stopped runs don't alert.
     Failed,
     Interrupted,
     Input,
+    Job {
+        id: String,
+        title: String,
+        status: String,
+    },
+}
+
+#[derive(Debug)]
+enum Prompt<'a> {
+    User(&'a str, Vec<Attachment>),
+    Job(&'a str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +317,7 @@ impl Engine {
     pub async fn start(config: Config) -> Result<Self> {
         std::fs::create_dir_all(&config.state_dir)
             .with_context(|| format!("creating {}", config.state_dir.display()))?;
+        let jobs = jobs::Jobs::open(&config.state_dir)?;
         let runtime_path = config.state_dir.join("runtime.json");
         let (runtime, interrupted) = Runtime::reap(&runtime_path, config.grace).await?;
         std::fs::create_dir_all(&config.sessions_dir)
@@ -367,6 +384,7 @@ impl Engine {
             state: Mutex::new(state),
             list: watch::channel(0).0,
             alerts: broadcast::channel(ALERTS).0,
+            jobs,
             transcripts: Arc::default(),
             watching: watching.abort_handle(),
             titler: Arc::new(Titler::new(config.pi.clone())),
@@ -606,18 +624,14 @@ impl Engine {
             self.enqueue(id, &text, images, stops)?;
             return Ok((Delivery::Queued, text));
         }
-        let delivery = self.send_locked(id, &text, images, stops).await?;
+        let delivery = self
+            .send_locked(id, Prompt::User(&text, images), stops)
+            .await?;
         Ok((delivery, text))
     }
 
     /// Send while holding the chat's command lock, bypassing the waiting queue.
-    async fn send_locked(
-        &self,
-        id: &str,
-        text: &str,
-        images: Vec<Attachment>,
-        stops: u64,
-    ) -> Result<Delivery> {
+    async fn send_locked(&self, id: &str, input: Prompt<'_>, stops: u64) -> Result<Delivery> {
         let pi = self.current_process(id).await?;
         self.finish_run(id).await;
         let (working, cwd) = {
@@ -649,7 +663,11 @@ impl Engine {
             }
         }
         let settled = self.live_of(id, &pi, |live| live.settled());
-        let delivery = self.prompt(id, &pi, text, images, stops).await;
+        let title_from = match &input {
+            Prompt::User(text, _) => Some(*text),
+            Prompt::Job(_) => None,
+        };
+        let delivery = self.prompt(id, &pi, input, stops).await;
         if let (Ok(Delivery::Started), Some(settled)) = (&delivery, settled)
             && self.live_of(id, &pi, |live| live.started(settled)) == Some(true)
         {
@@ -665,7 +683,9 @@ impl Engine {
             chat.run = None;
         }
         let delivery = delivery?;
-        if delivery != Delivery::Handled {
+        if delivery != Delivery::Handled
+            && let Some(text) = title_from
+        {
             self.title_soon(id, text);
         }
         Ok(delivery)
@@ -677,14 +697,22 @@ impl Engine {
         Arc::ptr_eq(&running.pi, pi).then(|| f(&mut running.live))
     }
 
-    async fn prompt(
-        &self,
-        id: &str,
-        pi: &Pi,
-        text: &str,
-        images: Vec<Attachment>,
-        stops: u64,
-    ) -> Result<Delivery> {
+    async fn prompt(&self, id: &str, pi: &Pi, input: Prompt<'_>, stops: u64) -> Result<Delivery> {
+        let (text, images) = match input {
+            Prompt::User(text, images) => (text, images),
+            Prompt::Job(message) => {
+                let text = format!("/{} {}", jobs::CUSTOM_TYPE, serde_json::to_string(message)?);
+                let answer = pi
+                    .call_checked(json!({"type": "prompt", "message": text}), || {
+                        self.check_stops(id, stops)
+                    })
+                    .await?;
+                if answer["disposition"] != "handled" {
+                    bail!("pi did not handle the background job continuation");
+                }
+                return Ok(Delivery::Started);
+            }
+        };
         // pi ignores `steer` when no run is going, so the answer says which
         // happened, even if a run started or ended meanwhile.
         let expanded = if ludolph_prompt::skill_words(text)
@@ -712,12 +740,7 @@ impl Engine {
             command["images"] = Value::Array(images.collect());
         }
         let answer = pi
-            .call_checked(command, || {
-                if self.stops(id) != stops {
-                    bail!("stopped before it was sent");
-                }
-                Ok(())
-            })
+            .call_checked(command, || self.check_stops(id, stops))
             .await?;
         match answer["disposition"].as_str() {
             Some("started") => Ok(Delivery::Started),
@@ -725,6 +748,13 @@ impl Engine {
             Some("handled") => Ok(Delivery::Handled),
             other => bail!("pi answered the prompt with {other:?}"),
         }
+    }
+
+    fn check_stops(&self, id: &str, stops: u64) -> Result<()> {
+        if self.stops(id) != stops {
+            bail!("stopped before it was sent");
+        }
+        Ok(())
     }
 
     /// Callers hold `ops` so the next run cannot start before this snapshot.
@@ -1008,6 +1038,7 @@ impl Engine {
             }
             state.chats.remove(id);
         }
+        self.0.jobs.cancel_chat(id);
         self.0.turns.forget(id)?;
         self.save_index()?;
         self.changed();
@@ -1473,6 +1504,7 @@ impl Engine {
             let running = chat.and_then(|chat| {
                 chat.stops += 1;
                 chat.waiting.clear();
+                chat.job_results.clear();
                 chat.changed();
                 chat.process.as_mut()
             });
@@ -1495,9 +1527,11 @@ impl Engine {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        self.state().stopping = true;
         self.0.watching.abort();
         self.stop_pairing();
         self.disconnect();
+        self.0.jobs.shutdown().await;
         let cleanup = self
             .0
             .cleanup
@@ -1508,8 +1542,7 @@ impl Engine {
             _ = cleanup.await;
         }
         let (processes, working): (Vec<Arc<Pi>>, Vec<String>) = {
-            let mut state = self.state();
-            state.stopping = true;
+            let state = self.state();
             let running = state
                 .chats
                 .iter()
@@ -1618,8 +1651,17 @@ impl Engine {
         if !cwd.is_dir() {
             bail!("this chat's folder, {}, no longer exists", cwd.display());
         }
-        let (extensions, env) =
+        let (extensions, mut env) =
             agent_tools::pi_options(&self.0.config.extensions, &self.settings());
+        env.push((
+            "LUDOLPH_ENGINE_SOCKET".to_owned(),
+            self.0
+                .config
+                .state_dir
+                .join("engine.sock")
+                .to_string_lossy()
+                .into_owned(),
+        ));
         let options = Options {
             program: self.0.config.pi.clone(),
             cwd,
@@ -1696,7 +1738,8 @@ impl Engine {
         if let Event::MessageStart { message } | Event::MessageEnd { message } = event {
             chat.sent(message);
             if let Some(run) = chat.run.as_mut().filter(|run| run.key.is_none())
-                && message["role"] == "user"
+                && (message["role"] == "user"
+                    || (message["role"] == "custom" && message["customType"] == jobs::CUSTOM_TYPE))
             {
                 run.key = message["timestamp"].as_i64();
                 chat.latest_turn = run.key;
@@ -1717,7 +1760,7 @@ impl Engine {
             Event::AgentSettled { aborted } => {
                 if !aborted {
                     let failed = running.live.failure().is_some();
-                    if failed || chat.waiting.is_empty() {
+                    if failed || (chat.waiting.is_empty() && chat.job_results.is_empty()) {
                         alert = Some(if failed {
                             AlertKind::Failed
                         } else {

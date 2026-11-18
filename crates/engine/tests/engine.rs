@@ -9,6 +9,7 @@ use ludolph_engine::engine::{
 use ludolph_engine::seal::{Keys, Purpose};
 use ludolph_engine::server;
 use ludolph_engine::settings::{Notify, Settings};
+use ludolph_engine::tools::{self, Tool};
 use ludolph_engine::transcript::{Part, Role, ToolState, Window};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -108,6 +109,200 @@ fn last_prompt(chat: &ChatInfo) -> Option<&str> {
     chat.summary.as_ref()?.last_prompt.as_deref()
 }
 
+async fn job(engine: &Engine, chat: &str, request: Value) -> Value {
+    tools::call(
+        engine,
+        Tool::BackgroundJob,
+        json!({"chat": chat, "request": request}),
+    )
+    .await
+    .unwrap()
+}
+
+async fn job_alert(
+    alerts: &mut tokio::sync::broadcast::Receiver<ludolph_engine::engine::Alert>,
+) -> (String, String) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let AlertKind::Job { id, status, .. } = alerts.recv().await.unwrap().kind {
+                return (id, status);
+            }
+        }
+    })
+    .await
+    .expect("the job should send its completion notice")
+}
+
+#[tokio::test]
+async fn background_job_runs_its_hook_then_resumes_after_the_chat_is_idle() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(30)).await;
+    let id = engine.create(dir.path()).await.unwrap();
+    engine.send(&id, "ask", Vec::new()).await.unwrap();
+    let waiting = view_until(&engine, &id, |view| view.question.is_some()).await;
+    let question = waiting.question.unwrap();
+    let mut alerts = engine.alerts();
+    let started = job(
+        &engine,
+        &id,
+        json!({
+            "action": "start", "title": "Check build", "command": "printf 'build passed\\n'",
+            "timeout_seconds": 5,
+            "on_success": {"command": "printf 'cleaned up\\n'", "notify_user": true, "resume_chat": "Review the build result."},
+            "on_failure": {"command": "printf 'unexpected\\n'"},
+        }),
+    )
+    .await;
+    assert_eq!(started["status"], "running");
+    let (job_id, notice) = job_alert(&mut alerts).await;
+    assert_eq!(started["id"], job_id);
+    assert_eq!(notice, "Command: Succeeded. Hook: Succeeded");
+    let status = job(&engine, &id, json!({"action": "status", "id": job_id})).await;
+    assert_eq!(status["job"]["hook"]["status"], "succeeded");
+    assert_eq!(status["output"], "build passed\ncleaned up\n");
+
+    let view = engine.view(&id, Window::Latest(10)).await.unwrap();
+    assert!(
+        view.page
+            .messages
+            .iter()
+            .all(|message| message.role != Role::System)
+    );
+    engine
+        .respond(
+            &id,
+            &question.id,
+            ludolph_engine::engine::Reply::Value("red".into()),
+        )
+        .await
+        .unwrap();
+    fn completion(view: &View) -> Option<&str> {
+        view.page
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::System)
+            .flat_map(|message| &message.parts)
+            .find_map(|part| match part {
+                Part::Text { text } if text.starts_with("Ludolph background job: Check build") => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+    }
+    let view = view_until(&engine, &id, |view| {
+        view.chat.status == Status::Idle && completion(view).is_some()
+    })
+    .await;
+    let message = completion(&view).unwrap();
+    assert!(message.contains("Review the build result."));
+    assert!(!message.contains("cleaned up"));
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn background_job_resumes_on_failed_cleanup_without_running_another_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(30)).await;
+    let chat = engine.create(dir.path()).await.unwrap();
+    engine.send(&chat, "hello", Vec::new()).await.unwrap();
+    view_until(&engine, &chat, |view| view.chat.status == Status::Idle).await;
+    let started = job(
+        &engine,
+        &chat,
+        json!({
+            "action": "start", "title": "Release", "command": "printf released", "timeout_seconds": 5,
+            "on_success": {"command": "exit 3", "resume_chat": "Report the release."},
+            "on_failure": {"command": "printf unexpected", "resume_chat": "Inspect the cleanup failure."},
+        }),
+    ).await;
+    let view = view_until(&engine, &chat, |view| {
+        view.chat.status == Status::Idle
+            && view.page.messages.iter().any(|message| {
+                message.role == Role::System
+                    && message.parts.iter().any(|part| {
+                        matches!(
+                            part,
+                            Part::Text { text } if text.contains("Inspect the cleanup failure.") &&
+                                text.contains("Command: Succeeded. Hook: Failed (exit code 3)") &&
+                                !text.contains("Report the release.")
+                        )
+                    })
+            })
+    })
+    .await;
+    assert_eq!(last_prompt(&view.chat), Some("hello"));
+    let result = job(
+        &engine,
+        &chat,
+        json!({"action": "status", "id": started["id"]}),
+    )
+    .await;
+    assert_eq!(result["job"]["status"], "succeeded");
+    assert_eq!(result["job"]["hook"]["status"], "failed");
+    assert_eq!(result["output"], "released");
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn background_job_keeps_main_failure_and_can_cancel_a_running_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(30)).await;
+    let chat = engine.create(dir.path()).await.unwrap();
+    let mut alerts = engine.alerts();
+    let failed = job(
+        &engine,
+        &chat,
+        json!({
+            "action": "start", "title": "Fail and report", "command": "exit 7",
+            "timeout_seconds": 5, "on_failure": {"command": "printf diagnostic", "notify_user": true},
+        }),
+    )
+    .await;
+    let (id, _) = job_alert(&mut alerts).await;
+    assert_eq!(id, failed["id"]);
+    let result = job(&engine, &chat, json!({"action": "status", "id": id})).await;
+    assert_eq!(result["job"]["status"], "failed");
+    assert_eq!(result["job"]["code"], 7);
+    assert_eq!(result["job"]["hook"]["status"], "succeeded");
+    assert_eq!(result["output"], "diagnostic");
+
+    let waiting = job(
+        &engine,
+        &chat,
+        json!({
+            "action": "start", "title": "Long check", "command": "sleep 30",
+            "timeout_seconds": 60, "on_failure": {"command": "printf unexpected", "notify_user": true},
+        }),
+    )
+    .await;
+    let cancelled = job(
+        &engine,
+        &chat,
+        json!({"action": "cancel", "id": waiting["id"]}),
+    )
+    .await;
+    assert_eq!(cancelled["cancelRequested"], true);
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let status = job(
+                &engine,
+                &chat,
+                json!({"action": "status", "id": waiting["id"]}),
+            )
+            .await;
+            if status["job"]["status"] != "running" {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the cancelled job should stop");
+    assert_eq!(result["output"], "");
+    assert_eq!(result["job"]["status"], "cancelled");
+    engine.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_chat_runs_stops_when_idle_and_resumes() {
     let dir = tempfile::tempdir().unwrap();
@@ -171,7 +366,8 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
     assert_eq!(
         log[0],
         format!(
-            "start --mode rpc --session-id {id} --extension {}",
+            "start --mode rpc --session-id {id} --extension {} --extension {}",
+            extensions.join("background-jobs.js").display(),
             extensions.join("routing.js").display()
         )
     );
@@ -2232,6 +2428,36 @@ async fn the_relay_link_answers_the_phones_calls_and_tells_it_what_happened() {
         (&finished["kind"], &finished["body"]),
         (&json!("finished"), &json!("You picked red."))
     );
+    let args = json!({"chat": chat, "request": {"action": "list"}});
+    let (list_jobs, nonce) = sealed_call(&phone, 11, "background_job", args);
+    socket
+        .send(Message::Text(list_jobs.to_string().into()))
+        .await
+        .unwrap();
+    let rejected = until_from_mac(&mut socket, |m| m["id"] == 11).await;
+    assert_eq!(
+        opened_reply(&phone, nonce, &rejected),
+        json!({"error": "the phone can't call background_job"})
+    );
+    let started = job(
+        &engine,
+        &chat,
+        json!({
+            "action": "start", "title": "Check publication", "command": "printf private-output",
+            "timeout_seconds": 5,
+            "on_success": {"command": "printf private-hook-output", "notify_user": true},
+        }),
+    )
+    .await;
+    let notice = until_from_mac(&mut socket, |m| m["type"] == "notify").await;
+    assert_eq!(
+        opened_notice(&phone, &notice),
+        json!({
+            "kind": "job", "job": started["id"], "chat": chat, "title": "Check publication",
+            "body": "Command: Succeeded. Hook: Succeeded",
+        })
+    );
+
     let again = json!({"tool": "create_chat", "args": project, "op": "op-1"});
     let (again, again_nonce) = sealed(&phone, 19, &again);
     socket

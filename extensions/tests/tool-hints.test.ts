@@ -106,6 +106,22 @@ test("hints at foreground waits, hidden check status, file reads, and truncated 
 	}
 });
 
+test("prefers the job tool over a detached watcher or foreground CI wait", async () => {
+	const jobs = (pi: ExtensionAPI) => pi.registerTool({
+		name: "background_job", label: "Background job", description: "",
+		parameters: Type.Object({}), execute: async () => ({ content: [], details: undefined }),
+	});
+	for (const command of ["nohup sh /tmp/watch.sh >/dev/null 2>&1 &", "gh run watch 1 --exit-status"]) {
+		await withTestSession([hints, jobs], async (session) => {
+			const result = await session.extensionRunner.emitToolResult({
+				type: "tool_result", toolName: "bash", toolCallId: "call",
+				input: { command }, content: [], isError: false, details: undefined,
+			});
+			expect(JSON.stringify(result?.content)).toContain("Use `background_job`");
+		});
+	}
+});
+
 test("points symbol searches to the connected language server", async () => {
 	// Stands in for the lspyx MCP server's tools, which pi lists once the server connects.
 	const lspyx = (pi: ExtensionAPI) => pi.registerTool({ name: "mcp__lspyx__explore", label: "explore", description: "",
