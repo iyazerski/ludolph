@@ -51,12 +51,28 @@ impl Runtime {
             .filter(|(_, process)| process.running)
             .map(|(session, _)| session.clone())
             .collect();
+        Ok((Self::reset(path)?, interrupted))
+    }
+
+    pub(crate) fn recover_jobs(path: &Path) -> Result<Self> {
+        let leftovers: BTreeMap<String, Process> =
+            ludolph_json_file::load(path)?.unwrap_or_default();
+        for process in leftovers.into_values() {
+            if start_time(process.pid) == Some(process.started) {
+                // Stop the whole job at once: ending only its shell could orphan the command.
+                kill_group(process.pid);
+            }
+        }
+        Self::reset(path)
+    }
+
+    fn reset(path: &Path) -> Result<Self> {
         let runtime = Self {
             path: path.to_owned(),
             processes: BTreeMap::new(),
         };
         runtime.save()?;
-        Ok((runtime, interrupted))
+        Ok(runtime)
     }
 
     pub fn add(&mut self, session: &str, pid: u32) -> Result<()> {

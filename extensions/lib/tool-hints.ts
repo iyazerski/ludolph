@@ -2,7 +2,7 @@ import { type ExtensionAPI, isBashToolResult } from "@earendil-works/pi-coding-a
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { checkRisk, producesFile, shellEdits, waitsInForeground } from "./shell.ts";
+import { checkRisk, producesFile, shellCommands, shellEdits, waitsInForeground } from "./shell.ts";
 
 /**
  * Add a one-line hint to a tool result when the call drifts from tool-routing.ts's list.
@@ -14,7 +14,7 @@ import { checkRisk, producesFile, shellEdits, waitsInForeground } from "./shell.
  * not the model, receives the nested result.
  */
 
-export type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "batch" | "parallel" | "uv" | "checks" | "recovery" | "output" | "github" | "lspyx" | "gopls";
+export type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "background" | "batch" | "parallel" | "uv" | "checks" | "recovery" | "output" | "github" | "lspyx" | "gopls";
 
 const HINTS: Record<HintKind, string> = {
 	github: "This may be the wrong GitHub account. You may run `gh auth switch` and retry without asking.",
@@ -22,7 +22,8 @@ const HINTS: Record<HintKind, string> = {
 	write: "Create files with the `write` tool, not heredocs.",
 	read: "Read files with the `read` tool (offset/limit), or parallel `tools.read` calls in codemode.",
 	jq: "Use `jq` to read JSON, not a Python script.",
-	sleep: "Don't sleep across turns. If the next step needs a result, wait for it in one bounded loop with a timeout. Run long work whose follow-ups don't need you, such as CI, in a detached watcher.",
+	sleep: "Don't sleep across turns. Keep short prerequisite waits bounded in one command.",
+	background: "Use `background_job` for long waits or detached work.",
 	parallel: "Calls in one message run in parallel. Chain dependent steps in one codemode script.",
 	batch: "Batch the next independent lookups in one codemode script.",
 	checks: "A pipe filter hides the check's exit code. Log the check to a file, save `$?`, then filter the log.",
@@ -237,7 +238,14 @@ export default function (pi: ExtensionAPI) {
 		scriptedPatches.delete(event.toolCallId);
 		const hints = new Set<HintKind>();
 		const command = event.toolName === "bash" && typeof event.input.command === "string" ? event.input.command : "";
-		if (command) for (const kind of commandHints(command)) hints.add(kind);
+		if (command) {
+			for (const kind of commandHints(command)) hints.add(kind);
+			if (pi.getActiveTools().includes("background_job")
+				&& (hints.has("sleep") || shellCommands(localPart(command)).some(({ background }) => background))) {
+				hints.delete("sleep");
+				hints.add("background");
+			}
+		}
 		const server = command ? symbolLookup(command) : undefined;
 		// The server's tools are listed once it connects, well before most searches.
 		if (server && pi.getAllTools().some((tool) => tool.name.startsWith(`mcp__${server}__`))) hints.add(server);

@@ -59,7 +59,7 @@ self.addEventListener("push", event => {
     if (!shown) return;
     await self.registration.showNotification(notice.title, {
       body: notice.body,
-      tag: notice.chat || notice.kind,
+      tag: notice.job || notice.chat || notice.kind,
       renotify: true,
       icon: "/icon-192.png",
       badge: "/badge.png",

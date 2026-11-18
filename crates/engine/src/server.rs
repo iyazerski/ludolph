@@ -13,7 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinSet};
 
-use crate::engine::Engine;
+use crate::engine::{AlertKind, Engine};
 use crate::feed::{self, Feed};
 use crate::tools::{self, Tool};
 
@@ -192,6 +192,27 @@ fn subscription(
             json!({"event": "chats", "subscription": id}),
             out,
         ))),
+        "job_notices" => {
+            let mut alerts = engine.alerts();
+            Ok(Box::pin(async move {
+                loop {
+                    match alerts.recv().await {
+                        Ok(alert) => {
+                            if let AlertKind::Job { id: job, title, status } = alert.kind
+                                && out.send(json!({
+                                    "event": "job_notices", "subscription": id,
+                                    "chat": alert.chat, "id": job, "title": title, "status": status,
+                                })).await.is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }))
+        }
         "chat" => {
             let args: ChatArgs = serde_json::from_value(args).context("invalid arguments")?;
             let changes = engine.subscribe_chat(&args.chat)?;

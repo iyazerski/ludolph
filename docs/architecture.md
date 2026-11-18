@@ -89,11 +89,17 @@ Ludolph's pi extensions live in `extensions/` and ship as one JS file each in `C
 - The sidecar and the second-opinion reviewer load no extensions. A GUI subagent loads only `gui.js` in its role mode, which adds no subagent tools. So no child can start another.
 - Browser and computer use install browse or Cua Driver only after the user confirms. Both run their MCP server inside a subagent, so a chat's pi doesn't start them until a task needs them.
 
+## Background jobs
+
+Jobs belong to the engine and the originating chat, not to a Pi process or window. Running commands and hooks use one timeout, and results keep a bounded output tail in memory. The engine stops jobs on shutdown and reaps recorded jobs after a crash. It never reruns them or their hooks automatically.
+
+At most one shell hook runs. It follows the main command's exit status. A timeout or cancellation does not start a hook. Notices and continuations follow the combined outcome, so a failed success hook triggers failure delivery without running a second hook. Cancellation suppresses both. User notices contain the job title and outcomes, not the commands or output. A continuation waits for the chat to be idle and does not overtake queued user messages. Stop clears pending continuations and prevents older jobs from resuming the chat. Pi persists delivered results as custom messages, not user prompts. The phone cannot call the job tool.
+
 ## Turn changes
 
 A run, not pi's `turn_start`, is the unit of a diff: everything from the prompt that starts it until pi settles, including steering messages. The engine snapshots the working tree before it forwards the prompt and again when the run settles, so no tool can change a file before the first snapshot.
 
-Snapshots must never change the user's repository. They use a temporary copy of the index (`GIT_INDEX_FILE`) and a private object store with the repo's objects as an alternate. They add only the paths `git status` names, so a large repo costs about one `git status`. `.gitignore` is respected, which keeps ignored secrets out. Changed blobs are copied into the chat's own store, so diffs survive commits and later edits.
+The snapshots span the run, not background work that outlives it. Snapshots must never change the user's repository. They use a temporary copy of the index (`GIT_INDEX_FILE`) and a private object store with the repo's objects as an alternate. They add only the paths `git status` names, so a large repo costs about one `git status`. `.gitignore` is respected, which keeps ignored secrets out. Changed blobs are copied into the chat's own store, so diffs survive commits and later edits.
 
 ## Engine API
 

@@ -19,7 +19,7 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// The `--extension` paths and environment for a chat's pi.
 pub fn pi_options(dir: &Path, settings: &Settings) -> (Vec<PathBuf>, Vec<(String, String)>) {
-    let mut extensions = Vec::new();
+    let mut extensions = vec![dir.join("background-jobs.js")];
     let mut env = Vec::new();
     if settings.tool_routing {
         extensions.push(dir.join("routing.js"));

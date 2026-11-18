@@ -31,6 +31,41 @@ impl Shared {
         let prefs = Arc::new(write_prefs(&rt, prefs_path));
         Self { rt, client, prefs }
     }
+
+    pub(crate) fn job_notices(&self, app: &AppHandle<State>) -> Subscription {
+        #[derive(serde::Deserialize)]
+        struct Notice {
+            chat: String,
+            id: String,
+            title: String,
+            status: String,
+        }
+
+        let window = app.clone();
+        rune_notify::on_click(move |click| {
+            if let Some(chat) = click.get("chat").map(str::to_owned) {
+                window.update(move |s, _| s.present(&chat));
+            }
+        });
+        let app = app.clone();
+        self.client.subscribe(
+            "job_notices",
+            serde_json::json!({}),
+            Arc::new(move |record| {
+                let Ok(notice) = serde_json::from_value::<Notice>(record) else {
+                    return;
+                };
+                app.update(move |s, _| {
+                    let notification = rune_notify::Notification::new(notice.id, &notice.title)
+                        .body(&notice.status)
+                        .info("chat", notice.chat);
+                    if !rune_notify::post(&notification) {
+                        s.notify(&format!("{}: {}", notice.title, notice.status));
+                    }
+                });
+            }),
+        )
+    }
 }
 
 pub struct Api {

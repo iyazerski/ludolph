@@ -249,16 +249,25 @@ def prompt(command):
             control(json.loads(line))
         log("exit")
         sys.exit(0)
-    respond(command, {"disposition": "started"})
-    content = expand(command["message"])
-    if command.get("images"):
-        content = [{"type": "text", "text": content}] + command["images"]
-    user = {"role": "user", "content": content, "timestamp": now()}
-    # Written before it's reported, the harder order for telling whose it is.
-    write(user)
+    text = command["message"]
+    job_type = "ludolph-job-result"
+    if text.startswith(f"/{job_type} "):
+        respond(command, {"disposition": "handled"})
+        content = json.loads(text.split(" ", 1)[1])
+        opening = {"role": "custom", "customType": job_type, "content": content,
+                   "display": True, "timestamp": now()}
+        write({"customType": job_type, "content": content, "display": True}, "custom_message")
+    else:
+        respond(command, {"disposition": "started"})
+        content = expand(text)
+        if command.get("images"):
+            content = [{"type": "text", "text": content}] + command["images"]
+        opening = {"role": "user", "content": content, "timestamp": now()}
+        # Written before it's reported, the harder order for telling whose it is.
+        write(opening)
     emit({"type": "agent_start"})
-    emit({"type": "message_start", "message": user})
-    emit({"type": "message_end", "message": user})
+    emit({"type": "message_start", "message": opening})
+    emit({"type": "message_end", "message": opening})
     if command["message"] == "crash":
         log("crash")
         os._exit(1)

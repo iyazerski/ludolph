@@ -72,6 +72,7 @@ ring = "0.17"
 # The windows. Rune is pre-release and changes often: keep one tested revision.
 rune = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0", features = ["markdown"] }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
 rune-theme-opencode = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
 # With only `ring` enabled, rustls picks its crypto provider on its own;
 # tokio-tungstenite leaves that to the app.

@@ -22,7 +22,9 @@ const TOOL_ROUTING = `Minimize tool turns and returned output.
 - Use \`write\` for new files or deliberate complete rewrites, not patches or heredocs.
 - Inline scripts only for logic needing a language or library: codemode JS for tool results, otherwise \`bun -e\` or \`uv run python -\`.
 - Checks: log each check to a file and save \`$?\` before filtering. Commit or push only after checks pass. In codemode, check Bash \`exit_code\`, not just \`output\`.
-- Waiting: don't sleep across turns. When the next step needs a result, wait in one bounded command, such as \`timeout 600 sh -c 'until [ -s out.txt ]; do sleep 10; done'\`. For long work whose follow-ups don't need you, such as CI, start a detached watcher that logs results and runs the follow-ups, then return control. Codemode has no timers.`;
+- Waiting: keep short prerequisite waits bounded in one command. Don't sleep across turns. Codemode has no timers.`;
+
+const BACKGROUND = "- Long work: use `background_job` instead of `nohup`, shell backgrounding, or waiting in Bash. In `on_success` or `on_failure`, set `notify_user` when the user needs the result, `resume_chat` with a specific next step when the agent needs it, or `command` for a deterministic hook. Return control after starting the job.";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
@@ -30,7 +32,7 @@ export default function (pi: ExtensionAPI) {
 		if (options.toolSnippets.bash) options.toolSnippets.bash = "Execute bash commands in the cwd, fresh each call (rg, fd, jq, git, etc.)";
 		// The list routes work through codemode, so it only applies while codemode is available.
 		if (!pi.getActiveTools().includes("codemode")) return;
-		options.sections.tool_routing = TOOL_ROUTING;
+		options.sections.tool_routing = pi.getActiveTools().includes("background_job") ? `${TOOL_ROUTING}\n${BACKGROUND}` : TOOL_ROUTING;
 		// The list covers these built-in rules.
 		options.toolGuidelines.read = (options.toolGuidelines.read ?? []).filter(
 			(rule) => !rule.startsWith("Use read to examine files"),
