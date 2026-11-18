@@ -125,7 +125,7 @@ jobs:
               throw "Missing icon resource in $exe"
             }
           }
-          & ./scripts/test-windows-reopen.ps1 "$install/Ludolph.exe"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/test-windows-reopen.ps1 -App "$install/Ludolph.exe"
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'pull_request' && !cancelled()
         with:
