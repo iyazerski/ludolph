@@ -13,11 +13,14 @@ mod view;
 mod wsl;
 
 use std::cell::{Cell, OnceCell, RefCell};
+#[cfg(not(windows))]
 use std::fs::File;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use anyhow::{Context, Result, bail};
+#[cfg(not(windows))]
+use anyhow::bail;
+use anyhow::{Context, Result};
 use rune::{App, AppSpec, Chrome, MacWindowOptions, RunOptions, WindowOptions, WindowSpec};
 
 use self::api::{Api, Shared};
@@ -98,13 +101,39 @@ pub struct Opts {
 pub fn run(opts: Opts) -> Result<()> {
     std::fs::create_dir_all(&opts.state_dir)
         .with_context(|| format!("creating {}", opts.state_dir.display()))?;
-    // Two would both take the shortcut, and each press would toggle twice.
-    let lock_path = opts.state_dir.join("app.lock");
-    let lock =
-        File::create(&lock_path).with_context(|| format!("opening {}", lock_path.display()))?;
-    if lock.try_lock().is_err() {
-        bail!("Ludolph is already running");
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let folder = opts
+            .state_dir
+            .canonicalize()
+            .context("resolving the state folder")?;
+        let bytes: Vec<u8> = folder
+            .as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let hash = ring::digest::digest(&ring::digest::SHA256, &bytes);
+        let suffix: String = hash
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        // Separate state folders must keep separate instances, including development builds.
+        if !rune::single_instance(&format!("dev.iyazerski.ludolph.{suffix}")) {
+            return Ok(());
+        }
     }
+    // macOS forwards launches through LaunchServices; Windows forwards them above.
+    #[cfg(not(windows))]
+    let lock = {
+        let path = opts.state_dir.join("app.lock");
+        let lock = File::create(&path).with_context(|| format!("opening {}", path.display()))?;
+        if lock.try_lock().is_err() {
+            bail!("Ludolph is already running");
+        }
+        lock
+    };
     #[cfg(windows)]
     rune::set_app_icon_resource(1);
     #[cfg(target_os = "windows")]
@@ -251,6 +280,9 @@ pub fn run(opts: Opts) -> Result<()> {
         eprintln!("{e:#}");
     }
     drop(rt);
+    #[cfg(not(windows))]
     drop(lock);
+    #[cfg(windows)]
+    rune::release_instance();
     Ok(())
 }

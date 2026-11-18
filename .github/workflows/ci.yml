@@ -125,6 +125,15 @@ jobs:
               throw "Missing icon resource in $exe"
             }
           }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/test-windows-reopen.ps1 -App "$install/Ludolph.exe"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' && !cancelled()
+        with:
+          name: windows-reopen-test-app
+          retention-days: 3
+          path: |
+            target/debug/ludolph.exe
+            scripts/test-windows-reopen.ps1
 
   relay:
     runs-on: ubuntu-24.04
