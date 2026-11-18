@@ -11,6 +11,8 @@ mod main_window;
 mod project;
 mod queue;
 mod settings;
+#[cfg(windows)]
+mod setup;
 mod sidebar;
 mod theme;
 mod widgets;
@@ -27,6 +29,15 @@ pub const CORNER: f32 = 14.0;
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     cx.zoom(s.prefs.borrow().text_size.zoom());
+    #[cfg(windows)]
+    if s.window == Window::Main
+        && !matches!(s.page, Page::Settings(_))
+        && let Some(status) = &s.wsl_setup
+        && !matches!(status, crate::wsl::Status::Ready)
+    {
+        let k = &theme::get(s.prefs.borrow().accent).base;
+        return rune_kit::root(setup::view(status, k), toast(s, k));
+    }
     match s.window {
         Window::Quick => quick(s),
         Window::Main => main_window::view(s, cx),

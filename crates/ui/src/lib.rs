@@ -9,6 +9,8 @@ mod paths;
 mod prefs;
 mod update;
 mod view;
+#[cfg(windows)]
+mod wsl;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::fs::File;
@@ -103,6 +105,8 @@ pub fn run(opts: Opts) -> Result<()> {
     if lock.try_lock().is_err() {
         bail!("Ludolph is already running");
     }
+    #[cfg(windows)]
+    rune::set_app_icon_resource(1);
     #[cfg(target_os = "windows")]
     if let Err(error) = rune_notify::register(&rune_notify::Identity::new(
         "dev.iyazerski.ludolph",

@@ -15,6 +15,7 @@ on:
       - "scripts/bundle.sh"
       - "scripts/dmg.py"
       - "scripts/windows.iss"
+      - "scripts/wsl-install.sh"
       - "scripts/release_notes.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -82,9 +83,19 @@ jobs:
         with:
           name: linux-${{ matrix.arch }}
           path: ${{ env.ASSET }}*
+      - name: Build WSL engine
+        run: LUDOLPH_VERSION="$VERSION" cargo build --release --no-default-features --locked -p ludolph
+      - name: Package WSL engine
+        run: |
+          cp target/release/ludolph dist/ludolph/bin/
+          tar -czf "ludolph-engine-linux-${{ matrix.arch }}.tar.gz" -C dist ludolph
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wsl-engine-${{ matrix.arch }}
+          path: ludolph-engine-linux-*.tar.gz
 
   windows:
-    needs: [ci, version]
+    needs: [ci, version, linux]
     runs-on: windows-2025
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -97,6 +108,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
       - name: Build app
         run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wsl-engine-*
+          path: target/wsl
+          merge-multiple: true
       - name: Build installer
         shell: pwsh
         run: |
@@ -170,8 +186,29 @@ jobs:
           shasum -a 256 Ludolph.dmg > Ludolph.dmg.sha256
       - uses: actions/download-artifact@v4
         with:
+          pattern: linux-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: dist
+      - name: Sign Windows update
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          printf '%s' "$CERT_P12" | base64 --decode > "$work/cert.p12"
+          openssl pkcs12 -in "$work/cert.p12" -passin env:CERT_PASSWORD -nocerts -nodes -out "$work/key.pem"
+          openssl rsa -in "$work/key.pem" -RSAPublicKey_out -outform DER -out "$work/public.der"
+          cmp assets/update-public-key.der "$work/public.der"
+          sha=$(cut -d' ' -f1 dist/Ludolph-Setup.exe.sha256)
+          printf '{"version":"%s","sha256":"%s"}\n' "$VERSION" "$sha" > dist/windows-update.json
+          openssl dgst -sha256 -sign "$work/key.pem" -out dist/windows-update.sig dist/windows-update.json
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -196,7 +233,7 @@ jobs:
           - **Homebrew:** \`brew install --cask iyazerski/tap/ludolph\`
           - **Terminal:** \`curl -fsSL https://raw.githubusercontent.com/$GH_REPO/main/install.sh | sh\`
           - **Linux:** run the Terminal command above. It installs \`ludolph\` to \`~/.local/bin\`.
-          - **Windows:** run the Terminal command in WSL, then run \`Ludolph-Setup.exe\` below to install the Windows app.
+          - **Windows:** run \`Ludolph-Setup.exe\` below, then open Ludolph from the Start menu. It guides WSL and pi setup. Future updates install from Ludolph and keep its WSL engine in sync.
           EOF
       - name: Update Homebrew cask
         env:

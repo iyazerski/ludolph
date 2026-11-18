@@ -20,11 +20,24 @@ OutputDir=target
 OutputBaseFilename=Ludolph-Setup
 SetupIconFile=assets\Ludolph.ico
 UninstallDisplayIcon={app}\Ludolph.exe
+CloseApplications=yes
+RestartApplications=no
 
 [Files]
 Source: "target\{#BuildProfile}\ludolph.exe"; DestDir: "{app}"; DestName: "Ludolph.exe"
 Source: "LICENSE"; DestDir: "{app}"
 Source: "THIRD_PARTY_LICENSES.md"; DestDir: "{app}"
+Source: "target\wsl\ludolph-engine-linux-*.tar.gz"; DestDir: "{app}\wsl"
 
 [Icons]
 Name: "{autoprograms}\Ludolph"; Filename: "{app}\Ludolph.exe"
+
+[Run]
+Filename: "{app}\Ludolph.exe"; Description: "Open Ludolph"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Ludolph.exe"; Flags: nowait skipifnotsilent; Check: IsUpdate
+
+[Code]
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;

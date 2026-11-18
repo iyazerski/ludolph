@@ -28,11 +28,11 @@ To build it from source instead, run `make install`. It builds Ludolph.app, puts
 
 ### Linux and Windows
 
-Linux and Windows get a smaller app: no dictation, browser or computer use, Open at login, or built-in updates. On Windows, the engine and pi run in WSL.
+Linux and Windows get a smaller app: no dictation, browser or computer use, or Open at login. On Windows, the engine and pi run in WSL.
 
 - **Linux:** run the Terminal command above. It installs `ludolph` to `~/.local/bin`. Run `ludolph` to open it. The engine logs to `~/.local/state/ludolph/engine.log`.
-- **Windows:** install pi in your default WSL distribution and run the Terminal command there. Then run [Ludolph-Setup.exe](https://github.com/iyazerski/ludolph/releases/latest/download/Ludolph-Setup.exe) and open Ludolph from the Start menu. Pick project folders in WSL (`\\wsl.localhost\...`) or on a drive. The Windows downloads aren't code-signed, so SmartScreen may still warn you.
-- **Updates:** Settings tells you when a new version is out. Run the Terminal command again to update. On Windows, also run the new installer.
+- **Windows:** run [Ludolph-Setup.exe](https://github.com/iyazerski/ludolph/releases/latest/download/Ludolph-Setup.exe) and open Ludolph from the Start menu. It guides WSL setup and installs its bundled engine after you approve. Install pi in your default WSL distribution when prompted, then sign in from Settings > Accounts. Pick project folders in WSL (`\\wsl.localhost\...`) or on a drive. The installer isn't Authenticode-signed, so SmartScreen may still warn you.
+- **Updates:** Settings tells you when a new version is out. On Windows, click Update to install the new app and restart it. Ludolph checks the release signature and updates its engine in the WSL distribution you approved. On Linux, run the Terminal command again.
 
 ## Use
 

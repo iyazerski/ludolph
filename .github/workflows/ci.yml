@@ -75,9 +75,20 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+      - name: Test offline WSL engine setup
+        run: |
+          cargo build --no-default-features --locked -p ludolph
+          cargo clippy --no-default-features --locked -p ludolph -- -D warnings
+          sh scripts/test-wsl-install.sh target/debug/ludolph
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'push'
+        with:
+          name: wsl-test-engine
+          path: target/wsl/*.tar.gz
 
   # Windows runs only the app; its engine is the Linux one, in WSL.
   windows:
+    needs: linux
     runs-on: windows-2025
 
     steps:
@@ -90,6 +101,11 @@ jobs:
         run: cargo clippy -p ludolph -p ludolph-ui --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test -p ludolph-ui --locked
+      - uses: actions/download-artifact@v4
+        if: github.event_name != 'push'
+        with:
+          name: wsl-test-engine
+          path: target/wsl
       - name: Test Windows installer
         if: github.event_name != 'push'
         run: |
@@ -102,6 +118,7 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer exited with $($process.ExitCode)" }
           $shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) Ludolph.lnk
           if (!(Test-Path $shortcut)) { throw "Missing Start menu shortcut" }
+          if (!(Test-Path "$install/wsl/ludolph-engine-linux-x86_64.tar.gz")) { throw "Missing WSL engine" }
           foreach ($exe in @($setup, (Join-Path $install Ludolph.exe))) {
             $resources = llvm-readobj --coff-resources $exe
             if (!($resources | Select-String 'Type: GROUP_ICON \(ID 14\)')) {

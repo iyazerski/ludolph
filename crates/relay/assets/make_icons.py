@@ -82,7 +82,8 @@ def main() -> None:
     icns(desktop / "Ludolph.icns", *home, black, white)
     sizes = (16, 24, 32, 48, 64, 128, 256)
     *smaller, largest = [draw(size, *home, black, white) for size in sizes]
-    largest.save(desktop / "Ludolph.ico", sizes=[(size, size) for size in sizes], append_images=smaller)
+    # Bitmap resources avoid loading Windows image codecs before the first frame.
+    largest.save(desktop / "Ludolph.ico", sizes=[(size, size) for size in sizes], append_images=smaller, bitmap_format="bmp")
 
 
 if __name__ == "__main__":

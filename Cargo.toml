@@ -10,9 +10,13 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["desktop"]
+desktop = ["dep:ludolph-ui"]
+
 [dependencies]
 anyhow.workspace = true
-ludolph-ui.workspace = true
+ludolph-ui = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

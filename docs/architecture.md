@@ -6,7 +6,7 @@ How Ludolph fits together, and the rules that hold across modules. Module detail
 
 A Mac app for pi only, and an alternative to pi's terminal UI: it aims for the same features and controls, through pi's RPC mode. Chats grouped by project, a main window, a quick window on a global shortcut, and a phone web app through a self-hosted relay. No other agents, Ludolph accounts, sync, terminals, or worktrees.
 
-Linux, and Windows with the engine in WSL, get a reduced app: what needs macOS (dictation, browser and computer use, Open at login, the Keychain, installing updates, battery and idle checks for the phone) is left out rather than rebuilt. Windows runs only the app, because pi and the tools it runs belong in WSL.
+Linux, and Windows with the engine in WSL, get a reduced app: what needs macOS (dictation, browser and computer use, Open at login, the Keychain, battery and idle checks for the phone) is left out rather than rebuilt. Windows runs only the app, because pi and the tools it runs belong in WSL. Linux installs updates outside the app.
 
 ## Processes
 
@@ -106,6 +106,10 @@ The snapshots span the run, not background work that outlives it. Snapshots must
 The app talks to the engine over a Unix socket (`engine.sock`, mode 0600) with JSON lines: calls with an `id`, and subscriptions that push changes. Pushing instead of polling keeps hidden windows at 0% CPU. The phone calls the same tools through the relay, but the engine allows only the phone's subset, and it checks that itself, not the relay.
 
 ## Releases
+
+The Windows installer carries both Linux engine architectures, built without the default `desktop` feature so WSL doesn't need GUI libraries. Setup changes only the current user's Ludolph files in the approved WSL distribution, not pi, its settings, or its sessions. The app connects only to a matching engine version. Consent to engine installation and later upgrades is tied to the distribution, so changing WSL's default requires new consent before installing there.
+
+Windows updates verify an RSA-SHA256 signature over the version and installer checksum before running the installer. The public key is pinned in the app and comes from the Mac release certificate. CI signs with that certificate's existing private key, never a key shipped in a download. The installer carries the matching engines, so they inherit its signature check. HTTPS and checksums alone don't authenticate an update. Manual Windows installers still lack Authenticode signing.
 
 Each push to `main` that changes the app publishes `vX.Y.n` (`.github/workflows/release.yml`). Every release is signed with the same self-signed certificate (`MACOS_CERT_P12`), so macOS keeps the microphone, speech, and Keychain grants across updates. The app isn't notarized. Release notes use the original commit subjects of each merged PR. An API failure stops the release rather than leaving changes out of the notes.
 

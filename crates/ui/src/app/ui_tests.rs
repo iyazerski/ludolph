@@ -55,6 +55,38 @@ fn click(runtime: &mut Runtime<State>, element: &ElementInfo) {
     settle(runtime);
 }
 
+#[cfg(windows)]
+#[test]
+fn setup_explains_engine_consent_and_pi_steps() {
+    use crate::wsl::Status;
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
+    ui.state.wsl_setup = Some(Status::NeedsEngine("Ubuntu".into()));
+    settle(&mut ui);
+    let elements = ui.elements();
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.label.as_deref() == Some("Install engine"))
+    );
+    assert!(elements.iter().any(|e| {
+        e.text
+            .as_deref()
+            .is_some_and(|t| t.contains("Ubuntu") && t.contains("keep it in sync"))
+    }));
+    assert!(ui.state.prefs.borrow().managed_wsl.is_none());
+
+    ui.state.wsl_setup = Some(Status::NeedsPi("Ubuntu".into()));
+    settle(&mut ui);
+    let elements = ui.elements();
+    for label in [
+        "pi install instructions",
+        "Open WSL terminal",
+        "Check again",
+    ] {
+        assert!(elements.iter().any(|e| e.label.as_deref() == Some(label)));
+    }
+}
+
 #[test]
 fn chat_code_cards_wrap_independently_and_copy_without_changing_source() {
     let source = format!(

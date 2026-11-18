@@ -22,6 +22,8 @@ pub struct Prefs {
     pub release_checked: Option<DateTime<Utc>>,
     /// The release whose notice was closed, so it isn't offered again.
     pub dismissed_release: Option<String>,
+    #[cfg(windows)]
+    pub managed_wsl: Option<String>,
 }
 
 /// A window's place, in physical pixels, as Rune reads and takes it.
@@ -44,6 +46,8 @@ impl Default for Prefs {
             text_size: TextSize::default(),
             release_checked: None,
             dismissed_release: None,
+            #[cfg(windows)]
+            managed_wsl: None,
         }
     }
 }
