@@ -90,6 +90,24 @@ jobs:
         run: cargo clippy -p ludolph -p ludolph-ui --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test -p ludolph-ui --locked
+      - name: Test Windows installer
+        if: github.event_name != 'push'
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build --locked -p ludolph
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DBuildProfile=debug scripts/windows.iss
+          $setup = Resolve-Path target/Ludolph-Setup.exe
+          $install = Join-Path $env:RUNNER_TEMP Ludolph
+          $process = Start-Process $setup -ArgumentList "/VERYSILENT /NORESTART /DIR=`"$install`"" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited with $($process.ExitCode)" }
+          $shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) Ludolph.lnk
+          if (!(Test-Path $shortcut)) { throw "Missing Start menu shortcut" }
+          foreach ($exe in @($setup, (Join-Path $install Ludolph.exe))) {
+            $resources = llvm-readobj --coff-resources $exe
+            if (!($resources | Select-String 'Type: GROUP_ICON \(ID 14\)')) {
+              throw "Missing icon resource in $exe"
+            }
+          }
 
   relay:
     runs-on: ubuntu-24.04

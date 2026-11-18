@@ -23,6 +23,9 @@ tokio = { workspace = true, features = ["io-std"] }
 plist.workspace = true
 serde.workspace = true
 
+[build-dependencies]
+embed-resource = "3"
+
 [workspace]
 resolver = "3"
 members = ["crates/*"]

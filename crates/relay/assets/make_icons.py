@@ -67,8 +67,8 @@ def icns(path: Path, plate: float, plate_radius: float, scale: float, bg: tuple,
 
 
 def main() -> None:
-    """Write every icon the phone app references into the first folder, and the Mac app's into the second."""
-    out, mac = Path(sys.argv[1]), Path(sys.argv[2])
+    """Write the phone icons into the first folder and the desktop icons into the second."""
+    out, desktop = Path(sys.argv[1]), Path(sys.argv[2])
     black, white = (0, 0, 0, 255), (255, 255, 255, 255)
     # Home screen icons: a plate of 80.5 % of the canvas, as macOS app icons have.
     home = (0.805, 0.181, 0.5)
@@ -79,8 +79,10 @@ def main() -> None:
     draw(512, 1.0, 0.0, 0.48, black, white).save(out / "icon-maskable.png")
     # Notification badge: Android uses only the alpha channel.
     draw(96, 1.0, 0.0, 0.8, (0, 0, 0, 0), white).save(out / "badge.png")
-    # The Mac app's icon: the home screen one, on the plate macOS icons share.
-    icns(mac / "Ludolph.icns", *home, black, white)
+    icns(desktop / "Ludolph.icns", *home, black, white)
+    sizes = (16, 24, 32, 48, 64, 128, 256)
+    *smaller, largest = [draw(size, *home, black, white) for size in sizes]
+    largest.save(desktop / "Ludolph.ico", sizes=[(size, size) for size in sizes], append_images=smaller)
 
 
 if __name__ == "__main__":

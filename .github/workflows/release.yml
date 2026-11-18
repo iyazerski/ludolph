@@ -14,6 +14,7 @@ on:
       - "assets/**"
       - "scripts/bundle.sh"
       - "scripts/dmg.py"
+      - "scripts/windows.iss"
       - "scripts/release_notes.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -96,14 +97,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
       - name: Build app
         run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" scripts/windows.iss
       - name: Package
         run: |
           cp target/release/ludolph.exe Ludolph.exe
-          sha256sum Ludolph.exe > Ludolph.exe.sha256
+          cp target/Ludolph-Setup.exe Ludolph-Setup.exe
+          for asset in Ludolph.exe Ludolph-Setup.exe; do
+            sha256sum "$asset" > "$asset.sha256"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: Ludolph.exe*
+          path: |
+            Ludolph.exe*
+            Ludolph-Setup.exe*
 
   release:
     needs: [ci, version, linux, windows]
@@ -190,7 +201,7 @@ jobs:
           - **Homebrew:** \`brew install --cask iyazerski/tap/ludolph\`
           - **Terminal:** \`curl -fsSL https://raw.githubusercontent.com/$GH_REPO/main/install.sh | sh\`
           - **Linux:** run the Terminal command above. It installs \`ludolph\` to \`~/.local/bin\`.
-          - **Windows:** run the Terminal command in WSL, then download \`Ludolph.exe\` below and open it.
+          - **Windows:** run the Terminal command in WSL, then run \`Ludolph-Setup.exe\` below to install the Windows app. Use \`Ludolph.exe\` if you prefer a portable copy.
           EOF
       - name: Update Homebrew cask
         env:
