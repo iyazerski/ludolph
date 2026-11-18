@@ -118,14 +118,13 @@ pub fn user_message(page: &Existing, k: &Kit, source: &str, key: &str) -> El {
 
 fn user_prose(k: &Kit, source: &str) -> El {
     let shown = source.trim().to_owned();
-    let spans = super::widgets::markdown_spans(k, &shown);
-    let links = crate::markup::links(&shown);
-    let mut body = rich(shown, spans)
+    let markup = crate::markup::analyze(&shown);
+    let mut body = rich(shown, super::widgets::markdown_spans(k, markup.shades))
         .font(k.ty.body.lh(22.4))
         .color(k.c.text_base)
         .wrap_anywhere()
         .selectable(true);
-    for (range, url) in links {
+    for (range, url) in markup.links {
         body = body.link(Link::new(range, url));
     }
     body.on_link(|s: &mut State, url: &str, tx: &mut Tx| s.open_link(url, tx))
