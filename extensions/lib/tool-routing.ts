@@ -24,7 +24,7 @@ const TOOL_ROUTING = `Minimize tool turns and returned output.
 - Checks: log each check to a file and save \`$?\` before filtering. Commit or push only after checks pass. In codemode, check Bash \`exit_code\`, not just \`output\`.
 - Waiting: keep short prerequisite waits bounded in one command. Don't sleep across turns. Codemode has no timers.`;
 
-const BACKGROUND = "- Long work: use `background_job` instead of `nohup`, shell backgrounding, or waiting in Bash. In `on_success` or `on_failure`, set `notify_user` when the user needs the result, `resume_chat` with a specific next step when the agent needs it, or `command` for a deterministic hook. Return control after starting the job.";
+const BACKGROUND = "- Long waits: use `background_job` instead of a detached watcher or foreground polling. Return control when no remaining work in this turn needs the result.";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {

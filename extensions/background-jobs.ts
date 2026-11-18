@@ -53,7 +53,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Start, list, inspect, or cancel engine-owned Bash jobs in this chat. Starting returns a job ID immediately. Use notify_user or resume_chat in on_success or on_failure for outcome-specific follow-ups. Cancelled jobs run no further actions.",
 		promptSnippet: "Run long work without blocking this turn, with optional user notices and chat continuation.",
 		promptGuidelines: [
-			"Use background_job for long commands, remote checks, and follow-ups instead of detaching shell scripts or repeatedly polling. Use the same approval rules as for Bash, including for hooks and continuations.",
+			"Use the same approval rules as for Bash, including for hooks and continuations.",
 			"When asked to clean up a branch after a PR merges, use on_success.command. Before switching to the default branch and deleting the local branch, verify the PR merged at the expected head and the worktree is clean and still on that branch at that head. Stop if a check fails.",
 		],
 		parameters,
