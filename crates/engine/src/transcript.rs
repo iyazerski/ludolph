@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -215,7 +216,7 @@ impl Transcripts {
         let is_result = |meta: &Meta| {
             meta.stamp
                 .as_ref()
-                .is_some_and(|s| &*s.role == "toolResult" && s.call.as_deref() == Some(call))
+                .is_some_and(|s| s.role() == "toolResult" && s.call() == Some(call))
         };
         let Some(result) = scan.entries.iter().rposition(is_result) else {
             return Ok(None);
@@ -230,7 +231,7 @@ impl Transcripts {
             if scan.entries[i]
                 .stamp
                 .as_ref()
-                .is_some_and(|s| &*s.role == "assistant")
+                .is_some_and(|s| s.role() == "assistant")
             {
                 let reply = scan
                     .parse::<FullEntry>(path, i)?
@@ -326,19 +327,57 @@ enum Kind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct Stamp {
-    role: Box<str>,
-    time: i64,
-    call: Option<Box<str>>,
+enum Stamp {
+    Message {
+        role: Box<str>,
+        time: i64,
+        call: Option<Box<str>>,
+    },
+    Custom {
+        kind: Box<str>,
+        content: u64,
+    },
 }
 
 impl Stamp {
     fn of(message: &Value) -> Option<Self> {
-        Some(Self {
-            role: message["role"].as_str()?.into(),
+        let role = message["role"].as_str()?;
+        if role == "custom" {
+            return Some(Self::custom(
+                message["customType"].as_str()?,
+                &message["content"],
+            ));
+        }
+        Some(Self::Message {
+            role: role.into(),
             time: message["timestamp"].as_i64()?,
             call: message["toolCallId"].as_str().map(Into::into),
         })
+    }
+
+    fn custom(kind: &str, content: &Value) -> Self {
+        // Pi gives the saved custom entry a new timestamp. Keep a fingerprint,
+        // not a second copy of its content, to match it against the live event.
+        let mut hash = DefaultHasher::new();
+        content.hash(&mut hash);
+        Self::Custom {
+            kind: kind.into(),
+            content: hash.finish(),
+        }
+    }
+
+    fn role(&self) -> &str {
+        match self {
+            Self::Message { role, .. } => role,
+            Self::Custom { .. } => "custom",
+        }
+    }
+
+    fn call(&self) -> Option<&str> {
+        match self {
+            Self::Message { call, .. } => call.as_deref(),
+            Self::Custom { .. } => None,
+        }
     }
 }
 
@@ -557,10 +596,10 @@ impl Scan {
     ) -> Result<Option<Piece>> {
         let meta = &self.entries[i];
         let stamp = meta.stamp.as_ref();
-        if stamp.is_some_and(|s| &*s.role == "toolResult") {
+        if stamp.is_some_and(|s| s.role() == "toolResult") {
             let message = MessageView {
                 role: "toolResult".to_owned(),
-                tool_call_id: stamp.and_then(|s| s.call.as_deref()).map(Into::into),
+                tool_call_id: stamp.and_then(Stamp::call).map(Into::into),
                 is_error: meta.failed,
                 calls: meta.calls.clone(),
                 ..MessageView::default()
@@ -624,6 +663,10 @@ struct Line<'a> {
     parent_id: Option<Cow<'a, str>>,
     display: Option<bool>,
     #[serde(borrow)]
+    custom_type: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    content: Option<&'a serde_json::value::RawValue>,
+    #[serde(borrow)]
     message: Option<Head<'a>>,
 }
 
@@ -653,8 +696,12 @@ struct Head<'a> {
 
 impl Line<'_> {
     fn stamp(&self) -> Option<Stamp> {
+        if self.kind == "custom_message" {
+            let content = serde_json::from_str(self.content?.get()).ok()?;
+            return Some(Stamp::custom(self.custom_type.as_deref()?, &content));
+        }
         let message = self.message.as_ref()?;
-        Some(Stamp {
+        Some(Stamp::Message {
             role: message.role.as_ref().into(),
             time: message.timestamp?,
             call: message.tool_call_id.as_deref().map(Into::into),

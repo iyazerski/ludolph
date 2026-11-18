@@ -67,7 +67,7 @@ A project is a session's `cwd`, as is, the way pi groups sessions. The git root 
 
 ### Live view
 
-pi reports messages before writing them, and its events carry no entry ids. So during a run the engine keeps a live tail built from events. The transcript is the file's path, then the tail messages the file doesn't have yet, matched by role, `timestamp`, and `toolCallId`. The tail is dropped when the run settles. It keeps no tool output or image data.
+pi reports messages before writing them, and its events carry no entry ids. So during a run the engine keeps a live tail built from events. The transcript is the file's path, then the tail messages the file doesn't have yet, matched by role, `timestamp`, and `toolCallId`. Custom messages match by type and a content fingerprint because pi gives their saved entries new timestamps. The tail is dropped when the run settles. It keeps no tool output or image data.
 
 Clients subscribe to a chat's feed. The first frame resets the page. Later frames carry only new or changed messages, at most every 150 ms (200 ms over the relay). Changes in between merge, so a slow client gets the latest state, not a backlog. Pages are anchored on their first message, not a count from the end, so loaded history stays in place as new messages come.
 

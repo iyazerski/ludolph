@@ -513,6 +513,56 @@ fn a_compaction_the_agent_works_on_after_stays_in_its_turn() {
 }
 
 #[test]
+fn a_job_result_appears_once_before_and_after_it_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s1.jsonl");
+    std::fs::write(&path, format!("{HEADER}\n")).unwrap();
+    let content =
+        "Ludolph background job: Check release\nStatus: Failed (exit code 1)\nJob ID: job-1";
+    let result = json!({"role": "custom", "customType": "ludolph-job-result", "display": true,
+        "content": content, "timestamp": 1777629600000_i64});
+    let first = json!({"role": "assistant", "stopReason": "toolUse", "timestamp": 1777629600002_i64,
+        "content": [bash("c1", "make test")]});
+    let streaming = json!({"role": "assistant", "timestamp": 1777629600003_i64,
+        "content": [{"type": "text", "text": "Checking the failure."}]});
+    let output = json!({"role": "toolResult", "toolCallId": "c1", "content": [], "timestamp": 1777629600003_i64});
+    let messages = [result, first.clone(), output.clone()];
+    let tail = Tail {
+        messages: &messages,
+        streaming: Some(&streaming),
+        ..Tail::default()
+    };
+    let mut transcripts = Transcripts::default();
+    let before = transcripts
+        .page(Some(&path), tail, &Window::Latest(40))
+        .unwrap();
+    assert_eq!(before.messages.len(), 2);
+    assert_eq!(before.messages[0].parts, [text(content)]);
+
+    append(
+        &path,
+        &[
+            json!({"type": "custom_message", "id": "job", "parentId": null,
+            "timestamp": "2026-05-01T10:00:00.001Z", "customType": "ludolph-job-result",
+            "display": true, "content": content}),
+            message("a1", Some("job"), first),
+            message("r1", Some("a1"), output),
+        ],
+    );
+    let written = transcripts
+        .page(Some(&path), tail, &Window::Latest(40))
+        .unwrap();
+    assert_eq!(shown(&written), shown(&before));
+    assert_eq!(written.messages[0].id, "job");
+    assert_eq!(written.messages[1].id, "a1");
+    let restored = transcripts
+        .page(Some(&path), Tail::default(), &Window::Latest(40))
+        .unwrap();
+    assert_eq!(restored.messages.len(), 2);
+    assert_eq!(restored.messages[0], written.messages[0]);
+}
+
+#[test]
 fn the_live_tail_adds_what_the_file_lacks_to_the_running_turn() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("s1.jsonl");
