@@ -7,6 +7,37 @@ $first = $null
 $second = $null
 $stderr = Join-Path $env:LUDOLPH_DIR "app.stderr"
 
+# MainWindowHandle can switch to an untitled helper after Ludolph's window closes.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class LudolphReopenWindow {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string className, string title);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern bool PostMessageW(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
+
+    public static IntPtr Find(int processId) {
+        IntPtr window = IntPtr.Zero;
+        while ((window = FindWindowExW(IntPtr.Zero, window, null, "Ludolph")) != IntPtr.Zero) {
+            uint owner;
+            GetWindowThreadProcessId(window, out owner);
+            if (owner == (uint)processId && IsWindowVisible(window)) return window;
+        }
+        return IntPtr.Zero;
+    }
+
+    public static bool Close(IntPtr window) {
+        return PostMessageW(window, 0x0010, UIntPtr.Zero, IntPtr.Zero);
+    }
+}
+'@
+
 function Wait-For([scriptblock]$Condition, [string]$Failure) {
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
@@ -24,16 +55,19 @@ try {
     Wait-For {
         $first.Refresh()
         if ($first.HasExited) { throw "First launch exited with $($first.ExitCode)" }
-        $first.MainWindowHandle -ne 0
+        [LudolphReopenWindow]::Find($first.Id) -ne [IntPtr]::Zero
     } "The main window didn't open"
-    Write-Output "First window: $($timer.ElapsedMilliseconds) ms, PID $($first.Id), handle $($first.MainWindowHandle), title $($first.MainWindowTitle)"
+    Write-Output "First window: $($timer.ElapsedMilliseconds) ms, PID $($first.Id), handle $([LudolphReopenWindow]::Find($first.Id)), title Ludolph"
 
     for ($cycle = 1; $cycle -le 3; $cycle++) {
-        if (!$first.CloseMainWindow()) { throw "Couldn't close the main window" }
+        $window = [LudolphReopenWindow]::Find($first.Id)
+        if ($window -eq [IntPtr]::Zero -or ![LudolphReopenWindow]::Close($window)) {
+            throw "Couldn't send the close request to Ludolph's window"
+        }
         Wait-For {
             $first.Refresh()
             if ($first.HasExited) { throw "Closing the window ended the app" }
-            $first.MainWindowHandle -eq 0
+            [LudolphReopenWindow]::Find($first.Id) -eq [IntPtr]::Zero
         } "The main window didn't close"
 
         $timer.Restart()
@@ -44,7 +78,7 @@ try {
         Wait-For {
             $first.Refresh()
             if ($first.HasExited) { throw "The original app exited during reopen" }
-            $first.MainWindowHandle -ne 0
+            [LudolphReopenWindow]::Find($first.Id) -ne [IntPtr]::Zero
         } "Launching again didn't restore the original app's window"
         Write-Output "Reopen cycle ${cycle}: $($timer.ElapsedMilliseconds) ms, original PID $($first.Id)"
         $second.Dispose()
@@ -56,7 +90,7 @@ try {
         if ($first.HasExited) {
             Write-Output "App at failure: PID $($first.Id), exit code $($first.ExitCode)"
         } else {
-            Write-Output "Window at failure: PID $($first.Id), handle $($first.MainWindowHandle), title $($first.MainWindowTitle), responding $($first.Responding)"
+            Write-Output "Window at failure: PID $($first.Id), visible Ludolph handle $([LudolphReopenWindow]::Find($first.Id)), .NET candidate handle $($first.MainWindowHandle), title $($first.MainWindowTitle), responding $($first.Responding)"
         }
     }
     if (Test-Path $stderr) { Get-Content $stderr }
