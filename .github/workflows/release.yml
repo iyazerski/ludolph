@@ -104,17 +104,12 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" scripts/windows.iss
       - name: Package
         run: |
-          cp target/release/ludolph.exe Ludolph.exe
           cp target/Ludolph-Setup.exe Ludolph-Setup.exe
-          for asset in Ludolph.exe Ludolph-Setup.exe; do
-            sha256sum "$asset" > "$asset.sha256"
-          done
+          sha256sum Ludolph-Setup.exe > Ludolph-Setup.exe.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: |
-            Ludolph.exe*
-            Ludolph-Setup.exe*
+          path: Ludolph-Setup.exe*
 
   release:
     needs: [ci, version, linux, windows]
@@ -201,7 +196,7 @@ jobs:
           - **Homebrew:** \`brew install --cask iyazerski/tap/ludolph\`
           - **Terminal:** \`curl -fsSL https://raw.githubusercontent.com/$GH_REPO/main/install.sh | sh\`
           - **Linux:** run the Terminal command above. It installs \`ludolph\` to \`~/.local/bin\`.
-          - **Windows:** run the Terminal command in WSL, then run \`Ludolph-Setup.exe\` below to install the Windows app. Use \`Ludolph.exe\` if you prefer a portable copy.
+          - **Windows:** run the Terminal command in WSL, then run \`Ludolph-Setup.exe\` below to install the Windows app.
           EOF
       - name: Update Homebrew cask
         env:
