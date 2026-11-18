@@ -40,7 +40,7 @@ Ludolph uses pi's RPC mode (`docs/rpc.md`, `docs/rpc-extension-ui.md`), its sess
 - `/fork` and `/clone` copy entries, with their ids, into a new file.
 - pi loads a session once and then only appends (`session-manager.js`). It may still rewrite a whole file, for example when it migrates an old version on load.
 - pi doesn't lock session files or keep them open between writes (checked with `lsof`). Two pis on one session fork its history.
-- The `timestamp` of a user message in the file matches the one pi reports in its events.
+- The `timestamp` of a user message in the file matches the one pi reports in its events. Custom messages differ: the event has role `custom`, but the file entry has type `custom_message` and a new timestamp from when pi saves it. Match these by `customType` and content, not time.
 
 ## Wishlist
 
