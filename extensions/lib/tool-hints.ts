@@ -23,7 +23,7 @@ const HINTS: Record<HintKind, string> = {
 	read: "Read files with the `read` tool (offset/limit), or parallel `tools.read` calls in codemode.",
 	jq: "Use `jq` to read JSON, not a Python script.",
 	sleep: "Don't sleep across turns. Keep short prerequisite waits bounded in one command.",
-	background: "Use `background_job` for long waits or detached work. In `on_success` or `on_failure`, set `notify_user` for a user notification or `resume_chat` with the next step. Then return control.",
+	background: "Use `background_job` for long waits or detached work.",
 	parallel: "Calls in one message run in parallel. Chain dependent steps in one codemode script.",
 	batch: "Batch the next independent lookups in one codemode script.",
 	checks: "A pipe filter hides the check's exit code. Log the check to a file, save `$?`, then filter the log.",
