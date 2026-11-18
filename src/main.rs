@@ -25,8 +25,17 @@ const USAGE: &str = "usage: ludolph [--hidden]";
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        #[cfg(feature = "desktop")]
         [] => app(false),
+        #[cfg(feature = "desktop")]
         ["--hidden"] => app(true),
+        ["--version"] => {
+            println!(
+                "{}",
+                option_env!("LUDOLPH_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+            );
+            Ok(())
+        }
         #[cfg(unix)]
         // The state folder comes first, so the login shell can't move it away from
         // where `ludolph connect` looks.
@@ -53,6 +62,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(feature = "desktop")]
 fn app(hidden: bool) -> Result<()> {
     let state_dir = state_dir()?;
     // Outside the bundle, or with a development folder, you run the engine yourself.

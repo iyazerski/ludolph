@@ -20,6 +20,7 @@ ludolph-json-file.workspace = true
 ludolph-prompt.workspace = true
 pulldown-cmark.workspace = true
 qrcode.workspace = true
+ring.workspace = true
 rune = { workspace = true, features = ["native-file-dialog"] }
 rune-kit.workspace = true
 rune-notify.workspace = true
@@ -39,7 +40,7 @@ objc2-av-foundation.workspace = true
 objc2-avf-audio.workspace = true
 objc2-foundation.workspace = true
 objc2-speech.workspace = true
-ring.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+tempfile.workspace = true
 windows-sys.workspace = true

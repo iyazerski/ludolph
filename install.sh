@@ -53,7 +53,7 @@ if [ "$os" = linux ]; then
     exit 1
   fi
   if grep -qi microsoft /proc/version 2>/dev/null; then
-    echo "In Windows, get Ludolph.exe from https://github.com/$repo/releases/latest and open it."
+    echo "In Windows, run Ludolph-Setup.exe from https://github.com/$repo/releases/latest, then open Ludolph from the Start menu."
   else
     echo "Run ludolph to open it."
   fi

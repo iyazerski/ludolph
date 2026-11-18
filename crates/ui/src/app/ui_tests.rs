@@ -33,6 +33,11 @@ fn runtime(width: f32, window: Window) -> (tokio::runtime::Runtime, Runtime<Stat
         Rc::new(Cell::new(false)),
         Rc::new(OnceCell::new()),
     );
+    #[cfg(windows)]
+    let state = State {
+        wsl_setup: Some(crate::wsl::Status::Ready),
+        ..state
+    };
     let runtime = Runtime::new(
         state,
         crate::view::view,
@@ -53,6 +58,41 @@ fn click(runtime: &mut Runtime<State>, element: &ElementInfo) {
     runtime.pointer_down(x + w / 2.0, y + h / 2.0);
     runtime.pointer_up(x + w / 2.0, y + h / 2.0);
     settle(runtime);
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_explains_engine_consent_and_pi_steps() {
+    use crate::wsl::Status;
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
+    ui.update(|s, _| s.wsl_setup = Some(Status::NeedsEngine("Ubuntu".into())));
+    settle(&mut ui);
+    let elements = ui.elements();
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.label.as_deref() == Some("Install engine"))
+    );
+    assert!(elements.iter().any(|e| {
+        e.text
+            .as_deref()
+            .is_some_and(|t| t.contains("Ubuntu") && t.contains("keep it in sync"))
+    }));
+    assert!(ui.state.prefs.borrow().managed_wsl.is_none());
+
+    ui.update(|s, _| s.wsl_setup = Some(Status::NeedsPi("Ubuntu".into())));
+    settle(&mut ui);
+    let elements = ui.elements();
+    for label in [
+        "pi install instructions",
+        "Open WSL terminal",
+        "Check again",
+    ] {
+        assert!(
+            elements.iter().any(|e| e.label.as_deref() == Some(label)),
+            "missing setup action: {label}"
+        );
+    }
 }
 
 #[test]

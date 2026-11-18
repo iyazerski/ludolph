@@ -2,6 +2,10 @@
 
 #[cfg(target_os = "macos")]
 mod bundle;
+#[cfg(any(windows, test))]
+mod signed;
+#[cfg(windows)]
+mod windows;
 
 use std::process::Command;
 
@@ -10,6 +14,8 @@ use serde::Deserialize;
 
 #[cfg(target_os = "macos")]
 pub use bundle::{install, relaunch};
+#[cfg(windows)]
+pub use windows::{install, relaunch};
 
 const REPO: &str = "iyazerski/ludolph";
 
@@ -31,8 +37,8 @@ pub fn available() -> Result<Option<String>> {
     Ok(newer(latest, crate::VERSION)?.then(|| latest.to_owned()))
 }
 
-/// Outside macOS, Ludolph doesn't install updates itself: the release page has the downloads.
-#[cfg(not(target_os = "macos"))]
+/// Linux users install updates from the release page.
+#[cfg(target_os = "linux")]
 pub fn release_page(version: &str) -> String {
     format!("https://github.com/{REPO}/releases/tag/v{version}")
 }

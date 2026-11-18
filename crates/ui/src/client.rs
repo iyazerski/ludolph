@@ -15,7 +15,7 @@ const RETRY_MAX: Duration = Duration::from_secs(4);
 pub const DOWN: &str = "Ludolph's engine isn't running";
 #[cfg(windows)]
 pub const DOWN: &str =
-    "Ludolph's engine in WSL isn't running. Install Ludolph in WSL, then try again";
+    "Ludolph's engine in WSL isn't running. Open the main window to check setup.";
 
 /// How the app reaches the engine: its socket, which launchd keeps served.
 #[cfg(target_os = "macos")]
@@ -48,7 +48,16 @@ impl Link {
     pub fn new(_state_dir: &Path) -> std::io::Result<Self> {
         Ok(Self {
             program: PathBuf::from("wsl.exe"),
-            args: &["--cd", "~", "--exec", ".local/bin/ludolph", "connect"],
+            args: &[
+                "--cd",
+                "~",
+                "--exec",
+                "sh",
+                "-c",
+                r#"test "$("$HOME/.local/bin/ludolph" --version 2>/dev/null)" = "$1" && exec "$HOME/.local/bin/ludolph" connect"#,
+                "sh",
+                crate::VERSION,
+            ],
         })
     }
 

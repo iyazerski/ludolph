@@ -125,8 +125,8 @@ pub enum Update {
     Latest,
     Available(String),
     #[cfg_attr(
-        not(target_os = "macos"),
-        expect(dead_code, reason = "only Ludolph.app installs updates itself")
+        target_os = "linux",
+        expect(dead_code, reason = "Linux opens the release page for updates")
     )]
     Installing(String),
     Failed(String),
@@ -597,7 +597,7 @@ impl State {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     pub fn install_update(&mut self, tx: &mut Tx) {
         if let Some(page) = self.settings_page_mut()
             && let Update::Available(version) = &page.update
@@ -607,7 +607,7 @@ impl State {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub fn install_update(&mut self, _tx: &mut Tx) {
         let Some(page) = self.settings_page_mut() else {
             return;

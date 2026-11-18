@@ -6,6 +6,8 @@ mod draft;
 mod page;
 mod queue;
 mod settings;
+#[cfg(windows)]
+mod setup;
 #[cfg(test)]
 mod ui_tests;
 
@@ -54,6 +56,8 @@ pub struct State {
     pub api: Api,
     pub window: Window,
     pub engine_up: bool,
+    #[cfg(windows)]
+    pub wsl_setup: Option<crate::wsl::Status>,
     pub prefs: Rc<RefCell<Prefs>>,
     pub hotkey: Rc<Cell<Option<ShortcutId>>>,
     pub expand_tools: Rc<Cell<bool>>,
@@ -163,6 +167,8 @@ impl State {
             api,
             window,
             engine_up: false,
+            #[cfg(windows)]
+            wsl_setup: None,
             prefs,
             hotkey,
             expand_tools,
@@ -298,6 +304,10 @@ impl State {
             };
         }
         if shown {
+            #[cfg(windows)]
+            if self.wsl_setup.is_none() {
+                self.check_wsl();
+            }
             self.check_release();
             self.follow();
             self.load_details();
