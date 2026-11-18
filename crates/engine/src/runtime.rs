@@ -76,7 +76,8 @@ impl Runtime {
     }
 
     pub fn add(&mut self, session: &str, pid: u32) -> Result<()> {
-        let started = start_time(pid).ok_or_else(|| anyhow::anyhow!("pi {pid} exited"))?;
+        let started = start_time(pid)
+            .ok_or_else(|| anyhow::anyhow!("process {pid} exited before it could be recorded"))?;
         let process = Process {
             pid,
             started,

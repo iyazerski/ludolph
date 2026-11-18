@@ -1,6 +1,8 @@
 //! Engine-owned commands. Only a bounded output tail and recent results stay in memory.
 
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Mutex;
@@ -391,10 +393,13 @@ impl Engine {
 }
 
 fn spawn(runtime: &mut Runtime, id: &str, cwd: &Path, command: &str) -> Result<(Child, u32)> {
-    let child = Command::new("bash")
-        .args(["-o", "pipefail", "-c", &format!("exec 2>&1\n{command}")])
+    // Keep even short commands alive until their PID is recorded. If the engine
+    // dies before releasing the gate, read sees EOF and the job never runs.
+    let script = format!("IFS= read -r || exit 1\nexec </dev/null 2>&1\n{command}");
+    let mut child = Command::new("bash")
+        .args(["-o", "pipefail", "-c", &script])
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .process_group(0)
@@ -402,10 +407,20 @@ fn spawn(runtime: &mut Runtime, id: &str, cwd: &Path, command: &str) -> Result<(
         .spawn()
         .context("starting the background command")?;
     let pid = child.id().expect("a new child has a pid");
-    if let Err(error) = runtime.add(id, pid) {
+    let gate = child.stdin.take().expect("job start gate is piped");
+    let started = runtime
+        .add(id, pid)
+        .context("recording the background command")
+        .and_then(|()| {
+            // One byte in an empty pipe cannot block.
+            gate.into_owned_fd()
+                .and_then(|fd| File::from(fd).write_all(b"\n"))
+                .context("releasing the background command")
+        });
+    if let Err(error) = started {
         kill_group(pid);
         let _ = runtime.remove(id, pid);
-        return Err(error).context("recording the background command");
+        return Err(error);
     }
     Ok((child, pid))
 }

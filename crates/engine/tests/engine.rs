@@ -146,7 +146,7 @@ async fn background_job_runs_its_hook_then_resumes_after_the_chat_is_idle() {
         &engine,
         &id,
         json!({
-            "action": "start", "title": "Check build", "command": "printf 'build passed\\n'",
+            "action": "start", "title": "Check build", "command": "! read -r input && printf 'build passed\\n'",
             "timeout_seconds": 5,
             "on_success": {"command": "printf 'cleaned up\\n'", "notify_user": true, "resume_chat": "Review the build result."},
             "on_failure": {"command": "printf 'unexpected\\n'"},
