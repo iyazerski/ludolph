@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use rune::color::hex;
@@ -11,7 +12,7 @@ use super::icons;
 use crate::app::State;
 use crate::data::{Model, Project};
 use crate::labels::{short_model, tone_index};
-use crate::markup::{self, Shade};
+use crate::markup::Shade;
 
 const TONES: [&str; 8] = [
     "#94a3b8", "#93c5fd", "#c4b5fd", "#fda4af", "#fcd34d", "#6ee7b7", "#5eead4", "#fdba74",
@@ -60,8 +61,8 @@ pub fn rise_into_view(el: El, shown: bool, show: impl Fn(&mut State) -> bool + '
         })
 }
 
-pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
-    markup::shades(text)
+pub fn markdown_spans(k: &Kit, shades: Vec<(Range<usize>, Shade)>) -> Vec<Span> {
+    shades
         .into_iter()
         .map(|(range, shade)| {
             let span = Span::new(range.start, range.end);
@@ -69,6 +70,7 @@ pub fn markdown_spans(k: &Kit, text: &str) -> Vec<Span> {
                 Shade::Heading | Shade::Strong => span.weight(600.0),
                 Shade::Marker | Shade::Target => span.color(k.c.text_faint),
                 Shade::Link => span.color(k.c.text_accent),
+                Shade::WebUrl => span.color(k.c.text_accent).underline(k.c.text_accent),
                 Shade::Code => span.mono().color(super::theme::inline_code(k)),
                 Shade::Emphasis => span.italic(),
                 Shade::Skill => span.color(k.c.text_accent).weight(600.0),

@@ -1,12 +1,14 @@
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use linkify::{LinkFinder, LinkKind};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shade {
     Heading,
     Marker,
     Link,
+    WebUrl,
     Target,
     Code,
     Strong,
@@ -14,9 +16,21 @@ pub enum Shade {
     Skill,
 }
 
-pub fn shades(text: &str) -> Vec<(Range<usize>, Shade)> {
-    let mut out = Vec::new();
-    for (event, range) in parse(text) {
+#[derive(Debug, Default)]
+pub struct Markup {
+    pub shades: Vec<(Range<usize>, Shade)>,
+    pub links: Vec<(Range<usize>, String)>,
+}
+
+pub fn analyze(text: &str) -> Markup {
+    let mut markup = Markup::default();
+    let out = &mut markup.shades;
+    let mut finder = LinkFinder::new();
+    finder.kinds(&[LinkKind::Url]);
+    let autolink = text.contains("://");
+    let mut protected = 0;
+    let mut events = parse(text).peekable();
+    while let Some((event, mut range)) = events.next() {
         match event {
             Event::Start(Tag::Heading { .. }) => {
                 let end = range.start + text[range.clone()].trim_end().len();
@@ -32,7 +46,11 @@ pub fn shades(text: &str) -> Vec<(Range<usize>, Shade)> {
                 out.push((range.start..range.start + len, Shade::Marker));
             }
             Event::TaskListMarker(_) => out.push((range, Shade::Marker)),
-            Event::Start(Tag::Link { .. } | Tag::Image { .. }) => {
+            Event::Start(tag @ (Tag::Link { .. } | Tag::Image { .. })) => {
+                protected += 1;
+                if let Tag::Link { dest_url, .. } = tag {
+                    markup.links.push((range.clone(), dest_url.into_string()));
+                }
                 let source = &text[range.clone()];
                 match source.rfind("](").filter(|_| source.ends_with(')')) {
                     Some(at) => {
@@ -42,7 +60,30 @@ pub fn shades(text: &str) -> Vec<(Range<usize>, Shade)> {
                     None => out.push((range, Shade::Link)),
                 }
             }
-            Event::Code(_) | Event::Start(Tag::CodeBlock(_)) => out.push((range, Shade::Code)),
+            Event::Start(Tag::CodeBlock(_)) => {
+                protected += 1;
+                out.push((range, Shade::Code));
+            }
+            Event::End(TagEnd::Link | TagEnd::Image | TagEnd::CodeBlock) => protected -= 1,
+            Event::Text(_) if autolink && protected == 0 => {
+                // Pulldown can split plain text at punctuation inside a single URL.
+                while let Some((Event::Text(_), next)) = events.peek() {
+                    if next.start != range.end {
+                        break;
+                    }
+                    range.end = next.end;
+                    events.next();
+                }
+                for link in finder
+                    .links(&text[range.clone()])
+                    .filter(|l| is_web_url(l.as_str()))
+                {
+                    let span = range.start + link.start()..range.start + link.end();
+                    out.push((span.clone(), Shade::WebUrl));
+                    markup.links.push((span, link.as_str().to_owned()));
+                }
+            }
+            Event::Code(_) => out.push((range, Shade::Code)),
             Event::Start(Tag::Strong) => out.push((range, Shade::Strong)),
             Event::Start(Tag::Emphasis) => out.push((range, Shade::Emphasis)),
             _ => {}
@@ -56,16 +97,13 @@ pub fn shades(text: &str) -> Vec<(Range<usize>, Shade)> {
         }
         at = end;
     }
-    out
+    markup
 }
 
-pub fn links(text: &str) -> Vec<(Range<usize>, String)> {
-    parse(text)
-        .filter_map(|(event, range)| match event {
-            Event::Start(Tag::Link { dest_url, .. }) => Some((range, dest_url.into_string())),
-            _ => None,
-        })
-        .collect()
+pub fn is_web_url(text: &str) -> bool {
+    text.split_once("://").is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    })
 }
 
 pub fn list_break(text: &str, caret: usize) -> Option<(Range<usize>, String)> {

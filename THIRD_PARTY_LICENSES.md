@@ -6525,6 +6525,7 @@ Used by:
 - idna_adapter 1.2.2
 - indexmap 2.14.2
 - lazy_static 1.5.1
+- linkify 0.11.0
 - linux-raw-sys 0.12.1
 - linux-raw-sys 0.4.15
 - lock_api 0.4.14

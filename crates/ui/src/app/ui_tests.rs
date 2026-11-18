@@ -144,6 +144,74 @@ fn chat_code_cards_wrap_independently_and_copy_without_changing_source() {
 }
 
 #[test]
+fn pasted_web_link_opens_in_the_composer_without_rewriting_text() {
+    let url = "https://example.com/a_(b)?one=1&two=2";
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
+    let mut chat = Existing::new("test".into(), None);
+    chat.page = Some(vec![]);
+    ui.state.page = Page::Chat(Box::new(ChatPage::new(
+        0,
+        Target::Existing(chat),
+        TextEdit::default(),
+    )));
+    settle(&mut ui);
+    let composer = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("composer"))
+        .unwrap();
+    click(&mut ui, &composer);
+    ui.paste(url);
+    settle(&mut ui);
+    let open = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.label.as_deref() == Some("Open link"))
+        .expect("a pasted URL can be opened from the composer");
+    click(&mut ui, &open);
+    assert_eq!(ui.take_url_requests(), [url]);
+    assert_eq!(ui.state.chat().unwrap().composer.text, url);
+}
+
+#[test]
+fn user_message_opens_bare_url_without_prose_punctuation() {
+    let url = "https://example.com/a_(b)?one=1&two=2";
+    let source = format!("See ({url}). Or run `curl https://example.org`.");
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
+    let mut chat = Existing::new("test".into(), None);
+    chat.page = Some(vec![Message {
+        id: "message".into(),
+        role: Role::User,
+        created_at: 0,
+        ended_at: 0,
+        status: MessageStatus::Complete,
+        parts: vec![Part::Text {
+            text: source.clone(),
+        }],
+    }]);
+    ui.state.page = Page::Chat(Box::new(ChatPage::new(
+        0,
+        Target::Existing(chat),
+        TextEdit::default(),
+    )));
+    settle(&mut ui);
+    let (x, y) = ui.find(url).expect("the sent URL is linked in place");
+    ui.pointer_down(x, y);
+    ui.pointer_up(x, y);
+    settle(&mut ui);
+    assert_eq!(ui.take_url_requests(), [url]);
+    assert!(
+        ui.find("https://example.org").is_none(),
+        "code stays literal"
+    );
+    assert!(
+        ui.elements()
+            .iter()
+            .any(|e| e.text.as_deref() == Some(source.as_str()))
+    );
+}
+
+#[test]
 fn reasoning_menu_fills_its_popup_and_stop_has_no_background() {
     let (_rt, mut ui) = runtime(1120.0, Window::Main);
     ui.state.catalog = Catalog::Ready(serde_json::from_value(serde_json::json!({

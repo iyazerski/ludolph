@@ -1,6 +1,7 @@
 use rune::{El, Image, Key, KeyEvent, SurfaceFit, Tx, auto_grow, col, icon, row, text, text_input};
 use rune_kit::{
-    Combobox, ComboboxOption, IconButton, IconButtonVariant, Kit, Placement, PopupItem, PopupList,
+    Button, ButtonVariant, Combobox, ComboboxOption, ControlSize, IconButton, IconButtonVariant,
+    Kit, Placement, PopupItem, PopupList,
 };
 
 use super::icons;
@@ -21,7 +22,9 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         || editing.is_some_and(|edit| edit.images > 0);
     let stop = editing.is_none() && !typed && working;
     let dictating = !matches!(page.voice, Voice::Idle);
-    let field = text_input(&page.composer, k.ty.ui.lh(19.0))
+    let edit = &page.composer;
+    let parsed = markup::analyze(&edit.text);
+    let field = text_input(edit, k.ty.ui.lh(19.0))
         .key("composer")
         .label("Message")
         .description(if editing.is_some() {
@@ -40,7 +43,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
             k.c.text_faint,
         )
         .caret(k.c.text_base, k.selection())
-        .spans(markdown_spans(k, &page.composer.text))
+        .spans(markdown_spans(k, parsed.shades))
         .spellcheck(true)
         .on_edit(State::composer_field)
         .on_input_key(composer_key)
@@ -104,12 +107,33 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
             .build(k)
             .preserve_focus_on_press(true)
     });
+    // Rune gives primary clicks in a text input to caret placement, not to inline links.
+    let open_link = if !dictating && edit.focus == edit.anchor && !edit.is_composing() {
+        parsed
+            .links
+            .into_iter()
+            .find(|(range, url)| {
+                (range.start..=range.end).contains(&edit.focus) && markup::is_web_url(url)
+            })
+            .map(|(_, url)| {
+                Button::new("Open link")
+                    .variant(ButtonVariant::Ghost)
+                    .control_size(ControlSize::Small)
+                    .on_press_tx(move |s: &mut State, tx| s.open_link(&url, tx))
+                    .build(k)
+                    .key("open-composer-link")
+                    .preserve_focus_on_press(true)
+            })
+    } else {
+        None
+    };
     let tools = row()
         .w_full()
         .gap(8.0)
         .center_y()
         .child(model_picker(s, page, k, layer))
         .child(rune::spacer())
+        .children(open_link)
         .children(dictate)
         .child(send);
     let mut field_box = col()
