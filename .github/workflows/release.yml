@@ -203,7 +203,7 @@ jobs:
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
           printf '%s' "$CERT_P12" | base64 --decode > "$work/cert.p12"
-          openssl pkcs12 -in "$work/cert.p12" -passin env:CERT_PASSWORD -nocerts -nodes -out "$work/key.pem"
+          openssl pkcs12 -legacy -in "$work/cert.p12" -passin env:CERT_PASSWORD -nocerts -nodes -out "$work/key.pem"
           openssl rsa -in "$work/key.pem" -RSAPublicKey_out -outform DER -out "$work/public.der"
           cmp assets/update-public-key.der "$work/public.der"
           sha=$(cut -d' ' -f1 dist/Ludolph-Setup.exe.sha256)
