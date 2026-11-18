@@ -12,6 +12,7 @@ on:
       - "extensions/**"
       - "build.rs"
       - "assets/**"
+      - ".gitattributes"
       - "scripts/bundle.sh"
       - "scripts/dmg.py"
       - "scripts/windows.iss"

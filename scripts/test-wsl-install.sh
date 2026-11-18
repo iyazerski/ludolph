@@ -31,6 +31,11 @@ for attempt in $(seq 1 100); do
   if [ "$attempt" -eq 100 ]; then cat "$work/engine.log"; exit 1; fi
   sleep 0.1
 done
+# The socket exists before startup and signal handling finish. Wait for an API response.
+printf '{"id":"ready","call":"get_settings","args":{}}\n' | \
+  HOME="$work/home" LUDOLPH_DIR="$work/state" timeout 30 \
+  "$work/home/.local/bin/ludolph" connect >"$work/ready.json"
+jq -e '.id == "ready" and has("ok")' "$work/ready.json" >/dev/null
 HOME="$work/home" sh scripts/wsl-install.sh "$work/assets" "$version"
 wait "$engine_pid"
 engine_pid=
