@@ -33,6 +33,11 @@ fn runtime(width: f32, window: Window) -> (tokio::runtime::Runtime, Runtime<Stat
         Rc::new(Cell::new(false)),
         Rc::new(OnceCell::new()),
     );
+    #[cfg(windows)]
+    let state = State {
+        wsl_setup: Some(crate::wsl::Status::Ready),
+        ..state
+    };
     let runtime = Runtime::new(
         state,
         crate::view::view,
@@ -60,7 +65,7 @@ fn click(runtime: &mut Runtime<State>, element: &ElementInfo) {
 fn setup_explains_engine_consent_and_pi_steps() {
     use crate::wsl::Status;
     let (_rt, mut ui) = runtime(1120.0, Window::Main);
-    ui.state.wsl_setup = Some(Status::NeedsEngine("Ubuntu".into()));
+    ui.update(|s, _| s.wsl_setup = Some(Status::NeedsEngine("Ubuntu".into())));
     settle(&mut ui);
     let elements = ui.elements();
     assert!(
@@ -75,7 +80,7 @@ fn setup_explains_engine_consent_and_pi_steps() {
     }));
     assert!(ui.state.prefs.borrow().managed_wsl.is_none());
 
-    ui.state.wsl_setup = Some(Status::NeedsPi("Ubuntu".into()));
+    ui.update(|s, _| s.wsl_setup = Some(Status::NeedsPi("Ubuntu".into())));
     settle(&mut ui);
     let elements = ui.elements();
     for label in [
@@ -83,7 +88,10 @@ fn setup_explains_engine_consent_and_pi_steps() {
         "Open WSL terminal",
         "Check again",
     ] {
-        assert!(elements.iter().any(|e| e.label.as_deref() == Some(label)));
+        assert!(
+            elements.iter().any(|e| e.label.as_deref() == Some(label)),
+            "missing setup action: {label}"
+        );
     }
 }
 
