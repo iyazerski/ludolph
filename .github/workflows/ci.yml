@@ -93,6 +93,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+      - name: Check shell payload line endings
+        run: |
+          foreach ($path in git ls-files '*.sh') {
+            if ([IO.File]::ReadAllText((Resolve-Path $path)).Contains("`r")) {
+              throw "Shell script has Windows line endings: $path"
+            }
+          }
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

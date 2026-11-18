@@ -1,0 +1,2 @@
+# Windows builds embed shell payloads that run in Linux through WSL.
+*.sh text eol=lf
