@@ -80,7 +80,7 @@ jobs:
           cargo build --no-default-features --locked -p ludolph
           cargo clippy --no-default-features --locked -p ludolph -- -D warnings
           sh scripts/test-wsl-install.sh target/debug/ludolph
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: github.event_name != 'push'
         with:
           name: wsl-test-engine
@@ -108,7 +108,7 @@ jobs:
         run: cargo clippy -p ludolph -p ludolph-ui --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test -p ludolph-ui --locked
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: github.event_name != 'push'
         with:
           name: wsl-test-engine
@@ -133,7 +133,7 @@ jobs:
             }
           }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/test-windows-reopen.ps1 -App "$install/Ludolph.exe"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: github.event_name == 'pull_request' && !cancelled()
         with:
           name: windows-reopen-test-app
@@ -157,7 +157,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2.90.5
+      - uses: taiki-e/install-action@v2.90.6
         with:
           tool: cargo-about
       - name: Third-party licenses are current

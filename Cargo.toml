@@ -68,7 +68,7 @@ objc2-io-kit = { version = "0.3", default-features = false, features = ["libc", 
 objc2-core-services = { version = "0.3", default-features = false, features = ["FSEvents", "dispatch2", "std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
 objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-avf-audio", "SFSpeechRecognitionMetadata", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognizer", "SFTranscription"] }
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+qrcode = { version = "0.15", default-features = false, features = ["svg"] }
 plist = { version = "1", default-features = false, features = ["serde"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 semver = "1"
@@ -77,10 +77,10 @@ serde_json = { version = "1", features = ["raw_value"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 ring = "0.17"
 # The windows. Rune is pre-release and changes often: keep one tested revision.
-rune = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0", features = ["markdown"] }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
-rune-theme-opencode = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5", features = ["markdown"] }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
+rune-theme-opencode = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
 # With only `ring` enabled, rustls picks its crypto provider on its own;
 # tokio-tungstenite leaves that to the app.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -99,11 +99,12 @@ windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 
 # Cargo does not inherit Rune's patches. Keep them at the same revision as Rune.
 [patch.crates-io]
-accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
-accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
-parley_engine = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
-wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
-winit = { git = "https://github.com/anomalyco/rune", rev = "1c5d7edf14ae85cf320b2812c469792ced5d3ab0" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "f54cbcfa84d995d339c243a579218f5062c940b5" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

@@ -80,7 +80,7 @@ jobs:
           (cd extensions && bun install --frozen-lockfile && bun run build "$GITHUB_WORKSPACE/$share/pi")
           tar -czf "$ASSET" -C dist ludolph
           sha256sum "$ASSET" > "$ASSET.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
           path: ${{ env.ASSET }}*
@@ -90,7 +90,7 @@ jobs:
         run: |
           cp target/release/ludolph dist/ludolph/bin/
           tar -czf "ludolph-engine-linux-${{ matrix.arch }}.tar.gz" -C dist ludolph
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wsl-engine-${{ matrix.arch }}
           path: ludolph-engine-linux-*.tar.gz
@@ -109,7 +109,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
       - name: Build app
         run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wsl-engine-*
           path: target/wsl
@@ -123,7 +123,7 @@ jobs:
         run: |
           cp target/Ludolph-Setup.exe Ludolph-Setup.exe
           sha256sum Ludolph-Setup.exe > Ludolph-Setup.exe.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: Ludolph-Setup.exe*
@@ -185,12 +185,12 @@ jobs:
           cd dist
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
           shasum -a 256 Ludolph.dmg > Ludolph.dmg.sha256
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: linux-*
           path: dist
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows
           path: dist

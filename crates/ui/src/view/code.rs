@@ -183,6 +183,7 @@ fn card(k: &Kit, key: &str, language: Option<&str>, source: &str, wrap: bool, co
         });
     let spans = theme.spans(&syntax::highlight(language, shown), 0);
     let mut body = text(shown)
+        .by_line()
         .spans(spans)
         .font(TextStyle {
             size: 13.0,
