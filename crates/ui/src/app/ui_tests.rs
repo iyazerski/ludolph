@@ -97,10 +97,8 @@ fn setup_explains_engine_consent_and_pi_steps() {
 
 #[test]
 fn chat_code_cards_wrap_independently_and_copy_without_changing_source() {
-    let source = format!(
-        "Before\n\n```python\nprint('{}')\n```\n\nAfter\n\n```bash\necho done\n```",
-        "x".repeat(100)
-    );
+    let code = format!("print('{}')\n\n\tprint('héllo 世界')", "x".repeat(100));
+    let source = format!("Before\n\n```python\n{code}\n```\n\nAfter\n\n```bash\necho done\n```");
     for (width, window) in [(420.0, Window::Quick), (1120.0, Window::Main)] {
         let mut prose_height = None;
         for role in [Role::User, Role::Assistant] {
@@ -175,7 +173,7 @@ fn chat_code_cards_wrap_independently_and_copy_without_changing_source() {
             );
             assert_eq!(
                 clipboard.text().map(|text| text.to_string()),
-                Some(format!("print('{}')", "x".repeat(100)))
+                Some(code.clone())
             );
             let chat = ui.state.chat().unwrap().existing().unwrap();
             assert_eq!(chat.messages().next().unwrap().text(), source);
