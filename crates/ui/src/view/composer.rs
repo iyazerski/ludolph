@@ -12,8 +12,6 @@ use crate::labels::{context_readout, reasoning_name};
 use crate::markup;
 use ludolph_prompt::skill_query;
 
-const SKILL_MENU_WIDTH: f32 = 320.0;
-
 pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     let working = page.is_working();
     let editing = page.queue_edit.as_ref();
@@ -372,6 +370,9 @@ fn pick_skill(s: &mut State, name: &str) {
 
 fn skill_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
     let Some((_, q)) = query(page) else { return };
+    let Some(width) = rune::memo::layout_with("composer-box", |rect| rect[2]) else {
+        return;
+    };
     let Some(found) = matching(page, &q) else {
         return;
     };
@@ -389,7 +390,7 @@ fn skill_menu(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) {
             .leading(icon(&icons::SKILL, 13.0).color(k.c.icon_muted))
     });
     PopupList::new("skills", "composer-box")
-        .width(SKILL_MENU_WIDTH)
+        .width(width)
         .items(items)
         .active(active)
         .empty_message(empty)

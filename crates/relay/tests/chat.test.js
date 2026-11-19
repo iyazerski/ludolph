@@ -92,3 +92,85 @@ for (const fails of [false, true]) {
     }
   });
 }
+
+
+test("user and agent skill mentions share styling without becoming links on the phone", async () => {
+  const window = new Window({ url: "https://relay.example/#/m/mac/chat/test" });
+  const { document } = window;
+  document.body.innerHTML = '<div id="app"></div><div id="toasts"></div>';
+  const context = createContext({
+    window, document, location: window.location, history: window.history,
+    navigator: window.navigator, localStorage: window.localStorage,
+    Event: window.Event, ResizeObserver: window.ResizeObserver,
+    matchMedia: window.matchMedia.bind(window),
+    setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
+    setInterval: () => 0, clearInterval() {},
+    crypto, TextEncoder, TextDecoder, TextDecoderStream, btoa, atob, AbortSignal, AbortController,
+    PROVIDER_MARKS: {},
+  });
+  runInContext(sealing, context);
+  const seal = runInContext("Seal", context);
+  const link = await seal.derive("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
+  seal.links = () => new Promise(() => {});
+  const source = "Use $review and $team:lint: with **$bold_skill**, $5 and `$literal` and [site $linked](https://example.org).\n\n```\n$block\n```";
+  const calls = [];
+  context.fetch = async (path, options) => {
+    if (path.startsWith("/api/watch/")) {
+      const data = new URL(path, window.location).searchParams.get("data");
+      const nonce = Uint8Array.from(atob(data.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)).slice(1, 13);
+      const frame = {
+        reset: true, chat: { id: "test", name: "Skills", cwd: "/tmp", status: "idle" },
+        ids: ["user", "assistant"], turnChanges: [], queued: [], olderRemaining: 0,
+        messages: ["user", "assistant"].map(role => ({
+          id: role, role, status: "complete", createdAt: 0, endedAt: 0,
+          parts: [{ kind: "text", text: source }],
+        })),
+      };
+      const sealed = await seal.seal(link.key, seal.aad.frame(nonce, 0), JSON.stringify(frame));
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ sealed: sealed.data })}\n\n`));
+          options.signal.addEventListener("abort", () => controller.close(), { once: true });
+        },
+      }));
+    }
+    const { data } = JSON.parse(options.body);
+    const request = JSON.parse(await seal.open(link.key, seal.aad.call(), data));
+    calls.push(request.tool);
+    const nonce = Uint8Array.from(atob(data.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)).slice(1, 13);
+    const replies = { get_settings: {}, list_models: { models: [] }, composer_info: {} };
+    const sealed = await seal.seal(link.key, seal.aad.reply(nonce), JSON.stringify({ ok: replies[request.tool] }));
+    return Response.json({ sealed: sealed.data });
+  };
+  try {
+    runInContext(app, context);
+    context.link = link;
+    const drawn = new Promise(resolve => {
+      const observer = new window.MutationObserver(() => {
+        if (document.querySelector(".msg.assistant .skill-mention")) {
+          observer.disconnect();
+          resolve();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+    runInContext("links.set('mac', link); store.machines = [{id: 'mac', name: 'Mac', status: {online: true}}]; route()", context);
+    await drawn;
+    for (const role of ["user", "assistant"]) {
+      const message = document.querySelector(`.msg.${role}`);
+      const mentions = [...message.querySelectorAll(".skill-mention")];
+      expect(mentions.map(node => node.textContent)).toEqual(["$review", "$team:lint", "$bold_skill"]);
+      expect(message.querySelector("code").textContent).toBe("$literal");
+      expect(message.querySelector("pre code").textContent).toBe("$block");
+      expect(message.querySelector("a").textContent).toBe("site $linked");
+      expect(mentions.every(node => node.tagName === "SPAN" && !node.hasAttribute("tabindex"))).toBe(true);
+      const before = calls.length;
+      mentions[0].click();
+      expect(calls).toHaveLength(before);
+      expect(window.location.hash).toBe("#/m/mac/chat/test");
+    }
+  } finally {
+    runInContext("current?.destroy()", context);
+    await window.happyDOM.close();
+  }
+});

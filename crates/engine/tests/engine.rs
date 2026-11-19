@@ -1827,7 +1827,7 @@ async fn a_skill_runs_from_wherever_it_was_typed() {
         "---\nname: review\ndisable-model-invocation: true\n---\nRead the diff.",
     )
     .unwrap();
-    let review = json!([{"name": "review", "description": "Review the diff", "ref": "$review"}]);
+    let review = json!([{"name": "review", "description": "Review the diff", "ref": "$review", "path": path.canonicalize().unwrap()}]);
     let skills = tool(&engine, "list_skills", json!({"project": dir.path()}))
         .await
         .unwrap();

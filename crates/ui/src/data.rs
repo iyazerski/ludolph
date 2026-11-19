@@ -402,6 +402,7 @@ pub struct Skill {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize)]
