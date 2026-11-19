@@ -288,6 +288,51 @@ fn sent_messages_share_markdown_rendering_while_the_composer_keeps_source() {
 }
 
 #[test]
+fn skill_selector_matches_the_composer_width_after_resizing() {
+    for (window, widths) in [
+        (Window::Quick, [420.0, 340.0, 520.0]),
+        (Window::Main, [1120.0, 940.0, 1300.0]),
+    ] {
+        let (_rt, mut ui) = runtime(widths[0], window);
+        let mut chat = Existing::new("test".into(), None);
+        chat.page = Some(vec![]);
+        let mut page = ChatPage::new(0, Target::Existing(chat), TextEdit::new("$"));
+        page.composer.focused = true;
+        page.skills.list = SkillList::Ready(vec![crate::data::Skill {
+            name: "review".into(),
+            description:
+                "Review the current changes and check for bugs, regressions and missing tests"
+                    .into(),
+            path: "/tmp/review/SKILL.md".into(),
+        }]);
+        ui.state.page = Page::Chat(Box::new(page));
+        for width in widths {
+            ui.set_viewport((width, 620.0), 1.0);
+            settle(&mut ui);
+            let elements = ui.elements();
+            let composer = elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some("composer-box"))
+                .unwrap();
+            let popup = elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some("skills-content"))
+                .unwrap();
+            assert!(
+                (popup.rect[2] - composer.rect[2]).abs() < 1.0,
+                "width={width}, popup={:?}, composer={:?}",
+                popup.rect,
+                composer.rect
+            );
+            assert!((popup.rect[0] - composer.rect[0]).abs() < 1.0);
+        }
+        ui.key(rune::Key::Enter.into());
+        settle(&mut ui);
+        assert_eq!(ui.state.chat().unwrap().composer.text, "$review ");
+    }
+}
+
+#[test]
 fn pasted_web_link_opens_in_the_composer_without_rewriting_text() {
     let url = "https://example.com/a_(b)?one=1&two=2";
     let (_rt, mut ui) = runtime(1120.0, Window::Main);
