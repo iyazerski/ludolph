@@ -363,7 +363,7 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
                     })
                     .collect();
                 started = Some(m.created_at);
-                let bubble = user_bubble(page, k, &m.id, &m.text(), images, Shade::Sent)
+                let bubble = user_bubble(page, k, &style, &m.id, &m.text(), images, Shade::Sent)
                     .hover_group()
                     .child(footer(page, k, m).group_opacity(0.0, 1.0));
                 out.push(match held {
@@ -387,7 +387,7 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
         }
         let images = p.images.iter().map(|t| (t.as_ref(), None)).collect();
         let key = format!("pending-{i}");
-        let bubble = user_bubble(page, k, &key, &p.text, images, Shade::Pending);
+        let bubble = user_bubble(page, k, &style, &key, &p.text, images, Shade::Pending);
         out.push(match held {
             Some(held) => rise_held(bubble, held),
             None => bubble.transition(rise()).key(key),
@@ -402,6 +402,7 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
             user_bubble(
                 page,
                 k,
+                &style,
                 &format!("queued-{i}"),
                 text,
                 Vec::new(),
@@ -503,6 +504,7 @@ type Tile<'a> = (Option<&'a Image>, Option<(String, usize)>);
 fn user_bubble(
     page: &Existing,
     k: &Kit,
+    style: &MarkdownStyle,
     key: &str,
     text_in: &str,
     images: Vec<Tile>,
@@ -527,8 +529,15 @@ fn user_bubble(
         )));
     }
     if !shown.is_empty() {
-        let body = code::user_message(page, k, &shown, key);
-        out = out.child(body.opacity(opacity));
+        let body = col()
+            .shrink()
+            .min_w(0.0)
+            .px(12.0)
+            .py(8.0)
+            .radius(14.0)
+            .fill(super::theme::message_bg(k))
+            .child(prose(page, k, style, key, &shown, false));
+        out = out.child(row().w_full().justify_end().child(body.opacity(opacity)));
     }
     if shade == Shade::Queued {
         out = out.child(text("Queued").font(k.ty.text_xsmall).color(k.c.text_faint));

@@ -182,6 +182,86 @@ fn chat_code_cards_wrap_independently_and_copy_without_changing_source() {
 }
 
 #[test]
+fn sent_messages_share_markdown_rendering_while_the_composer_keeps_source() {
+    let source = "# Heading\n\n**Bold** and *italic*, ~~old~~ and `code`.\n\n- First\n- Second\n\n[Example](https://example.com)";
+    for (width, window) in [(420.0, Window::Quick), (1120.0, Window::Main)] {
+        let mut rendered = None;
+        for role in [Role::Assistant, Role::User] {
+            let (_rt, mut ui) = runtime(width, window);
+            let mut chat = Existing::new("test".into(), None);
+            chat.page = Some(vec![Message {
+                id: "message".into(),
+                role,
+                created_at: 0,
+                ended_at: 0,
+                status: MessageStatus::Complete,
+                parts: vec![Part::Text {
+                    text: source.into(),
+                }],
+            }]);
+            ui.state.page = Page::Chat(Box::new(ChatPage::new(
+                0,
+                Target::Existing(chat),
+                TextEdit::new(source),
+            )));
+            settle(&mut ui);
+            let elements = ui.elements();
+            let composer = elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some("composer"))
+                .unwrap();
+            assert_eq!(composer.text.as_deref(), Some(source));
+            let message = elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some("m-message"))
+                .unwrap();
+            let text: Vec<_> = elements
+                .iter()
+                .filter(|e| e.path.starts_with(&message.path))
+                .filter_map(|e| e.text.as_deref())
+                .collect();
+            assert!(
+                text.iter()
+                    .any(|line| line.starts_with("Bold and italic, old and ")
+                        && line.contains("code")
+                        && !line.contains('`')),
+                "width={width}, role={role:?}: {text:?}"
+            );
+            for expected in ["Heading", "First", "Second", "Example"] {
+                assert!(
+                    text.contains(&expected),
+                    "width={width}, role={role:?}, missing {expected:?}: {text:?}"
+                );
+            }
+            if let Some(rendered) = &rendered {
+                assert_eq!(
+                    &text, rendered,
+                    "user and agent messages render the same Markdown"
+                );
+            } else {
+                rendered = Some(text.iter().map(|text| text.to_string()).collect::<Vec<_>>());
+            }
+            let chat = ui.state.chat().unwrap().existing().unwrap();
+            assert_eq!(chat.messages().next().unwrap().text(), source);
+
+            ui.update(|s, tx| {
+                s.engine_up = true;
+                s.send(tx);
+            });
+            settle(&mut ui);
+            assert!(
+                ui.elements()
+                    .iter()
+                    .all(|e| e.text.as_deref() != Some(source)),
+                "newly sent messages hide Markdown syntax too"
+            );
+            let chat = ui.state.chat().unwrap().existing().unwrap();
+            assert_eq!(chat.pending[0].text, source);
+        }
+    }
+}
+
+#[test]
 fn pasted_web_link_opens_in_the_composer_without_rewriting_text() {
     let url = "https://example.com/a_(b)?one=1&two=2";
     let (_rt, mut ui) = runtime(1120.0, Window::Main);
@@ -242,11 +322,8 @@ fn user_message_opens_bare_url_without_prose_punctuation() {
         ui.find("https://example.org").is_none(),
         "code stays literal"
     );
-    assert!(
-        ui.elements()
-            .iter()
-            .any(|e| e.text.as_deref() == Some(source.as_str()))
-    );
+    let chat = ui.state.chat().unwrap().existing().unwrap();
+    assert_eq!(chat.messages().next().unwrap().text(), source);
 }
 
 #[test]

@@ -2,9 +2,9 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Parser};
 use rune::color::hex;
-use rune::{Color, Direction, El, Link, TextStyle, Tx, col, icon, rich, row, text};
+use rune::{Color, Direction, El, TextStyle, Tx, col, icon, row, text};
 use rune_kit::markdown::{Highlight, MarkdownStyle, Syntax};
 use rune_kit::syntax::{self, SyntaxTheme};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, Markdown};
@@ -62,72 +62,6 @@ pub fn frames(md: Markdown, page: &Existing, k: &Kit, key: &str) -> Markdown {
             copied.as_deref() == Some(&key),
         )
     })
-}
-
-pub fn user_message(page: &Existing, k: &Kit, source: &str, key: &str) -> El {
-    let mut out = col().gap(10.0).min_w(0.0);
-    let mut end = 0;
-    let mut index = 0;
-    let mut events = Parser::new_ext(source, MARKDOWN).into_offset_iter();
-    while let Some((event, range)) = events.next() {
-        let Event::Start(Tag::CodeBlock(kind)) = event else {
-            continue;
-        };
-        if range.start > end {
-            out = out.child(user_prose(k, &source[end..range.start]));
-        }
-        let mut code = String::new();
-        for (event, _) in events.by_ref() {
-            match event {
-                Event::Text(part) => code.push_str(&part),
-                Event::End(TagEnd::CodeBlock) => break,
-                _ => {}
-            }
-        }
-        let language = match &kind {
-            CodeBlockKind::Fenced(info) => info.split_whitespace().next(),
-            CodeBlockKind::Indented => None,
-        };
-        let key = format!("{key}#code-{index}");
-        out = out.child(card(
-            k,
-            &key,
-            language,
-            &code,
-            page.wrapped_code.contains(&key),
-            page.just_copied(&key),
-        ));
-        end = range.end;
-        index += 1;
-    }
-    if end < source.len() {
-        out = out.child(user_prose(k, &source[end..]));
-    }
-    let mut bubble = col()
-        .shrink()
-        .min_w(0.0)
-        .px(12.0)
-        .py(8.0)
-        .radius(14.0)
-        .fill(super::theme::message_bg(k));
-    if index > 0 {
-        bubble = bubble.w_full();
-    }
-    bubble.child(out)
-}
-
-fn user_prose(k: &Kit, source: &str) -> El {
-    let shown = source.trim().to_owned();
-    let markup = crate::markup::analyze(&shown);
-    let mut body = rich(shown, super::widgets::markdown_spans(k, markup.shades))
-        .font(k.ty.body.lh(22.4))
-        .color(k.c.text_base)
-        .wrap_anywhere()
-        .selectable(true);
-    for (range, url) in markup.links {
-        body = body.link(Link::new(range, url));
-    }
-    body.on_link(|s: &mut State, url: &str, tx: &mut Tx| s.open_link(url, tx))
 }
 
 fn card(k: &Kit, key: &str, language: Option<&str>, source: &str, wrap: bool, copied: bool) -> El {
