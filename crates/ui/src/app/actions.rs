@@ -641,11 +641,33 @@ impl State {
 
     pub fn open_link(&mut self, url: &str, tx: &mut Tx) {
         // Code links and pasted images are paths; Rune opens web links only.
-        if url.starts_with('/') {
+        if let Some(name) = url.strip_prefix("skill:") {
+            self.open_skill(name);
+        } else if url.starts_with('/') {
             self.open_path(url.to_owned());
         } else {
             drop(tx.open_url(url));
         }
+    }
+
+    fn open_skill(&mut self, name: &str) {
+        let Some(chat) = self.chat().and_then(ChatPage::existing) else {
+            return;
+        };
+        let name = name.to_owned();
+        self.api.call(
+            "list_skills",
+            json!({"chat": chat.id}),
+            move |s, result: Result<Skills, String>, _| match result.and_then(|got| {
+                got.skills
+                    .into_iter()
+                    .find(|skill| skill.name == name)
+                    .ok_or_else(|| format!("Skill ${name} isn't available in this chat"))
+            }) {
+                Ok(skill) => s.open_path(skill.path),
+                Err(error) => s.fail("Couldn't open the skill", error),
+            },
+        );
     }
 
     pub fn open_chat_file(&mut self, path: &str) {

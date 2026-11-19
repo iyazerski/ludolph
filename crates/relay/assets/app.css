@@ -366,6 +366,7 @@ a { color: inherit; text-decoration: none; }
 .md li::marker { color: var(--tertiary); }
 .md a { color: var(--accent); }
 .md strong { font-weight: 600; }
+.md .skill-mention { color: var(--accent); font-weight: 600; }
 .md hr { border: 0; border-top: 1px solid var(--hairline); margin: 1em 0; }
 .md blockquote { margin: 0 0 .7em; padding: 0 0 0 12px; border-left: 2px solid rgb(from var(--accent) r g b / .45); color: var(--secondary); }
 .md code { font: .86em var(--mono); color: var(--tk-keyword); overflow-wrap: anywhere; }

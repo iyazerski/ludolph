@@ -28,6 +28,7 @@ pub fn analyze(text: &str) -> Markup {
     let mut finder = LinkFinder::new();
     finder.kinds(&[LinkKind::Url]);
     let autolink = text.contains("://");
+    let skills = text.contains('$');
     let mut protected = 0;
     let mut events = parse(text).peekable();
     while let Some((event, mut range)) = events.next() {
@@ -65,7 +66,7 @@ pub fn analyze(text: &str) -> Markup {
                 out.push((range, Shade::Code));
             }
             Event::End(TagEnd::Link | TagEnd::Image | TagEnd::CodeBlock) => protected -= 1,
-            Event::Text(_) if autolink && protected == 0 => {
+            Event::Text(_) if (autolink || skills) && protected == 0 => {
                 // Pulldown can split plain text at punctuation inside a single URL.
                 while let Some((Event::Text(_), next)) = events.peek() {
                     if next.start != range.end {
@@ -73,6 +74,19 @@ pub fn analyze(text: &str) -> Markup {
                     }
                     range.end = next.end;
                     events.next();
+                }
+                if skills {
+                    let mut at = range.start;
+                    for (piece, skill) in ludolph_prompt::skill_words(&text[range.clone()]) {
+                        let end = at + piece.len();
+                        if skill {
+                            out.push((at..end, Shade::Skill));
+                        }
+                        at = end;
+                    }
+                }
+                if !autolink {
+                    continue;
                 }
                 for link in finder
                     .links(&text[range.clone()])
@@ -89,15 +103,31 @@ pub fn analyze(text: &str) -> Markup {
             _ => {}
         }
     }
-    let mut at = 0;
-    for (piece, skill) in ludolph_prompt::skill_words(text) {
-        let end = at + piece.len();
-        if skill {
-            out.push((at..end, Shade::Skill));
-        }
-        at = end;
-    }
     markup
+}
+
+pub fn skill_links(text: &str) -> Option<String> {
+    if !text.contains('$') {
+        return None;
+    }
+    let mentions: Vec<_> = analyze(text)
+        .shades
+        .into_iter()
+        .filter_map(|(range, shade)| (shade == Shade::Skill).then_some(range))
+        .collect();
+    if mentions.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for range in mentions {
+        out.push_str(&text[at..range.start]);
+        let mention = &text[range.clone()];
+        out.push_str(&link(mention, &format!("skill:{}", &mention[1..])));
+        at = range.end;
+    }
+    out.push_str(&text[at..]);
+    Some(out)
 }
 
 pub fn is_web_url(text: &str) -> bool {

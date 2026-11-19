@@ -183,7 +183,7 @@ fn chat_code_cards_wrap_independently_and_copy_without_changing_source() {
 
 #[test]
 fn sent_messages_share_markdown_rendering_while_the_composer_keeps_source() {
-    let source = "# Heading\n\n**Bold** and *italic*, ~~old~~ and `code`.\n\n- First\n- Second\n\n[Example](https://example.com)";
+    let source = "# Heading\n\nUse $review and $team:lint: with **$bold_skill**, $5, `$literal` and [site $linked](https://example.org).\n\n**Bold** and *italic*, ~~old~~ and `code`.\n\n- First\n- Second\n\n[Example](https://example.com)";
     for (width, window) in [(420.0, Window::Quick), (1120.0, Window::Main)] {
         let mut rendered = None;
         for role in [Role::Assistant, Role::User] {
@@ -211,6 +211,12 @@ fn sent_messages_share_markdown_rendering_while_the_composer_keeps_source() {
                 .find(|e| e.key.as_deref() == Some("composer"))
                 .unwrap();
             assert_eq!(composer.text.as_deref(), Some(source));
+            assert!(ui.find("skill:review").is_some());
+            assert!(ui.find("skill:team:lint").is_some());
+            assert!(ui.find("skill:bold_skill").is_some());
+            for literal in ["literal", "linked", "5"] {
+                assert!(ui.find(&format!("skill:{literal}")).is_none());
+            }
             let message = elements
                 .iter()
                 .find(|e| e.key.as_deref() == Some("m-message"))
@@ -243,6 +249,26 @@ fn sent_messages_share_markdown_rendering_while_the_composer_keeps_source() {
             }
             let chat = ui.state.chat().unwrap().existing().unwrap();
             assert_eq!(chat.messages().next().unwrap().text(), source);
+
+            let clipboard = rune::clipboard::memory();
+            ui.use_clipboard(&clipboard);
+            ui.update(|s, tx| {
+                s.chat_mut().unwrap().composer.focused = false;
+                tx.select_all_text("m-message");
+            });
+            settle(&mut ui);
+            assert!(ui.selected_text().is_some());
+            ui.key(rune::KeyEvent {
+                key: rune::Key::Command('c'),
+                mods: rune::Mods {
+                    cmd: true,
+                    ..Default::default()
+                },
+            });
+            settle(&mut ui);
+            let copied = clipboard.text().unwrap();
+            assert!(copied.contains("$review"));
+            assert!(!copied.contains("skill:"));
 
             ui.update(|s, tx| {
                 s.engine_up = true;

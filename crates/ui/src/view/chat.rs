@@ -701,8 +701,10 @@ fn prose(
     text: &str,
     streaming: bool,
 ) -> El {
-    let soft = breaks::breakable(text);
-    let shown = soft.as_deref().unwrap_or(text);
+    let skills = crate::markup::skill_links(text);
+    let source = skills.as_deref().unwrap_or(text);
+    let soft = breaks::breakable(source);
+    let shown = soft.as_deref().unwrap_or(source);
     let links = page
         .chat
         .as_ref()
@@ -713,8 +715,19 @@ fn prose(
         .highlights(code::inline_code_marks(k, shown, link))
         .streaming(streaming)
         .selectable(true)
-        // The source with break points would paste broken links.
-        .copy_source(soft.is_none())
+        // Display-only break points and skill links must not reach the clipboard.
+        .copy_source(soft.is_none() && skills.is_none())
+        .link_style({
+            let color = k.c.text_accent;
+            move |url| {
+                url.starts_with("skill:").then(|| {
+                    (
+                        rune::Span::new(0, 0).color(color).weight(600.0),
+                        rune::LinkPaint::new().color(color),
+                    )
+                })
+            }
+        })
         .on_link_tx(|s: &mut State, url: &str, tx: &mut Tx| {
             s.open_link(url, tx);
         });

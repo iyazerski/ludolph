@@ -493,6 +493,32 @@ function inline(text) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${esc(codes[n])}</code>`);
 }
 
+function markdownBody(src) {
+  const body = h("div", { class: "md", html: markdown(src) });
+  if (!src?.includes("$")) return body;
+  const walker = document.createTreeWalker(body, window.NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (node.parentElement.closest("a, code, pre")) continue;
+    const text = node.textContent;
+    const fragment = document.createDocumentFragment();
+    let at = 0;
+    for (const match of text.matchAll(/(^|\s)\$([\p{L}][\p{L}\p{N}_:-]*)/gu)) {
+      const name = match[2].replace(/:+$/, "");
+      const start = match.index + match[1].length;
+      const end = start + 1 + name.length;
+      fragment.append(text.slice(at, start), h("span", { class: "skill-mention" }, text.slice(start, end)));
+      at = end;
+    }
+    if (at) {
+      fragment.append(text.slice(at));
+      node.replaceWith(fragment);
+    }
+  }
+  return body;
+}
+
 const indentOf = line => line.match(/^\s*/)[0].replace(/\t/g, "    ").length;
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
@@ -1554,7 +1580,7 @@ function chatView(machine, id, fromList) {
     return h("div", { class: `msg user${isPending ? " pending new" : ""}` },
       ...tools.map(g => toolsBlock(m, g)),
       text || images.length ? h("div", { class: "bubble" },
-        text ? h("div", { class: "md", html: markdown(text.replace(MAC_LINK, "$1")) }) : null,
+        text ? markdownBody(text.replace(MAC_LINK, "$1")) : null,
         images.length ? h("div", { class: "shots" }, images.map(p => h("button", { class: "chip", onclick: () => !isPending && openImage(m, p.index) }, icon("image"), `Image ${p.index + 1}`))) : null) : null);
   }
 
@@ -1565,7 +1591,7 @@ function chatView(machine, id, fromList) {
       if (p.kind === "error") return h("div", { class: "errbox" }, p.error);
       if (p.kind === "note") return h("div", { class: "turn-note" }, p.text);
       if (p.kind === "tools") return toolsBlock(m, p, streaming && expandTools && i === parts.length - 1);
-      const body = h("div", { class: "md", html: markdown(p.text) });
+      const body = markdownBody(p.text);
       if (streaming && i === parts.length - 1) {
         const lastBlock = body.lastElementChild;
         (lastBlock && !lastBlock.classList.contains("code") ? lastBlock : body).append(h("span", { class: "caret" }));

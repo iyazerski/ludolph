@@ -668,7 +668,7 @@ async fn list_skills(engine: &Engine, args: ListSkillsArgs) -> Result<Value> {
     let skills: Vec<Value> = skills
         .iter()
         .map(|skill| {
-            json!({"name": skill.name, "description": skill.description, "ref": skill.reference()})
+            json!({"name": skill.name, "description": skill.description, "ref": skill.reference(), "path": skill.path})
         })
         .collect();
     Ok(json!({"skills": skills}))
