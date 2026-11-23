@@ -38,7 +38,7 @@ pub fn swap() -> Transition {
 
 /// Keys a whole page so Rune swaps it rather than springing its unkeyed parts from the last
 /// page's layout.
-pub fn page(el: El, key: &'static str) -> El {
+pub fn page(el: El, key: impl Into<String>) -> El {
     el.key(key).transition(swap())
 }
 
