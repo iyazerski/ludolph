@@ -113,8 +113,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           cargo build --locked -p ludolph
           # Real WSL engine packaging and install are verified in the Linux job.
-          New-Item -ItemType Directory -Force target/wsl | Out-Null
-          Set-Content -NoNewline target/wsl/ludolph-engine-linux-x86_64.tar.gz "test"
+          New-Item -ItemType File -Force -Path target\wsl\ludolph-engine-linux-x86_64.tar.gz -Value "test" | Out-Null
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DBuildProfile=debug scripts/windows.iss
           $setup = Resolve-Path target/Ludolph-Setup.exe
           $install = Join-Path $env:RUNNER_TEMP Ludolph
