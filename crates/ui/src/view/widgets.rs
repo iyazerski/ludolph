@@ -23,7 +23,6 @@ const TONES: [&str; 8] = [
 
 const HEAD_TITLES_HEIGHT: f32 = 39.0;
 
-/// How far content rises as it comes in, in points.
 const RISE: f32 = 12.0;
 
 /// Rises into place and fades in, then only fades out, so leaving content doesn't drift.
@@ -251,7 +250,6 @@ const SLIDER_TICK: f32 = 3.0;
 type SliderAccess = Rc<dyn Fn(&mut State) -> Option<&mut SliderState>>;
 type SliderChoose = Rc<dyn Fn(&mut State, &str)>;
 
-/// Discrete horizontal slider for picking a model's reasoning effort level.
 pub struct ReasoningSlider<'a> {
     key: String,
     label: String,

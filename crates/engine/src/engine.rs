@@ -56,7 +56,6 @@ pub struct Config {
     pub home: PathBuf,
     /// `None` outside Ludolph.app; development engines must not change its login item.
     pub app: Option<PathBuf>,
-    /// Ludolph's bundled pi extensions.
     pub extensions: PathBuf,
     pub secrets: SecretStore,
 }
@@ -792,7 +791,6 @@ impl Engine {
         }
     }
 
-    /// The session's details, its spend, and its provider's subscription quota.
     pub async fn details(
         &self,
         id: &str,
@@ -1126,12 +1124,10 @@ impl Engine {
             .await
     }
 
-    /// The providers pi can sign in to, and where it finds credentials for each.
     pub async fn accounts(&self) -> Result<Value> {
         self.pi_setup(json!({"topic": "accounts"})).await
     }
 
-    /// Each signed-in account's quota by provider, read live, so it can take seconds.
     pub async fn account_quota(&self) -> Result<Value> {
         self.pi_setup(json!({"topic": "quota"})).await
     }
@@ -1569,16 +1565,18 @@ impl Engine {
         if let Some(cleanup) = cleanup {
             _ = cleanup.await;
         }
-        let (processes, working): (Vec<Arc<Pi>>, Vec<String>) = {
+        let (mut processes, mut working) = (Vec::new(), Vec::new());
+        {
             let state = self.state();
-            let running = state
-                .chats
-                .iter()
-                .filter_map(|(id, chat)| Some((id, chat.process.as_ref()?)));
-            let working = running.clone().filter(|(_, r)| r.live.working());
-            let working = working.map(|(id, _)| id.clone()).collect();
-            (running.map(|(_, r)| r.pi.clone()).collect(), working)
-        };
+            for (id, chat) in &state.chats {
+                if let Some(running) = &chat.process {
+                    processes.push(running.pi.clone());
+                    if running.live.working() {
+                        working.push(id.clone());
+                    }
+                }
+            }
+        }
         let grace = self.0.config.grace;
         let stops: Vec<_> = processes
             .into_iter()
@@ -1719,12 +1717,17 @@ impl Engine {
             tokio::select! {
                 event = events.recv() => {
                     let Some(event) = event else { break };
-                    if let Err(e) = self.apply(&id, &pi, &event) {
+                    let lifecycle = matches!(
+                        event,
+                        Event::AgentStart
+                            | Event::AgentSettled { .. }
+                            | Event::CompactionStart { .. }
+                            | Event::CompactionEnd { .. }
+                    );
+                    if let Err(e) = self.apply(&id, &pi, event) {
                         eprintln!("chat {id}: {e:#}");
                     }
-                    if matches!(event, Event::AgentStart | Event::AgentSettled { .. }
-                        | Event::CompactionStart { .. } | Event::CompactionEnd { .. })
-                    {
+                    if lifecycle {
                         deadline = (self.live_of(&id, &pi, |live| live.working()) != Some(true))
                             .then(|| Instant::now() + idle);
                     }
@@ -1758,13 +1761,13 @@ impl Engine {
         self.state().quotas.insert(report.provider, report.windows);
     }
 
-    fn apply(&self, id: &str, pi: &Arc<Pi>, event: &Event) -> Result<()> {
+    fn apply(&self, id: &str, pi: &Arc<Pi>, event: Event) -> Result<()> {
         if let Event::ExtensionUiRequest {
             method,
             status_key,
             status_text,
             ..
-        } = event
+        } = &event
             && method == "setStatus"
         {
             if status_key.as_deref() == Some(quota::STATUS_KEY) {
@@ -1789,7 +1792,7 @@ impl Engine {
         {
             return Ok(());
         }
-        if let Event::MessageStart { message } | Event::MessageEnd { message } = event {
+        if let Event::MessageStart { message } | Event::MessageEnd { message } = &event {
             chat.sent(message);
             if let Some(run) = chat.run.as_mut().filter(|run| run.key.is_none())
                 && (message["role"] == "user"
@@ -1802,40 +1805,9 @@ impl Engine {
         }
         let mut finish = false;
         let mut alert = None;
+        let mut settled = None;
         let running = chat.process.as_mut().expect("checked above");
-        let working = running.live.working();
-        let mut view_changed = running.live.apply(event);
-        let mut list_changed = running.live.working() != working;
-        match event {
-            Event::AgentStart => runtime.set_running(id, true)?,
-            Event::CompactionStart { .. } | Event::CompactionEnd { .. } => {
-                runtime.set_running(id, running.live.working())?;
-            }
-            Event::AgentSettled { aborted } => {
-                if !aborted {
-                    let failed = running.live.failure().is_some();
-                    if failed || (chat.waiting.is_empty() && chat.job_results.is_empty()) {
-                        alert = Some(if failed {
-                            AlertKind::Failed
-                        } else {
-                            AlertKind::Finished
-                        });
-                    }
-                }
-                runtime.set_running(id, false)?;
-                if let Some(run) = chat.run.as_mut() {
-                    run.settled = true;
-                    finish = true;
-                }
-                if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
-                    index.refresh_file(&path)?;
-                }
-                if let Some(running) = chat.process.as_mut() {
-                    running.live.clear_messages();
-                }
-                list_changed = true;
-                view_changed = true;
-            }
+        let (view_changed, list_changed) = match event {
             Event::ExtensionUiRequest {
                 id: question,
                 method,
@@ -1856,37 +1828,82 @@ impl Engine {
                 if running.questions.is_empty() {
                     alert = Some(AlertKind::Input);
                 }
-                running.questions.push(Question {
-                    id: question.clone(),
-                    dialog,
-                    title: title.clone().unwrap_or_default(),
-                    message: message.clone(),
-                    options: options.clone().unwrap_or_default(),
-                    prefill: prefill.clone(),
-                });
                 if let Some(timeout) = timeout {
-                    let wait = Duration::from_millis(*timeout);
+                    let wait = Duration::from_millis(timeout);
                     let expire =
                         self.clone()
                             .expire(id.to_owned(), pi.clone(), question.clone(), wait);
                     tokio::spawn(expire);
                 }
-                list_changed = true;
-                view_changed = true;
+                running.questions.push(Question {
+                    id: question,
+                    dialog,
+                    title: title.unwrap_or_default(),
+                    message,
+                    options: options.unwrap_or_default(),
+                    prefill,
+                });
+                (true, true)
             }
             Event::SessionInfoChanged { .. } => {
                 if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
                     index.refresh_file(&path)?;
                 }
-                list_changed = true;
-                view_changed = true;
+                (true, true)
             }
-            _ => {}
-        }
+            event => {
+                enum Side {
+                    Start,
+                    Compaction,
+                    Settled(bool),
+                    None,
+                }
+                let side = match &event {
+                    Event::AgentStart => Side::Start,
+                    Event::CompactionStart { .. } | Event::CompactionEnd { .. } => Side::Compaction,
+                    Event::AgentSettled { aborted } => Side::Settled(*aborted),
+                    _ => Side::None,
+                };
+                let working = running.live.working();
+                let mut view_changed = running.live.apply(event);
+                let mut list_changed = running.live.working() != working;
+                match side {
+                    Side::Start => runtime.set_running(id, true)?,
+                    Side::Compaction => runtime.set_running(id, running.live.working())?,
+                    Side::Settled(aborted) => {
+                        settled = Some(aborted);
+                        if !aborted {
+                            let failed = running.live.failure().is_some();
+                            if failed || (chat.waiting.is_empty() && chat.job_results.is_empty()) {
+                                alert = Some(if failed {
+                                    AlertKind::Failed
+                                } else {
+                                    AlertKind::Finished
+                                });
+                            }
+                        }
+                        runtime.set_running(id, false)?;
+                        if let Some(run) = chat.run.as_mut() {
+                            run.settled = true;
+                            finish = true;
+                        }
+                        if let Some(path) = file_of(index, id, chat.draft.as_ref()) {
+                            index.refresh_file(&path)?;
+                        }
+                        if let Some(running) = chat.process.as_mut() {
+                            running.live.clear_messages();
+                        }
+                        list_changed = true;
+                        view_changed = true;
+                    }
+                    Side::None => {}
+                }
+                (view_changed, list_changed)
+            }
+        };
         if view_changed {
             chat.changed();
         }
-        let settled = matches!(event, Event::AgentSettled { .. });
         drop(state);
         if let Some(kind) = alert {
             self.alert(id, kind);
@@ -1899,11 +1916,9 @@ impl Engine {
                 engine.finish_run(&id).await;
             });
         }
-        if settled {
+        if let Some(aborted) = settled {
             self.save_index()?;
-            if matches!(event, Event::AgentSettled { aborted: false })
-                && self.live_of(id, pi, |live| live.failure().is_none()) == Some(true)
-            {
+            if !aborted && self.live_of(id, pi, |live| live.failure().is_none()) == Some(true) {
                 self.queue_soon(id);
             }
         }

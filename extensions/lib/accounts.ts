@@ -6,13 +6,10 @@ type Prompt = Parameters<Interaction["prompt"]>[0];
 export interface Account {
 	provider: string;
 	name: string;
-	/** Signs in with an account in the browser. */
 	oauth: boolean;
-	/** Takes an API key. */
 	apiKey: boolean;
-	/** Where pi finds its credentials: `stored` in auth.json, which sign-out removes, `environment`, and so on. */
+	/** `stored` in auth.json (removable by sign-out), `environment`, etc. */
 	source?: string;
-	/** The environment variable or setting that holds them, when pi names one. */
 	label?: string;
 }
 
@@ -22,7 +19,6 @@ export interface Account {
  */
 const PI_ONLY = new Set(["radius"]);
 
-/** Providers that can sign in or already have credentials, as `pi auth login` offers them. */
 export function accounts(runtime: ModelRuntime): Account[] {
 	return runtime
 		.getProviders()

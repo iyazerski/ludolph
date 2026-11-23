@@ -91,7 +91,6 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
     )
 }
 
-/// The settings sections, shown in the main sidebar in place of the chats.
 pub fn sidebar(page: &SettingsPage, k: &Kit) -> El {
     let back = SidebarRow::new("Back to chats")
         .icon(&icons::BACK)
@@ -169,7 +168,6 @@ fn section_icon(section: Section) -> &'static Icon {
     }
 }
 
-/// A section that needs the engine's settings, once they load.
 fn loaded(page: &SettingsPage, k: &Kit, content: impl FnOnce() -> El) -> El {
     match (&page.settings, &page.error) {
         (Some(_), _) => content(),
@@ -319,7 +317,6 @@ fn add_account(
     rows
 }
 
-/// A status line that wraps beside a row's buttons.
 fn line(k: &Kit, says: String, color: Color) -> El {
     text(says)
         .font(k.ty.text_small)
@@ -329,7 +326,6 @@ fn line(k: &Kit, says: String, color: Color) -> El {
         .min_w(0.0)
 }
 
-/// The running sign-in's step: pi's question, a device code, or the browser.
 fn sign_in(page: &SettingsPage, k: &Kit) -> Vec<El> {
     let accounts = &page.accounts;
     let state = &accounts.sign_in;

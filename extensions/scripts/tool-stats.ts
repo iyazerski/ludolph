@@ -2,7 +2,6 @@
 import { codemodeHints, commandHints, symbolLookup } from "../lib/tool-hints.ts";
 import { recordedCalls, sessionFiles } from "../lib/session-calls.ts";
 
-/** Summarize tool attempts, failures, recovery turns, and routing drift from session records. */
 export async function toolStats(files: string[]) {
 	const tools: Record<string, number> = {};
 	const violations: Record<string, number> = {};

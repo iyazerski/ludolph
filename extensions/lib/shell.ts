@@ -5,9 +5,7 @@ import { parse } from "shell-quote";
 export interface ShellCommand {
 	words: string[];
 	operator: string;
-	/** Started with `&`, alone or in a group, so the shell doesn't wait for it. */
 	background: boolean;
-	/** Inside a `for`, `while`, or `until` loop. */
 	loop: boolean;
 }
 
@@ -15,7 +13,6 @@ const CONTROL = ["&&", "||", ";", ";;", "|", "|&", "&", "(", ")"];
 // A heredoc body is data, not commands: keep only the line that starts it.
 const HEREDOC = /(<<-?\s*(['"]?)(\w+)\2[^\n]*)\n[\s\S]*?\n[\t ]*\3[\t ]*(?=\n|$)/g;
 
-/** Tokenize simple shell commands without treating quoted code or heredocs as executable commands. */
 export function shellCommands(command: string): ShellCommand[] {
 	const commands: ShellCommand[] = [];
 	let words: string[] = [];
@@ -71,14 +68,12 @@ export function shellCommands(command: string): ShellCommand[] {
 	return commands;
 }
 
-/** Return the executable and arguments after shell assignments and control-flow prefixes. */
 export function executable(words: string[]): string[] {
 	const start = words.findIndex((word) => !/^\w+=/.test(word) && !["do", "then", "else", "!"].includes(word));
 	if (start < 0) return [];
 	return [basename(words[start]), ...words.slice(start + 1)];
 }
 
-/** Detect explicit file producers that must not run beside a dependent read. */
 export function producesFile(command: string, file: string, cwd: string): boolean {
 	const absolute = (value: string) => resolve(cwd, value.replace(/^~(?=\/|$)/, homedir()));
 	for (const { words } of shellCommands(command)) {
@@ -101,7 +96,6 @@ export function producesFile(command: string, file: string, cwd: string): boolea
 	return false;
 }
 
-/** Detect local in-place editors, leaving previews, help, and remote commands alone. */
 export function shellEdits(command: string): boolean {
 	for (const { words } of shellCommands(command)) {
 		const [name, ...args] = executable(words);
@@ -123,7 +117,6 @@ export function shellEdits(command: string): boolean {
 	return false;
 }
 
-/** Return whether a command runs a test, lint, type, or build check. */
 function isCheck(name: string, args: string[]): boolean {
 	return (name === "cargo" && ["test", "check", "clippy", "build", "fmt"].includes(args[0]))
 		|| (["bun", "npm", "pnpm"].includes(name) && (args[0] === "test" || (args[0] === "run" && /^(test|check|typecheck|lint|build)(:|$)/.test(args[1] ?? ""))))
@@ -132,7 +125,6 @@ function isCheck(name: string, args: string[]): boolean {
 		|| (name === "uv" && args[0] === "run" && ["pytest", "mypy", "pyright", "ruff"].includes(args[1]));
 }
 
-/** Return whether a command commits, pushes, or publishes a pull request. */
 function publishes(name: string, args: string[]): boolean {
 	if (name === "gh") return args[0] === "pr" && ["create", "merge", "ready"].includes(args[1]);
 	if (name !== "git") return false;
@@ -203,7 +195,6 @@ export function checkRisk(command: string): "publish" | "hidden" | undefined {
 
 const SECONDS: Record<string, number> = { "": 1, s: 1, m: 60, h: 3600, d: 86400 };
 
-/** Return whether a command waits in the foreground outside a loop: a `sleep` of 10 seconds or more, or a CI watch. */
 export function waitsInForeground(command: string): boolean {
 	return shellCommands(command).some(({ words, background, loop }) => {
 		if (background || loop) return false;

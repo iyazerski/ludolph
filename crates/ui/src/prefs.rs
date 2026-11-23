@@ -84,7 +84,6 @@ impl TextSize {
         }
     }
 
-    /// The next size up (`step` 1) or down (-1), stopping at the ends.
     pub fn step(self, step: isize) -> Self {
         let at = Self::ALL.iter().position(|&s| s == self).unwrap_or(1);
         Self::ALL[at.saturating_add_signed(step).min(Self::ALL.len() - 1)]

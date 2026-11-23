@@ -51,7 +51,7 @@ impl Live {
         Self::default()
     }
 
-    pub fn apply(&mut self, event: &Event) -> bool {
+    pub fn apply(&mut self, event: Event) -> bool {
         let changed = self.fold(event);
         if changed {
             self.revision += 1;
@@ -131,7 +131,7 @@ impl Live {
         self.failure.as_deref()
     }
 
-    fn fold(&mut self, event: &Event) -> bool {
+    fn fold(&mut self, event: Event) -> bool {
         match event {
             Event::AgentStart => {
                 self.working = true;
@@ -150,11 +150,10 @@ impl Live {
                 self.steering.clear();
                 self.follow_up.clear();
             }
-            Event::MessageStart { message } => {
+            Event::MessageStart { mut message } => {
                 if message["role"] != "assistant" {
                     return false;
                 }
-                let mut message = message.clone();
                 if !message["content"].is_array() {
                     message["content"] = json!([]);
                 }
@@ -198,12 +197,12 @@ impl Live {
             } => {
                 if let Some(parent) = parent_tool_call_id {
                     self.calls
-                        .entry(parent.clone())
+                        .entry(parent)
                         .or_default()
-                        .push(NestedCall::running(tool_call_id, tool_name, args));
+                        .push(NestedCall::running(&tool_call_id, &tool_name, &args));
                 }
                 self.tools.insert(
-                    tool_call_id.clone(),
+                    tool_call_id,
                     json!({"toolName": tool_name, "args": args, "partialResult": null}),
                 );
             }
@@ -211,20 +210,17 @@ impl Live {
                 tool_call_id,
                 partial_result,
             } => {
-                let Some(tool) = self.tools.get_mut(tool_call_id) else {
+                let Some(tool) = self.tools.get_mut(&tool_call_id) else {
                     return false;
                 };
-                tool["partialResult"] = partial_result.clone();
                 let calls = if tool["toolName"] == "codemode" {
                     transcript::call_progress(&partial_result["details"])
                 } else {
                     Vec::new()
                 };
+                tool["partialResult"] = partial_result;
                 if !calls.is_empty() {
-                    transcript::merge_calls(
-                        self.calls.entry(tool_call_id.clone()).or_default(),
-                        calls,
-                    );
+                    transcript::merge_calls(self.calls.entry(tool_call_id).or_default(), calls);
                 }
             }
             Event::ToolExecutionEnd {
@@ -237,16 +233,16 @@ impl Live {
                 if let Some(parent) = parent_tool_call_id
                     && let Some(call) = self
                         .calls
-                        .get_mut(parent)
-                        .and_then(|calls| calls.iter_mut().find(|call| call.id == *tool_call_id))
+                        .get_mut(&parent)
+                        .and_then(|calls| calls.iter_mut().find(|call| call.id == tool_call_id))
                 {
-                    call.state = if *is_error {
+                    call.state = if is_error {
                         ToolState::Failed
                     } else {
                         ToolState::Done
                     };
-                    call.duration_ms = *duration_ms;
-                    if *is_error {
+                    call.duration_ms = duration_ms;
+                    if is_error {
                         call.error = result["content"]
                             .as_array()
                             .into_iter()
@@ -255,14 +251,14 @@ impl Live {
                             .find_map(|text| crate::text::one_line(text, 500));
                     }
                 }
-                return self.tools.remove(tool_call_id).is_some();
+                return self.tools.remove(&tool_call_id).is_some();
             }
             Event::QueueUpdate {
                 steering,
                 follow_up,
             } => {
-                self.steering.clone_from(steering);
-                self.follow_up.clone_from(follow_up);
+                self.steering = steering;
+                self.follow_up = follow_up;
             }
             Event::AutoRetryStart {
                 attempt,
@@ -274,9 +270,9 @@ impl Live {
                 let delay =
                     delay_ms.and_then(|ms| TimeDelta::try_milliseconds(i64::try_from(ms).ok()?));
                 self.retry = Some(Retry {
-                    attempt: *attempt,
-                    max_attempts: *max_attempts,
-                    error: error_message.clone(),
+                    attempt,
+                    max_attempts,
+                    error: error_message,
                     at: delay.map(|delay| Utc::now() + delay),
                 });
             }
@@ -286,21 +282,17 @@ impl Live {
             } => {
                 self.retry = None;
                 if !success {
-                    self.failure = Some(
-                        final_error
-                            .clone()
-                            .unwrap_or_else(|| "the request failed".into()),
-                    );
+                    self.failure = Some(final_error.unwrap_or_else(|| "the request failed".into()));
                 }
             }
             Event::CompactionStart { reason } => {
                 self.failure = None;
-                self.compacting = Some(reason.clone().unwrap_or_else(|| "manual".into()));
+                self.compacting = Some(reason.unwrap_or_else(|| "manual".into()));
             }
             Event::CompactionEnd { error_message } => {
                 self.compacting = None;
                 if let Some(error) = error_message {
-                    self.failure = Some(error.clone());
+                    self.failure = Some(error);
                 }
             }
             _ => return false,
@@ -310,7 +302,7 @@ impl Live {
 }
 
 /// Block-end events replace the content accumulated from deltas.
-fn update_block(message: &mut Value, update: &Value) -> bool {
+fn update_block(message: &mut Value, mut update: Value) -> bool {
     let Some(index) = update["contentIndex"]
         .as_u64()
         .and_then(|i| usize::try_from(i).ok())
@@ -328,15 +320,17 @@ fn update_block(message: &mut Value, update: &Value) -> bool {
         "text_start" => *block = json!({"type": "text", "text": ""}),
         "thinking_start" => *block = json!({"type": "thinking", "thinking": ""}),
         "toolcall_start" => {
-            *block = json!({"type": "toolCall", "id": update["id"], "name": update["toolName"],
+            *block = json!({"type": "toolCall", "id": update["id"].take(), "name": update["toolName"].take(),
                             "arguments": {}, "partialArguments": ""});
         }
-        "text_delta" => append(block, "text", update),
-        "thinking_delta" => append(block, "thinking", update),
-        "toolcall_delta" => append(block, "partialArguments", update),
-        "text_end" => *block = json!({"type": "text", "text": update["content"]}),
-        "thinking_end" => *block = json!({"type": "thinking", "thinking": update["content"]}),
-        "toolcall_end" => *block = update["toolCall"].clone(),
+        "text_delta" => append(block, "text", &update),
+        "thinking_delta" => append(block, "thinking", &update),
+        "toolcall_delta" => append(block, "partialArguments", &update),
+        "text_end" => *block = json!({"type": "text", "text": update["content"].take()}),
+        "thinking_end" => {
+            *block = json!({"type": "thinking", "thinking": update["content"].take()})
+        }
+        "toolcall_end" => *block = update["toolCall"].take(),
         _ => return false,
     }
     true
@@ -352,8 +346,7 @@ fn append(block: &mut Value, field: &str, update: &Value) {
 }
 
 /// Keep bulky output and image bytes in the session file, not the live tail.
-fn slim(message: &Value) -> Value {
-    let mut message = message.clone();
+fn slim(mut message: Value) -> Value {
     if message["role"] == "toolResult" {
         message["content"] = json!([]);
     } else if let Some(content) = message["content"].as_array_mut() {

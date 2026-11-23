@@ -66,7 +66,6 @@ impl From<&Run> for Counts {
     }
 }
 
-/// A path's content before and after; `None` where it doesn't exist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Change {
     before: Option<Entry>,
@@ -79,7 +78,6 @@ struct Entry {
     oid: String,
 }
 
-/// A folder under `runs`, deleted on drop.
 #[derive(Debug)]
 struct Scratch(PathBuf);
 
@@ -178,7 +176,6 @@ impl Turns {
         Ok(Some(snapshot))
     }
 
-    /// Compare with the working tree now, and keep the changed blobs in the chat's store.
     pub async fn after(&self, session: &str, before: Snapshot) -> Result<Run> {
         let after = tree(&before).await?;
         let raw = run(
@@ -348,7 +345,6 @@ impl Turns {
         Ok(())
     }
 
-    /// Saved runs, oldest first.
     fn runs(&self, session: &str) -> Result<Vec<Run>> {
         let mut paths = runs(&self.dir.join(checked(session)?))?;
         paths.sort_by_key(|(key, _)| *key);
@@ -406,7 +402,6 @@ impl Turns {
     }
 }
 
-/// Git in a chat's store, writing new objects to `scratch`.
 fn stored(store: &Path, scratch: &Scratch, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     command
@@ -494,7 +489,6 @@ fn read_dir(dir: &Path) -> Result<Vec<PathBuf>> {
         .with_context(|| format!("reading {}", dir.display()))
 }
 
-/// A folder's total size, and when its newest file changed.
 fn usage(dir: &Path) -> Result<(u64, SystemTime)> {
     let (mut len, mut modified) = (0, SystemTime::UNIX_EPOCH);
     let mut dirs = vec![dir.to_owned()];

@@ -179,7 +179,7 @@ impl Transcripts {
             .chain()
             .into_iter()
             .flat_map(|i| &scan.entries[i].pull_requests)
-            .filter(|pr| seen.insert(pr.url.clone()))
+            .filter(|pr| seen.insert(pr.url.as_str()))
             .cloned()
             .collect();
         Ok(Details {
@@ -538,34 +538,33 @@ impl Scan {
         };
 
         let mut reader = None;
-        let previous = std::mem::take(&mut self.rendered);
+        let mut previous = std::mem::take(&mut self.rendered);
         let mut messages = Vec::with_capacity(groups.len() - skip);
         for span in &groups[skip..] {
             let whole = match (span.first(), span.last()) {
                 (Some(Item::File(first)), Some(Item::File(last))) => Some((*first, *last)),
                 _ => None,
             };
-            if let Some(message) = whole.and_then(|key| previous.get(&key)) {
-                messages.push(message.clone());
-                continue;
-            }
-            let mut pieces = Vec::with_capacity(span.len());
-            for item in span {
-                let piece = match *item {
-                    Item::File(i) => self.piece(&mut reader, path, i)?,
-                    Item::Live(i) => Piece::live(i, live[i], streaming == Some(i)),
+            let message = if let Some(message) = whole.and_then(|key| previous.remove(&key)) {
+                message
+            } else {
+                let mut pieces = Vec::with_capacity(span.len());
+                for item in span {
+                    let piece = match *item {
+                        Item::File(i) => self.piece(&mut reader, path, i)?,
+                        Item::Live(i) => Piece::live(i, live[i], streaming == Some(i)),
+                    };
+                    pieces.extend(piece);
+                }
+                let Some(message) = render(pieces) else {
+                    continue;
                 };
-                pieces.extend(piece);
-            }
-            let Some(message) = render(&pieces) else {
-                continue;
+                message
             };
-            messages.push(message);
-        }
-        for (span, message) in groups[skip..].iter().zip(&messages) {
-            if let (Some(Item::File(first)), Some(Item::File(last))) = (span.first(), span.last()) {
-                self.rendered.insert((*first, *last), message.clone());
+            if let Some(key) = whole {
+                self.rendered.insert(key, message.clone());
             }
+            messages.push(message);
         }
         if let Some(live) = tail.calls {
             for message in &mut messages {
@@ -952,7 +951,7 @@ impl Piece {
     }
 }
 
-fn render(pieces: &[Piece]) -> Option<Message> {
+fn render(mut pieces: Vec<Piece>) -> Option<Message> {
     let first = pieces.first()?;
     let mut message = Message {
         id: first.id.clone(),
@@ -962,12 +961,25 @@ fn render(pieces: &[Piece]) -> Option<Message> {
         status: MessageStatus::Complete,
         parts: Vec::new(),
     };
-    let entry = &first.entry;
-    let role = entry.message.as_ref().map(|m| m.role.as_str());
-    match (entry.kind.as_str(), role, &entry.message) {
-        ("message", Some("user"), Some(m)) => {
+    let single = matches!(
+        (
+            first.entry.kind.as_str(),
+            first.entry.message.as_ref().map(|m| m.role.as_str())
+        ),
+        ("message", Some("user" | "bashExecution" | "custom"))
+            | ("custom_message" | "compaction" | "branch_summary", _)
+    );
+    if !single {
+        message.role = Role::Assistant;
+        render_turn(pieces, &mut message);
+        return Some(message);
+    }
+    let first = pieces.swap_remove(0);
+    let entry = first.entry;
+    match (entry.kind.as_str(), entry.message) {
+        ("message", Some(m)) if m.role == "user" => {
             message.role = Role::User;
-            message.parts = content_parts(&m.content);
+            message.parts = content_parts(m.content);
             for part in &mut message.parts {
                 if let Part::Text { text } = part
                     && let Cow::Owned(typed) = skills::as_typed(text)
@@ -976,11 +988,11 @@ fn render(pieces: &[Piece]) -> Option<Message> {
                 }
             }
         }
-        ("message", Some("bashExecution"), Some(m)) => {
+        ("message", Some(m)) if m.role == "bashExecution" => {
             message.role = Role::User;
             let failed = m.cancelled || m.exit_code.is_some_and(|code| code != 0);
             message.parts = vec![Part::Tool {
-                id: first.id.clone(),
+                id: first.id,
                 name: "bash".to_owned(),
                 subject: one_line(m.command.as_deref().unwrap_or_default(), TOOL_CHARS),
                 state: if failed {
@@ -991,30 +1003,27 @@ fn render(pieces: &[Piece]) -> Option<Message> {
                 calls: Vec::new(),
             }];
         }
-        ("message", Some("custom"), Some(m)) => message.parts = content_parts(&m.content),
-        ("custom_message", ..) => message.parts = content_parts(&entry.content),
-        ("compaction", ..) => {
+        ("message", Some(m)) if m.role == "custom" => message.parts = content_parts(m.content),
+        ("custom_message", _) => message.parts = content_parts(entry.content),
+        ("compaction", _) => {
             message.parts = vec![Part::Text {
                 text: COMPACTED.to_owned(),
             }];
         }
-        ("branch_summary", ..) => {
+        ("branch_summary", _) => {
             let summary = entry.summary.as_deref().unwrap_or_default();
             message.parts = vec![Part::Text {
                 text: format!("Came back from another branch: {summary}"),
             }];
         }
-        _ => {
-            message.role = Role::Assistant;
-            render_turn(pieces, &mut message);
-        }
+        _ => unreachable!(),
     }
     Some(message)
 }
 
-fn render_turn(pieces: &[Piece], message: &mut Message) {
+fn render_turn(pieces: Vec<Piece>, message: &mut Message) {
     // Tool results come after their calls, so states are settled at the end.
-    let mut failed: HashMap<&str, &MessageView> = HashMap::new();
+    let mut results: HashMap<String, (bool, Vec<NestedCall>)> = HashMap::new();
     let mut calls: Vec<(usize, bool)> = Vec::new();
     let mut parts = Vec::new();
     for piece in pieces {
@@ -1024,24 +1033,22 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
             });
             continue;
         }
-        let Some(m) = &piece.entry.message else {
+        let Some(m) = piece.entry.message else {
             continue;
         };
         match m.role.as_str() {
             "toolResult" => {
-                if let Some(id) = &m.tool_call_id {
-                    failed.insert(id, m);
+                if let Some(id) = m.tool_call_id {
+                    results.insert(id, (m.is_error, m.calls));
                 }
             }
             "assistant" => {
-                for block in &m.content.0 {
-                    let shown =
-                        |text: &Option<String>| text.clone().filter(|t| !t.trim().is_empty());
+                for block in m.content.0 {
+                    let shown = |text: Option<String>| text.filter(|t| !t.trim().is_empty());
                     match block.kind.as_str() {
-                        "text" => parts.extend(shown(&block.text).map(|text| Part::Text { text })),
+                        "text" => parts.extend(shown(block.text).map(|text| Part::Text { text })),
                         "thinking" => {
-                            parts
-                                .extend(shown(&block.thinking).map(|text| Part::Thinking { text }));
+                            parts.extend(shown(block.thinking).map(|text| Part::Thinking { text }));
                         }
                         "toolCall" => {
                             calls.push((parts.len(), piece.live));
@@ -1053,10 +1060,10 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
                 message.status = MessageStatus::Complete;
                 match m.stop_reason.as_deref() {
                     Some("error") => {
-                        let error = m.error_message.as_deref().unwrap_or("The model failed.");
-                        parts.push(Part::Error {
-                            error: error.to_owned(),
-                        });
+                        let error = m
+                            .error_message
+                            .unwrap_or_else(|| "The model failed.".to_owned());
+                        parts.push(Part::Error { error });
                     }
                     Some("length") => parts.push(Part::Error {
                         error: "The reply hit the model's length limit.".to_owned(),
@@ -1076,28 +1083,36 @@ fn render_turn(pieces: &[Piece], message: &mut Message) {
             id, state, calls, ..
         } = &mut parts[at]
         {
-            let result = failed.get(id.as_str());
-            *state = match result {
-                Some(result) if result.is_error => ToolState::Failed,
-                None if live => ToolState::Running,
-                _ => ToolState::Done,
-            };
-            if let Some(result) = result {
-                calls.clone_from(&result.calls);
+            match results.remove(id.as_str()) {
+                Some((is_error, nested)) => {
+                    *state = if is_error {
+                        ToolState::Failed
+                    } else {
+                        ToolState::Done
+                    };
+                    *calls = nested;
+                }
+                None => {
+                    *state = if live {
+                        ToolState::Running
+                    } else {
+                        ToolState::Done
+                    };
+                }
             }
         }
     }
     message.parts = parts;
 }
 
-fn content_parts(content: &Content) -> Vec<Part> {
+fn content_parts(content: Content) -> Vec<Part> {
     let mut images = 0..;
     content
         .0
-        .iter()
+        .into_iter()
         .filter_map(|block| match block.kind.as_str() {
             "text" => Some(Part::Text {
-                text: block.text.clone().filter(|text| !text.is_empty())?,
+                text: block.text.filter(|text| !text.is_empty())?,
             }),
             "image" => Some(Part::Image {
                 index: images.next()?,
@@ -1107,12 +1122,13 @@ fn content_parts(content: &Content) -> Vec<Part> {
         .collect()
 }
 
-fn tool_part(call: &Block) -> Part {
-    let name = call.name.as_deref().unwrap_or("tool");
+fn tool_part(call: Block) -> Part {
+    let name = call.name.unwrap_or_else(|| "tool".to_owned());
+    let subject = tool_subject(&name, call.arguments.as_ref());
     Part::Tool {
-        id: call.id.clone().unwrap_or_default(),
-        name: name.to_owned(),
-        subject: tool_subject(name, call.arguments.as_ref()),
+        id: call.id.unwrap_or_default(),
+        name,
+        subject,
         state: ToolState::Done,
         calls: Vec::new(),
     }

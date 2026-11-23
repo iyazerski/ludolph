@@ -102,23 +102,20 @@ impl State {
         chat.turn_changes = frame.turn_changes;
         chat.run = frame.run;
         chat.queued = frame.queued;
-        let finished: Vec<String> = chat
-            .tool_outputs
-            .iter()
-            .filter(|(_, output)| matches!(output, Some(Ok(output)) if output.running))
-            .filter(|(call, _)| finished_in(&page, call))
-            .map(|(call, _)| call.clone())
-            .collect();
-        chat.page = Some(page);
-        chat.file_links.borrow_mut().clear();
         // A snapshot taken while its tool ran misses the end, often the error or summary.
-        let partials: Vec<_> = finished
-            .into_iter()
-            .filter_map(|call| match chat.tool_outputs.insert(call.clone(), None) {
-                Some(Some(Ok(partial))) => Some((call, partial)),
+        let partials: Vec<_> = chat
+            .tool_outputs
+            .iter_mut()
+            .filter(|(call, output)| {
+                matches!(output, Some(Ok(output)) if output.running) && finished_in(&page, call)
+            })
+            .filter_map(|(call, output)| match output.take() {
+                Some(Ok(partial)) => Some((call.clone(), partial)),
                 _ => None,
             })
             .collect();
+        chat.page = Some(page);
+        chat.file_links.borrow_mut().clear();
         for (call, partial) in partials {
             self.fetch_tool_output(nav, call, Some(partial));
         }

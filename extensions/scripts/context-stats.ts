@@ -30,16 +30,14 @@ interface Call {
 	context: number;
 	session: string;
 	model: string;
-	/** Index of the message that made the call, within its session. */
 	message: number;
 	afterCompaction: boolean;
 }
 
 const KINDS: Kind[] = ["edit", "read", "search"];
 const BUCKETS = [0, 25e3, 50e3, 75e3, 100e3, 125e3, 150e3, 200e3, 250e3, Number.POSITIVE_INFINITY];
-// Messages on each side of the first compaction to compare.
 const COMPACTION_WINDOW = 40;
-/** Classify recorded calls while retaining their assistant context and compaction position. */
+
 async function loadCalls(files: string[]): Promise<Call[]> {
 	const calls: Call[] = [];
 	for (const file of files) {
@@ -53,20 +51,17 @@ async function loadCalls(files: string[]): Promise<Call[]> {
 	return calls;
 }
 
-/** Format a break rate with its sample size. */
 function rate(calls: Call[]): string {
 	if (calls.length === 0) return "-".padStart(6).padEnd(14);
 	const broke = calls.filter((call) => call.broke).length;
 	return `${((100 * broke) / calls.length).toFixed(1)}%`.padStart(6).concat(` (${calls.length})`).padEnd(14);
 }
 
-/** Format a bucket's bounds, such as 25k-50k or 250k-. */
 function bucketLabel(index: number): string {
 	const upper = BUCKETS[index + 1];
 	return `${BUCKETS[index] / 1e3}k-${upper === Number.POSITIVE_INFINITY ? "" : `${upper / 1e3}k`}`;
 }
 
-/** Print break rates per context bucket. */
 function printByContext(calls: Call[]): void {
 	console.log("\nBreak rate by context size, as rate (calls):");
 	console.log("context".padEnd(11), "sessions".padStart(8), ...KINDS.map((kind) => kind.padStart(6).padEnd(14)));
@@ -81,7 +76,6 @@ function printByContext(calls: Call[]): void {
 	}
 }
 
-/** Print early and late break rates within the sessions that reach 150k. */
 function printWithinSessions(calls: Call[]): void {
 	const long = new Set(calls.filter((call) => call.context >= 150e3).map((call) => call.session));
 	console.log(`\nSame ${long.size} sessions that reach 150k: <75k, 75k-150k, >=150k`);
@@ -96,7 +90,6 @@ function printWithinSessions(calls: Call[]): void {
 	}
 }
 
-/** Print break rates just before and just after each session's first compaction. */
 function printAroundCompaction(calls: Call[]): void {
 	const compacted = [...new Set(calls.filter((call) => call.afterCompaction).map((call) => call.session))];
 	console.log(`\n${compacted.length} compacted sessions: ${COMPACTION_WINDOW} messages before and after the first compaction`);
@@ -116,7 +109,6 @@ function printAroundCompaction(calls: Call[]): void {
 	}
 }
 
-/** Print break rates split by the previous same-kind call in the session, per model with most calls. */
 function printHabit(calls: Call[]): void {
 	const byModel = Object.entries(Object.groupBy(calls, (call) => call.model));
 	const [model, own = []] = byModel.sort((a, b) => (b[1]?.length ?? 0) - (a[1]?.length ?? 0))[0] ?? [];

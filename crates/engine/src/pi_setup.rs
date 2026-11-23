@@ -69,10 +69,10 @@ pub(crate) fn answer(event: &Event) -> Option<Result<Value>> {
     else {
         return None;
     };
-    let answer = serde_json::from_str::<Answer>(message).ok()?;
     if method != "notify" {
         return None;
     }
+    let answer = serde_json::from_str::<Answer>(message).ok()?;
     let reply = answer.ludolph_setup;
     Some(match reply.error {
         Some(error) => Err(anyhow!("{error}")),
@@ -80,7 +80,6 @@ pub(crate) fn answer(event: &Event) -> Option<Result<Value>> {
     })
 }
 
-/// Asks pi-setup.js one `request`, such as `{"topic": "accounts"}`.
 pub async fn ask(
     program: &Path,
     extensions: &Path,

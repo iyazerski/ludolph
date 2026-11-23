@@ -9,7 +9,6 @@ export class GuiArtifacts {
 		readonly inputs: { source: string; staged: string }[],
 	) {}
 
-	/** Stage only explicitly supplied regular files in a private, browser-accessible directory. */
 	static async create(files: string[], cwd: string, root = join(tmpdir(), "pi-gui")): Promise<GuiArtifacts> {
 		await mkdir(root, { recursive: true, mode: 0o700 });
 		const directory = await mkdtemp(join(root, "task-"));
@@ -32,7 +31,6 @@ export class GuiArtifacts {
 		}
 	}
 
-	/** Describe the staged inputs and output location to the child. */
 	instructions(): string {
 		return [
 			`Save screenshots and other outputs directly in ${join(this.directory, "outputs")}, with flat filenames.`,
@@ -42,7 +40,6 @@ export class GuiArtifacts {
 		].join("\n");
 	}
 
-	/** Export regular output files to a private temporary directory and rewrite report paths. */
 	async exportReport(report: string): Promise<string> {
 		const output = join(this.directory, "outputs");
 		const entries = await readdir(output, { withFileTypes: true });
@@ -66,7 +63,6 @@ export class GuiArtifacts {
 		}
 	}
 
-	/** Remove the browser-accessible staging files after the child exits. */
 	async dispose(): Promise<void> {
 		await rm(this.directory, { recursive: true, force: true });
 	}

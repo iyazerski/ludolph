@@ -2,12 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { resolveModel, runPi } from "./lib/child-pi.ts";
 
-/**
- * Get a read-only review from the other model family: GPT for Claude, Claude for everything else.
- *
- * The peer is a child pi without edit and write tools, extensions, skills, or a session. Without
- * extensions it has no second_opinion tool, so a review can't ask for another review.
- */
+// Without extensions the child pi has no second_opinion tool, so reviews can't recurse.
 
 const TIMEOUT_MS = 20 * 60_000;
 
@@ -63,7 +58,6 @@ export default function (pi: ExtensionAPI) {
 			return {
 				content: [{ type: "text", text: result.text }],
 				details: undefined,
-				// Count the peer's tokens in this session's totals.
 				usage: result.usage,
 				isError: result.failed,
 			};

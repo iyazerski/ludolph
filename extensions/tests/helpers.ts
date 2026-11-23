@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, type AssistantMessage, type ToolCall } from "@earendil-works/pi-ai";
 
-export const usage = { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const usage = { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
 export function assistant(calls: ToolCall[]): AssistantMessage {
 	return { role: "assistant", content: calls, api: "openai-completions", provider: "test", model: "gui", usage, stopReason: "toolUse", timestamp: 0 };

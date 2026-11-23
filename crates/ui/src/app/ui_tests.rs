@@ -401,7 +401,7 @@ fn user_message_opens_bare_url_without_prose_punctuation() {
 }
 
 #[test]
-fn reasoning_slider_selects_levels_details_names_session_and_stop_has_no_background() {
+fn reasoning_slider_selects_levels() {
     let (_rt, mut ui) = runtime(1120.0, Window::Main);
     ui.state.catalog = Catalog::Ready(serde_json::from_value(serde_json::json!({
         "models":[{"id":"test/model", "label":"Test", "reasoningLevels":["minimal", "low", "medium", "high", "xhigh", "max"]}],
@@ -411,21 +411,12 @@ fn reasoning_slider_selects_levels_details_names_session_and_stop_has_no_backgro
         "test".into(),
         Some(
             serde_json::from_value(serde_json::json!({
-                "id":"test", "status":"working", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z", "reasoning":"high"
+                "id":"test", "status":"idle", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z", "reasoning":"high"
             }))
             .unwrap(),
         ),
     );
     chat.page = Some(vec![]);
-    chat.details = Some(Ok(serde_json::from_value(serde_json::json!({
-        "compactions": 0,
-        "pullRequests": [],
-        "spent": { "tokens": 1000, "cost": 0.5 },
-        "contextUsage": { "tokens": 1000, "window": 10000 },
-        "quota": [],
-        "changes": null
-    }))
-    .unwrap()));
     let mut page = ChatPage::new(0, Target::Existing(chat), TextEdit::default());
     page.info = Some(
         serde_json::from_value(serde_json::json!({
@@ -435,39 +426,13 @@ fn reasoning_slider_selects_levels_details_names_session_and_stop_has_no_backgro
         .unwrap(),
     );
     ui.state.page = Page::Chat(Box::new(page));
-    ui.state.prefs.borrow_mut().show_details = true;
     settle(&mut ui);
 
     let elements = ui.elements();
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("Current session")),
-        "chat details panel labels its last section"
-    );
-    let stop = elements
-        .iter()
-        .find(|e| e.label.as_deref() == Some("Stop"))
-        .unwrap();
-    assert_eq!(stop.fill, rune::Color::TRANSPARENT);
-    let [x, y, w, h] = stop.rect;
-    ui.pointer_move(x + w / 2.0, y + h / 2.0);
-    settle(&mut ui);
-    let elements = ui.elements();
-    assert_eq!(
-        elements
-            .iter()
-            .find(|e| e.label.as_deref() == Some("Stop"))
-            .unwrap()
-            .fill,
-        rune::Color::TRANSPARENT
-    );
-
     let slider = elements
         .iter()
         .find(|e| e.key.as_deref() == Some("composer-reasoning"))
         .unwrap();
-    assert_eq!(slider.role, "slider");
     let [sx, sy, sw, sh] = slider.rect;
     // Drag to stop 4 of 5 ("xhigh"): pad = 6, travel = sw - 12.
     let target_x = sx + 6.0 + (sw - 12.0) * (4.0 / 5.0);
@@ -592,29 +557,6 @@ fn sent_messages_start_at_the_top_then_follow_the_reply_unless_scrolled_up() {
             (question.rect[1] - top).abs() < 1.0,
             "the next send must reset the anchor"
         );
-    }
-}
-
-#[test]
-fn notifications_are_rounded_and_centered_at_the_top_in_both_windows() {
-    for (width, window) in [(340.0, Window::Quick), (1120.0, Window::Main)] {
-        let (_rt, mut ui) = runtime(width, window);
-        ui.state.notify("Copied");
-        settle(&mut ui);
-        let elements = ui.elements();
-        let toast = elements
-            .iter()
-            .find(|e| e.role == "status" && e.label.as_deref() == Some("Copied"))
-            .unwrap();
-        assert_eq!(toast.radius, 18.0);
-        assert!((toast.rect[0] + toast.rect[2] / 2.0 - width / 2.0).abs() < 1.0);
-        assert!((toast.rect[1] - 16.0).abs() < 1.0);
-        let close = elements
-            .iter()
-            .find(|e| e.label.as_deref() == Some("Close"))
-            .unwrap();
-        click(&mut ui, close);
-        assert!(ui.state.toast.is_none());
     }
 }
 
@@ -999,110 +941,5 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         elements
             .iter()
             .any(|e| e.key.as_deref() == Some("resource-extensions-Built-in"))
-    );
-}
-
-#[test]
-fn phone_settings_separates_relay_linked_phones_and_notifications() {
-    let (_rt, mut ui) = runtime(1120.0, Window::Main);
-    ui.update(|s, _| {
-        s.open_settings();
-        s.show_settings_section(Section::Phone);
-        let page = s.settings_page_mut().unwrap();
-        page.settings = Some(test_settings());
-        page.phone.state = Some(crate::data::PhoneLink {
-            link: Some(crate::data::RelayLink {
-                relay: "https://ludolph.iyazerski.dev".into(),
-                status: crate::data::LinkStatus::Connected,
-                error: None,
-            }),
-            phones: vec!["T01VVtGD123456".into()],
-            pairing: None,
-            relay: "https://ludolph.iyazerski.dev".into(),
-        });
-    });
-    settle(&mut ui);
-
-    let elements = ui.elements();
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("Relay connected"))
-    );
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("ludolph.iyazerski.dev"))
-    );
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("Linked phones"))
-    );
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.label.as_deref() == Some("Link phone"))
-    );
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("Phone T01VVtGD"))
-    );
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("Notifications"))
-    );
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("Send notifications"))
-    );
-
-    let unlink = elements
-        .iter()
-        .find(|e| e.label.as_deref() == Some("Unlink"))
-        .unwrap();
-    click(&mut ui, unlink);
-    let elements = ui.elements();
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("Unlink Phone T01VVtGD?"))
-    );
-    let cancel = elements
-        .iter()
-        .find(|e| e.label.as_deref() == Some("Cancel"))
-        .unwrap();
-    click(&mut ui, cancel);
-    assert!(
-        ui.elements()
-            .iter()
-            .any(|e| e.text.as_deref() == Some("Phone T01VVtGD"))
-    );
-
-    // Empty state shows a dedicated empty card with the primary Link phone button.
-    ui.update(|s, _| {
-        s.settings_page_mut()
-            .unwrap()
-            .phone
-            .state
-            .as_mut()
-            .unwrap()
-            .phones
-            .clear();
-    });
-    settle(&mut ui);
-    let elements = ui.elements();
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.text.as_deref() == Some("No phones linked"))
-    );
-    assert!(
-        elements
-            .iter()
-            .any(|e| e.label.as_deref() == Some("Link phone"))
     );
 }

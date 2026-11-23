@@ -6,11 +6,8 @@ const TIMEOUT_MS = 20_000;
 
 export interface QuotaWindow {
 	label: string;
-	/** Share used, 0 to 1. */
 	used: number;
-	/** Epoch milliseconds. */
 	resetsAt?: number;
-	/** Dollars, for a budget. */
 	spent?: number;
 	limit?: number;
 }
@@ -34,13 +31,11 @@ export function hasQuota(model: Model<Api>): boolean {
 	return readerOf(model) !== undefined;
 }
 
-/** The limits `model` counts against. */
 export function modelQuota(pi: ExtensionAPI, registry: Registry, model: Model<Api>): Promise<QuotaWindow[]> {
 	const read = readerOf(model);
 	return read ? read(pi, registry, model, false) : Promise.resolve([]);
 }
 
-/** Every account's limits by provider. A provider whose read fails is left out. */
 export async function accountQuota(pi: ExtensionAPI, registry: Registry): Promise<Record<string, QuotaWindow[]>> {
 	const models = new Map<string, Model<Api>>();
 	for (const model of registry.getAll()) if (!models.has(model.provider) && hasQuota(model)) models.set(model.provider, model);
