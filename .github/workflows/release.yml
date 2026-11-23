@@ -65,7 +65,7 @@ jobs:
         run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked --target "$TARGET" -p ludolph
       - name: Check version
         run: strings "target/$TARGET/release/ludolph" | grep -q "<string>$VERSION</string>"
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: false
       - uses: oven-sh/setup-bun@v2

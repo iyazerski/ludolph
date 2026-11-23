@@ -33,7 +33,7 @@ pub fn chat_dialog(s: &State, k: &Kit, layer: &mut Vec<El>) {
             } else {
                 format!("“{}”", short(title))
             };
-            // Not `Dialog::description`, which doesn't wrap.
+            // `Dialog::description` wraps only at spaces; unbroken titles need `wrap_anywhere`.
             let said = text(format!(
                 "{what} and its pi session are deleted for good. If its agent is working, it stops."
             ))
