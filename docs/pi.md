@@ -33,6 +33,7 @@ The Codex and Antigravity sources aren't documented, so either may change withou
 - `openai-codex`: `GET {baseUrl}/wham/usage`, the endpoint behind Codex CLI's `/status`, with the access token and the `chatgpt-account-id` from its claims. `rate_limit` has the 5h and weekly windows, or is `null` on an enterprise plan. `spend_control.individual_limit` has a workspace budget in dollars.
 - `antigravity-acp`: the `antigravity-acp:quota:request` event of `pi-antigravity-acp-provider` (0.1.19 or later). It parses agy's `/usage`, which spends no quota. Gemini models share a "Gemini Models" group, and some also have their own, such as "Gemini 4 Argon".
 - Bifrost: `GET /api/governance/virtual-keys/quota` with the virtual key. It's the one governance route a virtual key may call. Its `budgets` have no reset time, so the extension adds `reset_duration` to `last_reset`.
+- LiteLLM: `GET /key/info` with the key, then `GET /user/info?user_id=` for its user, at the proxy's root. A budget may be on either. A key limited to `llm_api_routes` gets 403 from both.
 
 ## Sign-in
 

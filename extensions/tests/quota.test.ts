@@ -68,6 +68,28 @@ test("reports a Bifrost gateway's budgets by its host", async () => {
 	}
 });
 
+test("reports a LiteLLM user's monthly budget from the proxy's root", async () => {
+	const asked: string[] = [];
+	const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
+		const url = new URL(request.url);
+		asked.push(url.pathname + url.search);
+		if (request.headers.get("authorization") !== "Bearer sk-key") return new Response(null, { status: 401 });
+		const none = { max_budget: null, budget_duration: null, budget_reset_at: null };
+		return url.pathname === "/key/info"
+			? Response.json({ info: { user_id: "me@example.com", team_id: null, spend: 0.09, ...none } })
+			: Response.json({ user_info: { max_budget: 1500, spend: 375, budget_duration: "30d", budget_reset_at: "2026-12-01T00:00:00Z" } });
+	} });
+	try {
+		const seen = await reports({ litellm: provider(`${server.url.href}v1`, "sk-key", "claude") }, ["litellm", "claude"]);
+		expect(seen.at(-1)?.windows).toEqual([
+			{ label: "Month", used: 0.25, resetsAt: Date.parse("2026-12-01T00:00:00Z"), spent: 375, limit: 1500 },
+		]);
+		expect(asked).toEqual(["/key/info", "/user/info?user_id=me%40example.com"]);
+	} finally {
+		server.stop(true);
+	}
+});
+
 const bucket = (window: string, remainingFraction: number) => ({ window, remainingFraction, resetTime: "2026-11-30T09:08:00.000Z" });
 const groups = [
 	{ displayName: "Gemini Models", buckets: [bucket("weekly", 0.9), bucket("5h", 0.7)] },
