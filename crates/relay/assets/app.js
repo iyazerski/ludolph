@@ -107,7 +107,29 @@ const statusOf = chat => (chat?.status || "idle").split(" ")[0];
 const isStale = chat => /stale/.test(chat?.status || "");
 
 const shortModel = m => (m || "").split("/").pop();
+const modelProvider = m => {
+  const i = (m || "").indexOf("/");
+  return i > 0 ? m.slice(0, i) : "";
+};
+const modelLabel = m => m.label || shortModel(m.id) || m.id;
 const reasoningName = level => ({ xhigh: "X-High" })[level] || (level ? level[0].toUpperCase() + level.slice(1) : "");
+
+function scoreQuery(query, value) {
+  if (!query) return 0;
+  const needle = query.toLowerCase();
+  let n = 0, score = 0, prev = false, boundary = true;
+  for (const c of (value || "").toLowerCase()) {
+    if (n < needle.length && c === needle[n]) {
+      score += 10 + (prev ? 12 : 0) + (boundary ? 8 : 0);
+      prev = true;
+      n++;
+    } else {
+      prev = false;
+    }
+    boundary = !/[a-z0-9]/i.test(c);
+  }
+  return n === needle.length ? score : null;
+}
 
 const DEFAULT_LEVELS = ["off", "minimal", "low", "medium", "high"];
 
@@ -679,7 +701,7 @@ function sheet(build) {
   else history.pushState({ sheet: true }, "");
   openSheetClose = close;
   let startY = null;
-  panel.addEventListener("touchstart", e => { if (panel.scrollTop <= 0) startY = e.touches[0].clientY; }, { passive: true });
+  panel.addEventListener("touchstart", e => { if (panel.scrollTop <= 0 && !e.target.closest('input[type="range"]')) startY = e.touches[0].clientY; }, { passive: true });
   panel.addEventListener("touchmove", e => {
     if (startY == null) return;
     panel.style.transform = `translateY(${Math.max(0, e.touches[0].clientY - startY)}px)`;
@@ -1828,10 +1850,12 @@ function chatView(machine, id, fromList) {
     const entry = machine && catalog(machine);
     if (entry && !entry.ready) entry.promise.then(drawInfo, () => {});
     const label = entry?.ready?.find(m => m.id === model)?.label || shortModel(model) || "Default";
+    const levels = entry?.ready ? levelsOf(entry.ready, model) : null;
+    const showReasoning = reasoning && (!levels || levels.length > 1);
     modelChip.disabled = !machine;
     modelChip.replaceChildren(modelMark(model), h("span", { class: "name" }, label),
       // replaceChildren, unlike h(), prints null as "null": no level, no node.
-      reasoning ? h("span", { class: "lvl" }, reasoningName(reasoning)) : "");
+      showReasoning ? h("span", { class: "lvl" }, reasoningName(reasoning)) : "");
     const project = isDraft && draft.projects.find(p => p.id === draft.project);
     const projectChip = isDraft && machine && h("button", { class: "project-chip", "aria-label": "Project", onclick: () => projectSheet() },
       tile(project || null), h("span", { class: "txt" }, project?.name || "No project"));
@@ -1859,7 +1883,16 @@ function chatView(machine, id, fromList) {
     haptic(5);
     sheet(() => {
       const title = h("h2", {}, "Model");
-      const body = h("div", {}, h("div", { class: "skeleton", style: { margin: "0 0 14px" } }));
+      const reasoningSlot = h("div", {});
+      const search = h("input", {
+        type: "search",
+        class: "field model-search",
+        placeholder: "Search models",
+        "aria-label": "Search models",
+        autocomplete: "off",
+        spellcheck: "false",
+      });
+      const listSlot = h("div", {}, h("div", { class: "skeleton", style: { margin: "0 0 14px" } }));
       const pick = async change => {
         haptic(5);
         if (isDraft) {
@@ -1876,33 +1909,102 @@ function chatView(machine, id, fromList) {
           draw();
         } catch (e) { toast({ title: "Couldn't change the model", body: e.message, kind: "error" }); }
       };
+      const drawList = () => {
+        const models = catalog(machine).ready;
+        if (!models) return;
+        const { model: current } = config();
+        const check = on => (on ? icon("check") : null);
+        const query = search.value.trim();
+        const visible = models.filter(m => !m.hidden || m.id === current);
+        const filtered = query
+          ? visible
+            .map(m => {
+              const label = modelLabel(m);
+              const provider = modelProvider(m.id);
+              const score = scoreQuery(query, `${label} ${provider}`);
+              return score == null ? null : { m, score };
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.score - a.score)
+            .map(item => item.m)
+          : visible;
+        listSlot.replaceChildren(
+          filtered.length
+            ? h("div", { class: "group" }, filtered.map(m => itemRow({
+              label: modelLabel(m),
+              sub: modelProvider(m.id) || null,
+              value: check(m.id === current),
+              cls: m.id === current ? "on" : "",
+              onclick: () => m.id !== current && pick({ model: m.id }),
+            })))
+            : h("div", { class: "note" }, "No matching models"),
+        );
+      };
+      search.addEventListener("input", drawList);
       let first = true;
       const draw = () => {
         const models = catalog(machine).ready;
         if (isDraft) fitDraft(models);
         const { model: current, reasoning } = config();
         const levels = levelsOf(models, current);
-        const check = on => (on ? icon("check") : null);
-        body.replaceChildren(
-          levels.length ? h("div", { class: "group-label" }, "Reasoning") : "",
-          levels.length ? h("div", { class: "pills" }, levels.map(l => h("button", { class: `pill${l === reasoning ? " on" : ""}`, "aria-pressed": String(l === reasoning),
-            onclick: () => l !== reasoning && pick({ reasoning: l }) }, reasoningName(l)))) : "",
+        reasoningSlot.replaceChildren(
+          ...(levels.length > 1 ? reasoningSlider(levels, reasoning, l => pick({ reasoning: l })) : []),
           isWorking() ? h("div", { class: "note", style: { marginTop: "0" } }, "Changes apply from the next turn.") : "",
-          h("div", { class: "group-label" }, "Model"),
-          h("div", { class: "group" }, models.filter(m => !m.hidden || m.id === current).map(m => itemRow({ label: m.label || m.id, value: check(m.id === current), cls: m.id === current ? "on" : "",
-            onclick: () => m.id !== current && pick({ model: m.id }) }))));
-        if (first) body.querySelector(".item-row.on")?.scrollIntoView({ block: "nearest" });
+        );
+        drawList();
+        if (first) listSlot.querySelector(".item-row.on")?.scrollIntoView({ block: "nearest" });
         first = false;
       };
       const load = () => {
         const entry = catalog(machine, true);
         entry.promise.then(draw,
-          e => body.replaceChildren(h("div", { class: "note" }, `Couldn't load the models: ${e.message}`)));
+          e => listSlot.replaceChildren(h("div", { class: "note" }, `Couldn't load the models: ${e.message}`)));
       };
-      redrawModels = () => { if (body.isConnected) draw(); };
+      redrawModels = () => { if (listSlot.isConnected) draw(); };
       load();
-      return [title, body];
+      return [title, reasoningSlot, h("div", { class: "group-label" }, "Model"), search, listSlot];
     });
+  }
+
+  function reasoningSlider(levels, current, onPick) {
+    const idx = Math.max(0, levels.indexOf(current));
+    const max = levels.length - 1;
+    const pct = i => (max > 0 ? `${(i / max) * 100}%` : "0%");
+    const readout = h("span", { class: "slider-val" }, reasoningName(levels[idx]));
+    const rail = h("div", { class: "effort-rail", "aria-hidden": "true", style: { "--pct": pct(idx) } });
+    const ticks = h("div", { class: "effort-ticks", "aria-hidden": "true" },
+      levels.map((_, i) => h("span", { class: i <= idx ? "on" : "" })));
+    const input = h("input", {
+      type: "range",
+      class: "effort-range",
+      min: "0",
+      max: String(max),
+      step: "1",
+      value: String(idx),
+      "aria-label": "Reasoning",
+      "aria-valuetext": reasoningName(levels[idx]),
+    });
+    const sync = i => {
+      const name = reasoningName(levels[i]);
+      readout.textContent = name;
+      input.setAttribute("aria-valuetext", name);
+      rail.style.setProperty("--pct", pct(i));
+      [...ticks.children].forEach((dot, j) => dot.classList.toggle("on", j <= i));
+    };
+    input.addEventListener("input", () => sync(Number(input.value)));
+    input.addEventListener("change", () => {
+      const next = levels[Number(input.value)];
+      if (next && next !== current) onPick(next);
+    });
+    const ends = h("div", { class: "effort-ends", "aria-hidden": "true" },
+      h("span", {}, reasoningName(levels[0])),
+      h("span", {}, reasoningName(levels[max])));
+    return [
+      h("div", { class: "group-label slider-head" }, h("span", {}, "Reasoning"), readout),
+      h("div", { class: "group effort-card" },
+        h("div", { class: "effort-track" }, rail, ticks, input),
+        ends),
+    ];
   }
 
   function fitDraft(models) {
@@ -2218,7 +2320,7 @@ function detailsView(machine, id, fromChat, chatFromList) {
           ? d.pullRequests.map(pr => h("a", { class: "pr-link", href: pr.url, target: "_blank", rel: "noopener noreferrer" }, icon("fetch"), pr.label))
           : h("p", {}, "No PR links yet")),
         d.quota?.length ? h("section", {}, h("h2", {}, "Usage limits"), d.quota.map(quotaLimit)) : "",
-        h("section", {}, h("h2", {}, "Session totals"),
+        h("section", {}, h("h2", {}, "Current session"),
           h("p", {}, [plural(d.compactions, "compaction", "compactions"),
             d.contextUsage?.window > 0 && `${contextReadout(d.contextUsage)} context`, cost].filter(Boolean).join(" · "))));
     } catch (e) {

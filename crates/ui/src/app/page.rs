@@ -7,6 +7,7 @@ use rune::{Image, TextEdit};
 use rune_kit::ComboboxState;
 use rune_kit::diff::DiffState;
 
+use super::SliderState;
 use super::attach::Attached;
 use super::draft::Draft;
 use crate::client::Subscription;
@@ -27,7 +28,7 @@ pub struct ChatPage {
     pub info: Option<ComposerInfo>,
     pub overlay: Overlay,
     pub model_picker: ComboboxState,
-    pub reasoning_picker: ComboboxState,
+    pub reasoning_slider: SliderState,
     pub skills: SkillMenu,
     pub queue_edit: Option<QueueEdit>,
     pub attached: Vec<Attached>,
@@ -201,7 +202,7 @@ impl ChatPage {
             info: None,
             overlay: Overlay::Closed,
             model_picker: ComboboxState::default(),
-            reasoning_picker: ComboboxState::default(),
+            reasoning_slider: SliderState::default(),
             skills: SkillMenu::default(),
             queue_edit: None,
             attached: Vec::new(),

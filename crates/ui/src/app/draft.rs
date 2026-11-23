@@ -299,6 +299,16 @@ impl State {
             Target::New(_) => return self.pick_draft(pick),
             Target::Existing(chat) => chat.id.clone(),
         };
+        let previous = page
+            .info
+            .as_ref()
+            .map(|i| (i.model.clone(), i.reasoning.clone()));
+        if let Some(info) = page.info.as_mut() {
+            match &pick {
+                Pick::Model(model) => info.model = Some(model.clone()),
+                Pick::Reasoning(level) => info.reasoning = Some(level.clone()),
+            }
+        }
         let args = match pick {
             Pick::Model(model) => json!({ "chat": id, "model": model, "reasoning": null }),
             Pick::Reasoning(level) => json!({ "chat": id, "model": null, "reasoning": level }),
@@ -319,7 +329,15 @@ impl State {
                         info.reasoning = saved.reasoning;
                     }
                 }
-                Err(e) => s.fail("Couldn't change the model", e),
+                Err(e) => {
+                    if let Some((model, reasoning)) = previous
+                        && let Some(info) = s.page_at(nav).and_then(|p| p.info.as_mut())
+                    {
+                        info.model = model;
+                        info.reasoning = reasoning;
+                    }
+                    s.fail("Couldn't change the model", e);
+                }
             },
         );
     }

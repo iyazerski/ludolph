@@ -211,16 +211,18 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
-    body.child(rule(k)).child(
-        text(totals)
-        .font(TextStyle {
-            size: 11.0,
-            ..k.ty.ui
-        })
-        .color(k.c.text_muted)
-        .wrap()
-        .label("Session totals: compactions, context used of the model's window, and cost in US dollars"),
-    )
+    body.child(rule(k))
+        .child(text("Current session").font(k.ty.small).color(k.c.text_faint))
+        .child(
+            text(totals)
+                .font(TextStyle {
+                    size: 11.0,
+                    ..k.ty.ui
+                })
+                .color(k.c.text_muted)
+                .wrap()
+                .label("Session totals: compactions, context used of the model's window, and cost in US dollars"),
+        )
 }
 
 /// One window of the provider's quota: its name, what's used, a bar, and the next reset.

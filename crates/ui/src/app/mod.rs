@@ -46,6 +46,11 @@ struct MessageDraft {
     attached: Vec<attach::Attached>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SliderState {
+    pub drag: Option<usize>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Window {
     Quick,
