@@ -687,13 +687,27 @@ fn sent_prompts_rise_into_place_and_keep_their_bubble_once_written() {
 #[test]
 fn pages_swap_without_showing_through_or_sliding() {
     type Change = fn(&mut State);
-    let pages: [(Change, Change); 2] = [
-        (|s| s.open_changes("0"), State::back),
-        (State::open_settings, State::close_settings),
+    let sequences: [&[Change]; 4] = [
+        &[|s| s.open_changes("0"), State::back],
+        &[State::open_settings, State::close_settings],
+        &[
+            State::open_settings,
+            |s| s.show_settings_section(Section::Appearance),
+            |s| s.show_settings_section(Section::Model),
+            |s| s.show_settings_section(Section::Resources),
+            |s| s.show_settings_section(Section::Phone),
+            State::close_settings,
+        ],
+        &[
+            |s| s.open_chat("other".into()),
+            State::new_chat,
+            |s| s.open_chat("test".into()),
+        ],
     ];
-    for (open, close) in pages {
+    for sequence in sequences {
         let (_rt, mut ui) = runtime(1120.0, Window::Main);
         ui.state.engine_up = true;
+        ui.state.prefs.borrow_mut().show_details = true;
         let mut chat = Existing::new("test".into(), None);
         chat.page = Some(vec![Message {
             id: "earlier".into(),
@@ -711,7 +725,7 @@ fn pages_swap_without_showing_through_or_sliding() {
             TextEdit::default(),
         )));
         settle(&mut ui);
-        for change in [open, close] {
+        for &change in sequence {
             ui.update(move |s, tx| {
                 tx.animated();
                 change(s);
@@ -722,12 +736,18 @@ fn pages_swap_without_showing_through_or_sliding() {
                 .iter()
                 .find(|e| e.key.as_deref().is_some_and(|k| k.ends_with("-page")))
                 .unwrap();
-            assert!(page.opacity < 1.0, "the new page fades in");
+            assert!(page.opacity < 1.0, "the new page {:?} fades in", page.key);
             for e in elements.iter().filter(|e| e.path.starts_with(&page.path)) {
                 let moved = (e.rect[0] - e.target[0])
                     .abs()
                     .max((e.rect[1] - e.target[1]).abs());
-                assert!(moved < 0.5, "{:?} slides into place", e.key);
+                assert!(
+                    moved < 0.5,
+                    "{:?} ({:?}) slides into place inside {:?}",
+                    e.key,
+                    e.text,
+                    page.key
+                );
             }
             let exiting: Vec<_> = elements
                 .iter()
@@ -741,4 +761,278 @@ fn pages_swap_without_showing_through_or_sliding() {
             settle(&mut ui);
         }
     }
+}
+
+fn test_settings() -> crate::data::Settings {
+    crate::data::Settings {
+        sidecar_model: None,
+        notify: crate::data::Notify::Away,
+        open_at_login: false,
+        expand_tools: false,
+        send_behavior: crate::data::SendBehavior::Queue,
+        tool_routing: true,
+        second_opinion: false,
+        second_opinion_claude: None,
+        second_opinion_gpt: None,
+        browser_use: false,
+        computer_use: false,
+        gui_model: None,
+        gui_thinking: None,
+        chat_models: vec![],
+    }
+}
+
+#[test]
+fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
+    ui.update(|s, _| {
+        s.open_settings();
+        s.show_settings_section(Section::Model);
+        s.catalog = Catalog::Ready(
+            serde_json::from_value(serde_json::json!({
+                "models": [
+                    {"id": "anthropic/claude-1", "label": "Claude 1", "reasoningLevels": ["medium"]},
+                    {"id": "anthropic/claude-2", "label": "Claude 2", "reasoningLevels": ["medium"]},
+                    {"id": "anthropic/claude-3", "label": "Claude 3", "reasoningLevels": ["medium"]},
+                    {"id": "anthropic/claude-4", "label": "Claude 4", "reasoningLevels": ["medium"]},
+                    {"id": "anthropic/claude-5", "label": "Claude 5", "reasoningLevels": ["medium"]},
+                    {"id": "anthropic/claude-6", "label": "Claude 6", "reasoningLevels": ["medium"]},
+                    {"id": "anthropic/claude-7", "label": "Claude 7", "reasoningLevels": ["medium"]},
+                    {"id": "openai/gpt-1", "label": "GPT 1", "reasoningLevels": ["medium"]},
+                    {"id": "openai/gpt-2", "label": "GPT 2", "reasoningLevels": ["medium"]}
+                ],
+                "default": "anthropic/claude-1",
+                "defaultReasoning": "medium"
+            }))
+            .unwrap(),
+        );
+        s.settings_page_mut().unwrap().settings = Some(test_settings());
+    });
+    settle(&mut ui);
+
+    let elements = ui.elements();
+    let anthropic_card = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("chat-models-anthropic"))
+        .expect("anthropic models grouped in a card");
+    let openai_card = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("chat-models-openai"))
+        .expect("openai models grouped in a card");
+    let anthropic_scroll = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic"))
+        .expect("provider with more than 5 models gets a scrollable list");
+    assert!(
+        elements
+            .iter()
+            .all(|e| e.key.as_deref() != Some("chat-models-scroll-openai")),
+        "provider with 5 or fewer models does not get a nested scroll list"
+    );
+    assert!(
+        anthropic_scroll.rect[3] <= 225.0,
+        "provider scroll list caps visible height to 5 rows: {:?}",
+        anthropic_scroll.rect
+    );
+    assert!(elements.iter().any(|e| {
+        e.path.starts_with(&anthropic_card.path) && e.text.as_deref() == Some("7 of 7")
+    }));
+    assert!(
+        elements.iter().any(|e| {
+            e.path.starts_with(&openai_card.path) && e.text.as_deref() == Some("2 of 2")
+        })
+    );
+
+    // Scroll the settings page down so the anthropic list is in view, then wheel inside it.
+    let page_scroll = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("settings-model-page"))
+        .unwrap();
+    let [px, py, pw, ph] = page_scroll.rect;
+    ui.wheel(px + pw / 2.0, py + ph / 2.0, -400.0);
+    settle(&mut ui);
+    let elements = ui.elements();
+    let anthropic_scroll = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic"))
+        .unwrap();
+    let seventh_before = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("anthropic/claude-7"))
+        .unwrap()
+        .rect[1];
+    let [sx, sy, sw, sh] = anthropic_scroll.rect;
+    ui.wheel(sx + sw / 2.0, sy + sh / 2.0, -200.0);
+    settle(&mut ui);
+    let seventh_after = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("anthropic/claude-7"))
+        .unwrap()
+        .rect[1];
+    assert!(
+        seventh_after < seventh_before - 10.0,
+        "scrolling inside the provider list moves later models into view: {seventh_before} -> {seventh_after}"
+    );
+
+    // Skills and extensions group by source.
+    ui.update(|s, _| {
+        s.show_settings_section(Section::Resources);
+        s.settings_page_mut().unwrap().resources = Some(Ok(vec![
+            crate::data::Resource {
+                kind: crate::data::ResourceKind::Skills,
+                name: "review".into(),
+                path: "/builtin/review/SKILL.md".into(),
+                group: "Built-in".into(),
+                enabled: true,
+            },
+            crate::data::Resource {
+                kind: crate::data::ResourceKind::Skills,
+                name: "commit".into(),
+                path: "/builtin/commit/SKILL.md".into(),
+                group: "Built-in".into(),
+                enabled: false,
+            },
+            crate::data::Resource {
+                kind: crate::data::ResourceKind::Skills,
+                name: "deploy".into(),
+                path: "/home/.agents/skills/deploy/SKILL.md".into(),
+                group: "~/.agents/skills".into(),
+                enabled: true,
+            },
+            crate::data::Resource {
+                kind: crate::data::ResourceKind::Extensions,
+                name: "browse".into(),
+                path: "/builtin/browse.ts".into(),
+                group: "Built-in".into(),
+                enabled: true,
+            },
+        ]));
+    });
+    settle(&mut ui);
+    let elements = ui.elements();
+    let builtin_skills = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("resource-skills-Built-in"))
+        .expect("Built-in skills grouped into their own card");
+    let local_skills = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("resource-skills-~/.agents/skills"))
+        .expect("local skills grouped into their own card");
+    assert!(elements.iter().any(|e| {
+        e.path.starts_with(&builtin_skills.path) && e.text.as_deref() == Some("1 of 2")
+    }));
+    assert!(elements.iter().any(|e| {
+        e.path.starts_with(&local_skills.path) && e.text.as_deref() == Some("deploy")
+    }));
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.key.as_deref() == Some("resource-extensions-Built-in"))
+    );
+}
+
+#[test]
+fn phone_settings_separates_relay_linked_phones_and_notifications() {
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
+    ui.update(|s, _| {
+        s.open_settings();
+        s.show_settings_section(Section::Phone);
+        let page = s.settings_page_mut().unwrap();
+        page.settings = Some(test_settings());
+        page.phone.state = Some(crate::data::PhoneLink {
+            link: Some(crate::data::RelayLink {
+                relay: "https://ludolph.iyazerski.dev".into(),
+                status: crate::data::LinkStatus::Connected,
+                error: None,
+            }),
+            phones: vec!["T01VVtGD123456".into()],
+            pairing: None,
+            relay: "https://ludolph.iyazerski.dev".into(),
+        });
+    });
+    settle(&mut ui);
+
+    let elements = ui.elements();
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Relay connected"))
+    );
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("ludolph.iyazerski.dev"))
+    );
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Linked phones"))
+    );
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.label.as_deref() == Some("Link phone"))
+    );
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Phone T01VVtGD"))
+    );
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Notifications"))
+    );
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Send notifications"))
+    );
+
+    let unlink = elements
+        .iter()
+        .find(|e| e.label.as_deref() == Some("Unlink"))
+        .unwrap();
+    click(&mut ui, unlink);
+    let elements = ui.elements();
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Unlink Phone T01VVtGD?"))
+    );
+    let cancel = elements
+        .iter()
+        .find(|e| e.label.as_deref() == Some("Cancel"))
+        .unwrap();
+    click(&mut ui, cancel);
+    assert!(
+        ui.elements()
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Phone T01VVtGD"))
+    );
+
+    // Empty state shows a dedicated empty card with the primary Link phone button.
+    ui.update(|s, _| {
+        s.settings_page_mut()
+            .unwrap()
+            .phone
+            .state
+            .as_mut()
+            .unwrap()
+            .phones
+            .clear();
+    });
+    settle(&mut ui);
+    let elements = ui.elements();
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("No phones linked"))
+    );
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.label.as_deref() == Some("Link phone"))
+    );
 }

@@ -1,8 +1,8 @@
-use rune::{Color, El, Icon, SurfaceFit, Tx, col, el, row, text};
+use rune::{Color, El, Icon, SurfaceFit, Tx, col, el, icon, row, text};
 use rune_kit::shell::{Sidebar, SidebarRow};
 use rune_kit::{
-    Button, ButtonVariant, Combobox, ComboboxOption, Kit, Placement, SegmentedControl, Select,
-    SelectAppearance, ShortcutRecorder, Switch, TextInput, shortcut_error_message,
+    Button, ButtonVariant, Combobox, ComboboxOption, ControlSize, Kit, Placement, SegmentedControl,
+    Select, SelectAppearance, ShortcutRecorder, Switch, TextInput, shortcut_error_message,
 };
 
 use super::widgets::{self, busy, dot, model_options};
@@ -22,6 +22,10 @@ const CONTROL: f32 = 300.0;
 /// The reasoning picker next to a model picker; the pair is `CONTROL` wide.
 const THINKING: f32 = 108.0;
 const GAP: f32 = 8.0;
+const GROUP_LIST_VISIBLE: usize = 5;
+/// Five single-line rows (44 pt each) plus the four 1 pt dividers between them.
+const GROUP_LIST_MAX_HEIGHT: f32 =
+    GROUP_LIST_VISIBLE as f32 * 44.0 + (GROUP_LIST_VISIBLE - 1) as f32;
 /// The sidecar picker's id for pi's default model, which follows pi's
 /// settings; a model's id has a `/`.
 const DEFAULT_MODEL: &str = "default";
@@ -55,11 +59,11 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                         .collect(),
                 ))
                 .child(caption(k, "Chat model picker"))
-                .child(group(k, chat_models(s, page, k)))
+                .children(chat_models(s, page, k))
         }),
         Section::Accounts => accounts(page, k, layer),
         Section::Resources => resources(page, k),
-        Section::Phone => loaded(page, k, || group(k, phone(page, k))),
+        Section::Phone => loaded(page, k, || phone(page, k)),
         Section::About => group(k, vec![about(page, k)]),
     };
     let body = col()
@@ -75,7 +79,7 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                 .pl(4.0),
         )
         .child(content);
-    // Keyed by section so each one opens scrolled to its top.
+    // Keyed by section so each one swaps cleanly and opens scrolled to its top.
     widgets::page(
         col()
             .w_full()
@@ -84,7 +88,7 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                 stick_bottom: false,
             })
             .child(row().w_full().justify_center().child(body)),
-        key(page.section),
+        page_key(page.section),
     )
 }
 
@@ -103,7 +107,7 @@ pub fn sidebar(page: &SettingsPage, k: &Kit) -> El {
             |bar, section| {
                 bar.child(
                     SidebarRow::new(title(section))
-                        .icon(icon(section))
+                        .icon(section_icon(section))
                         .selected(page.section == section)
                         .on_select(move |s: &mut State, _| s.show_settings_section(section))
                         .build(k)
@@ -140,7 +144,20 @@ fn key(section: Section) -> &'static str {
     }
 }
 
-fn icon(section: Section) -> &'static Icon {
+fn page_key(section: Section) -> &'static str {
+    match section {
+        Section::General => "settings-general-page",
+        Section::Appearance => "settings-appearance-page",
+        Section::Accounts => "settings-accounts-page",
+        Section::AgentTools => "settings-agent-tools-page",
+        Section::Model => "settings-model-page",
+        Section::Resources => "settings-resources-page",
+        Section::Phone => "settings-phone-page",
+        Section::About => "settings-about-page",
+    }
+}
+
+fn section_icon(section: Section) -> &'static Icon {
     match section {
         Section::General => &icons::SLIDERS,
         Section::Appearance => &icons::APPEARANCE,
@@ -442,15 +459,22 @@ fn resources(page: &SettingsPage, k: &Kit) -> El {
         Some(Ok(list)) => list,
     };
     let kinds = [
-        (ResourceKind::Skills, "Skills"),
-        (ResourceKind::Extensions, "Extensions"),
+        (ResourceKind::Skills, "Skills", "skills"),
+        (ResourceKind::Extensions, "Extensions", "extensions"),
     ];
-    kinds
-        .into_iter()
-        .fold(col().w_full().gap(12.0), |out, (kind, label)| {
-            let rows: Vec<El> = list
+    let mut out = col().w_full().gap(12.0);
+    let mut any = false;
+    for (kind, label, kind_id) in kinds {
+        let groups = group_by(list.iter().filter(|r| r.kind == kind), |r| r.group.as_str());
+        if groups.is_empty() {
+            continue;
+        }
+        any = true;
+        out = out.child(caption(k, label));
+        for (source, items) in groups {
+            let enabled = items.iter().filter(|r| r.enabled).count();
+            let rows = items
                 .iter()
-                .filter(|r| r.kind == kind)
                 .map(|r| {
                     let path = r.path.clone();
                     let pick = Switch::new(r.enabled)
@@ -459,14 +483,27 @@ fn resources(page: &SettingsPage, k: &Kit) -> El {
                         .disabled(page.resource_saving)
                         .on_toggle(move |s: &mut State| s.toggle_resource(kind, &path))
                         .build(k);
-                    compact(k, &r.name, Some(&r.group), pick).key(r.path.clone())
+                    compact(k, &r.name, None, pick).key(r.path.clone())
                 })
                 .collect();
-            if rows.is_empty() {
-                return out;
-            }
-            out.child(caption(k, label)).child(group(k, rows))
-        })
+            out = out.child(grouped_card(
+                k,
+                GroupCard {
+                    key: format!("resource-{kind_id}-{source}"),
+                    leading: None,
+                    title: source,
+                    title_help: Some(source),
+                    detail: format!("{enabled} of {}", items.len()),
+                    rows,
+                    scroll_key: None,
+                },
+            ));
+        }
+    }
+    if !any {
+        return failed(k, "No skills or extensions found.".to_owned());
+    }
+    out
 }
 
 fn accents(s: &State, k: &Kit) -> El {
@@ -639,29 +676,52 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
 
 fn chat_models(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
     let Some(models) = s.catalog.ready() else {
-        return vec![loading(k)];
+        return vec![group(k, vec![loading(k)])];
     };
+    if models.is_empty() {
+        return vec![failed(k, "No models available.".to_owned())];
+    }
     let picked = page
         .settings
         .as_ref()
         .map_or(&[][..], |v| v.chat_models.as_slice());
     let offered = |id: &String| picked.is_empty() || picked.contains(id);
-    let count = models.iter().filter(|m| offered(&m.id)).count();
-    models
-        .iter()
-        .map(|m| {
-            let on = offered(&m.id);
-            let name = s.catalog.label(&m.id);
-            let provider = m.id.split_once('/').map_or("", |(p, _)| p);
-            let id = m.id.clone();
-            let pick = Switch::new(on)
-                .hide_label()
-                .label(format!("Offer {name}"))
-                // The picker can't be empty, and an empty list offers every model.
-                .disabled(on && count == 1)
-                .on_toggle(move |s: &mut State| s.toggle_chat_model(&id))
-                .build(k);
-            compact(k, &name, Some(provider), pick).key(m.id.clone())
+    let total_enabled = models.iter().filter(|m| offered(&m.id)).count();
+    group_by(models, |m| m.id.split_once('/').map_or("Other", |(p, _)| p))
+        .into_iter()
+        .map(|(provider, items)| {
+            let enabled = items.iter().filter(|m| offered(&m.id)).count();
+            let scroll = (items.len() > GROUP_LIST_VISIBLE)
+                .then(|| format!("chat-models-scroll-{provider}"));
+            let leading = Some(icon(icons::mark(&items[0].id), 14.0).color(k.c.icon_muted));
+            let rows = items
+                .iter()
+                .map(|m| {
+                    let on = offered(&m.id);
+                    let name = s.catalog.label(&m.id);
+                    let id = m.id.clone();
+                    let pick = Switch::new(on)
+                        .hide_label()
+                        .label(format!("Offer {name}"))
+                        // The picker can't be empty, and an empty list offers every model.
+                        .disabled(on && total_enabled == 1)
+                        .on_toggle(move |s: &mut State| s.toggle_chat_model(&id))
+                        .build(k);
+                    compact(k, &name, None, pick).key(m.id.clone())
+                })
+                .collect();
+            grouped_card(
+                k,
+                GroupCard {
+                    key: format!("chat-models-{provider}"),
+                    leading,
+                    title: page.accounts.name(provider),
+                    title_help: None,
+                    detail: format!("{enabled} of {}", items.len()),
+                    rows,
+                    scroll_key: scroll,
+                },
+            )
         })
         .collect()
 }
@@ -1036,11 +1096,11 @@ fn error_line(k: &Kit, why: String) -> El {
         .child(text(why).font(k.ty.text_small).color(k.c.danger.fg).wrap())
 }
 
-fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
+fn phone(page: &SettingsPage, k: &Kit) -> El {
     let notify = page.settings.as_ref().map_or(Notify::Away, |v| v.notify);
     let notify = wide(
         k,
-        "Notifications",
+        "Send notifications",
         SegmentedControl::new(
             &["When I'm away", "Always"],
             Some(usize::from(notify == Notify::Always)),
@@ -1052,74 +1112,90 @@ fn phone(page: &SettingsPage, k: &Kit) -> Vec<El> {
         })
         .build(k),
     );
-    let mut out = Vec::new();
+    let mut out = col().w_full().gap(12.0);
     match &page.phone.state {
-        None => out.push(row().w_full().px(PAD).py(12.0).child(busy(14.0, k))),
+        None => {
+            out = out.child(group(k, vec![loading(k)]));
+            if let Some(why) = &page.phone.error {
+                out = out.child(error_line(k, why.clone()));
+            }
+        }
         Some(state) => {
             let pairing = state.pairing.as_ref();
-            match &state.link {
-                Some(link) => out.push(relay_status(link, k)),
-                None => out.push(relay_field(page, pairing.is_none(), k)),
+            let connection = match &state.link {
+                Some(link) => relay_status(link, k),
+                None => relay_field(page, pairing.is_none(), k),
+            };
+            out = out.child(group(k, vec![connection]));
+            if let Some(why) = &page.phone.error {
+                out = out.child(error_line(k, why.clone()));
             }
-            out.push(compact(
-                k,
-                &format!("Linked phones ({})", state.phones.len()),
-                None,
-                Button::new("Link new phone")
-                    .variant(ButtonVariant::Neutral)
-                    .help("Show a QR code to scan with another phone")
-                    .disabled(pairing.is_some())
+            let mut header = row().w_full().center_y().pl(4.0).pt(8.0).gap(6.0).child(
+                text("Linked phones")
+                    .font(k.ty.text_small_medium)
+                    .color(k.c.text_muted),
+            );
+            if !state.phones.is_empty() {
+                header = header
+                    .child(
+                        text(state.phones.len().to_string())
+                            .font(k.ty.text_small)
+                            .color(k.c.text_faint),
+                    )
+                    .child(rune::spacer())
+                    .child(
+                        Button::new("Link phone")
+                            .icon(&icons::PLUS)
+                            .variant(ButtonVariant::Ghost)
+                            .control_size(ControlSize::Small)
+                            .help("Show a QR code to scan with another phone")
+                            .disabled(pairing.is_some())
+                            .on_press(State::link_phone)
+                            .build(k),
+                    );
+            }
+            out = out.child(header);
+            if !state.phones.is_empty() {
+                let phones = state
+                    .phones
+                    .iter()
+                    .map(|id| linked_phone(k, id, page.phone.confirm_unlink.as_deref() == Some(id)))
+                    .collect();
+                out = out.child(group(k, phones));
+            } else if pairing.is_none() {
+                let add = Button::new("Link phone")
+                    .icon(&icons::PLUS)
+                    .variant(ButtonVariant::Contrast)
+                    .help("Show a QR code to scan with your phone")
                     .on_press(State::link_phone)
-                    .build(k),
-            ));
-            if state.phones.is_empty() {
-                out.push(
-                    row()
-                        .w_full()
-                        .px(PAD)
-                        .py(12.0)
-                        .child(text("No phones linked").font(k.ty.ui).color(k.c.text_muted)),
-                );
-            }
-            for id in &state.phones {
-                out.push(linked_phone(
+                    .build(k);
+                out = out.child(group(
                     k,
-                    id,
-                    page.phone.confirm_unlink.as_deref() == Some(id),
+                    vec![compact(
+                        k,
+                        "No phones linked",
+                        Some("Scan a QR code to follow chats from your phone."),
+                        add,
+                    )],
                 ));
             }
             if let Some(pairing) = pairing {
-                out.push(pairing_block(page, pairing, k));
+                out = out.child(group(k, vec![pairing_block(page, pairing, k)]));
             }
         }
     }
-    if let Some(why) = &page.phone.error {
-        out.push(
-            row().w_full().px(PAD).py(8.0).child(
-                text(why.clone())
-                    .font(k.ty.text_small)
-                    .color(k.c.danger.fg)
-                    .wrap(),
-            ),
-        );
-    }
-    out.push(notify);
-    out
+    out.child(caption(k, "Notifications"))
+        .child(group(k, vec![notify]))
 }
 
 fn relay_status(link: &RelayLink, k: &Kit) -> El {
-    let (color, status) = match link.status {
-        LinkStatus::Connected => (
-            k.c.success.icon,
-            format!("Relay connected · {}", host(&link.relay)),
-        ),
-        LinkStatus::Connecting => (
-            k.c.warning.icon,
-            format!("Relay connecting · {}", host(&link.relay)),
-        ),
+    let (color, status, detail) = match link.status {
+        LinkStatus::Connected => (k.c.success.icon, "Relay connected", None),
+        LinkStatus::Connecting => (k.c.warning.icon, "Relay connecting…", None),
         LinkStatus::Rejected => (
             k.c.danger.icon,
-            "Relay rejected this Mac. Link a phone again.".to_owned(),
+            "Relay rejected this Mac",
+            Some("Link a phone again."),
         ),
     };
     let mut info = col().grow(1.0).min_w(0.0).gap(2.0).child(
@@ -1129,15 +1205,24 @@ fn relay_status(link: &RelayLink, k: &Kit) -> El {
             .child(dot(color))
             .child(text(status).font(k.ty.ui).color(k.c.text_base).truncate()),
     );
-    if let Some(why) = &link.error {
+    if let Some(why) = link.error.as_deref().or(detail) {
         info = info.child(
-            text(why.clone())
+            text(why.to_owned())
                 .font(k.ty.text_small)
                 .color(k.c.text_muted)
                 .wrap(),
         );
     }
-    status_row(info, el())
+    let address = host(&link.relay);
+    let trailing = if address.is_empty() {
+        el()
+    } else {
+        text(address.to_owned())
+            .font(k.ty.text_small)
+            .color(k.c.text_muted)
+            .truncate()
+    };
+    status_row(info, trailing)
 }
 
 fn linked_phone(k: &Kit, id: &str, confirm: bool) -> El {
@@ -1147,12 +1232,27 @@ fn linked_phone(k: &Kit, id: &str, confirm: bool) -> El {
     } else {
         name
     };
-    let info = text(label)
-        .font(k.ty.ui)
-        .color(k.c.text_base)
-        .truncate()
+    let badge = el()
+        .size(28.0, 28.0)
+        .radius(7.0)
+        .fill(k.c.layer_02)
+        .center()
+        .child(icon(&icons::PHONE, 14.0).color(k.c.icon_muted))
+        .a11y_hidden();
+    let info = row()
         .grow(1.0)
-        .min_w(0.0);
+        .min_w(0.0)
+        .center_y()
+        .gap(10.0)
+        .child(badge)
+        .child(
+            text(label)
+                .font(k.ty.ui)
+                .color(k.c.text_base)
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        );
     let phone = id.to_owned();
     let buttons = if confirm {
         row()
@@ -1334,19 +1434,92 @@ fn about(page: &SettingsPage, k: &Kit) -> El {
         )
 }
 
-fn group(k: &Kit, rows: Vec<El>) -> El {
-    let mut card = col()
+struct GroupCard<'a> {
+    key: String,
+    leading: Option<El>,
+    title: &'a str,
+    title_help: Option<&'a str>,
+    detail: String,
+    rows: Vec<El>,
+    scroll_key: Option<String>,
+}
+
+fn group_by<'a, T>(
+    items: impl IntoIterator<Item = &'a T>,
+    key: impl Fn(&'a T) -> &'a str,
+) -> Vec<(&'a str, Vec<&'a T>)> {
+    let mut groups: Vec<(&'a str, Vec<&'a T>)> = Vec::new();
+    for item in items {
+        let name = key(item);
+        if let Some((_, list)) = groups.iter_mut().find(|(existing, _)| *existing == name) {
+            list.push(item);
+        } else {
+            groups.push((name, vec![item]));
+        }
+    }
+    groups
+}
+
+fn divided(k: &Kit, rows: Vec<El>) -> El {
+    let mut list = col().w_full();
+    for (i, line) in rows.into_iter().enumerate() {
+        if i > 0 {
+            list = list.child(el().w_full().h(1.0).fill(k.c.border_muted));
+        }
+        list = list.child(line);
+    }
+    list
+}
+
+fn grouped_card(k: &Kit, card: GroupCard<'_>) -> El {
+    let mut header = row()
+        .w_full()
+        .px(PAD)
+        .py(10.0)
+        .center_y()
+        .gap(8.0)
+        .children(card.leading)
+        .child(
+            text(card.title.to_owned())
+                .font(k.ty.ui_medium)
+                .color(k.c.text_base)
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        )
+        .child(
+            text(card.detail)
+                .font(k.ty.text_small)
+                .color(k.c.text_muted),
+        );
+    if let Some(help) = card.title_help {
+        header = header.help(help);
+    }
+    let mut list = divided(k, card.rows);
+    if let Some(scroll_key) = card.scroll_key {
+        list = list
+            .key(scroll_key)
+            .max_h(GROUP_LIST_MAX_HEIGHT)
+            .scroll(rune::ScrollSpec {
+                stick_bottom: false,
+            });
+    }
+    col()
+        .key(card.key)
         .w_full()
         .radius(k.radius.lg)
         .fill(k.c.layer_01)
-        .border(1.0, k.c.border_muted);
-    for (i, line) in rows.into_iter().enumerate() {
-        if i > 0 {
-            card = card.child(el().w_full().h(1.0).fill(k.c.border_muted));
-        }
-        card = card.child(line);
-    }
-    card
+        .border(1.0, k.c.border_muted)
+        .child(header)
+        .child(el().w_full().h(1.0).fill(k.c.border_muted))
+        .child(list)
+}
+
+fn group(k: &Kit, rows: Vec<El>) -> El {
+    divided(k, rows)
+        .radius(k.radius.lg)
+        .fill(k.c.layer_01)
+        .border(1.0, k.c.border_muted)
 }
 
 fn wide(k: &Kit, label: &str, control: El) -> El {

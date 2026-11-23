@@ -16,10 +16,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             toolbar(s, page, k, &mut layer),
         ),
         Page::Settings(page) => (
-            widgets::page(
-                settings::view(s, page, &theme.controls, &mut layer),
-                "settings-page",
-            ),
+            settings::view(s, page, &theme.controls, &mut layer),
             Toolbar::new().leading(widgets::page(settings_title(k), "settings-title")),
         ),
         Page::List => (el(), Toolbar::new()),
@@ -71,7 +68,11 @@ fn toolbar(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> Toolbar 
                 .truncate(),
         );
     }
-    let mut bar = Toolbar::new().leading(widgets::page(titles, "chat-titles"));
+    let titles_key = match page.existing() {
+        Some(chat) => format!("chat-titles-{}", chat.id),
+        None => "new-chat-titles".to_owned(),
+    };
+    let mut bar = Toolbar::new().leading(widgets::page(titles, titles_key));
     if let Some(c) = page.existing() {
         let id = c.id.clone();
         bar = bar

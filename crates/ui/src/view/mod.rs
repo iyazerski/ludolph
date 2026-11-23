@@ -49,7 +49,7 @@ fn quick(s: &State) -> El {
     let k = &theme.base;
     let mut layer = Vec::new();
     let page = match &s.page {
-        Page::List | Page::Settings(_) => list::view(s, k),
+        Page::List | Page::Settings(_) => widgets::page(list::view(s, k), "list-page"),
         Page::Chat(page) => chat::view(s, page, k, &mut layer),
     };
     dialogs::chat_dialog(s, k, &mut layer);

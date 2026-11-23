@@ -32,7 +32,7 @@ pub fn view(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .h_full()
         .child(header(s, page, k, layer))
         .child(body(s, page, k, layer));
-    widgets::page(chat, "chat-page")
+    widgets::page(chat, page_key(page))
 }
 
 pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -41,7 +41,14 @@ pub fn pane(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     {
         return widgets::page(super::changes::page(s, chat, changes, k), "changes-page");
     }
-    widgets::page(body(s, page, k, layer), "chat-page")
+    widgets::page(body(s, page, k, layer), page_key(page))
+}
+
+fn page_key(page: &ChatPage) -> String {
+    match &page.target {
+        Target::New(_) => "new-chat-page".to_owned(),
+        Target::Existing(chat) => format!("chat-{}-page", chat.id),
+    }
 }
 
 fn body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -288,19 +295,14 @@ fn close_menu(s: &mut State) {
 }
 
 fn hero(k: &Kit) -> El {
-    col()
-        .w_full()
-        .pt(80.0)
-        .items_center()
-        .transition(rise())
-        .child(
-            text("What are we building?")
-                .font(TextStyle {
-                    size: 20.0,
-                    ..k.ty.body_medium
-                })
-                .color(k.c.text_muted),
-        )
+    col().w_full().pt(80.0).items_center().child(
+        text("What are we building?")
+            .font(TextStyle {
+                size: 20.0,
+                ..k.ty.body_medium
+            })
+            .color(k.c.text_muted),
+    )
 }
 
 fn errbox(k: &Kit, why: &str) -> El {
