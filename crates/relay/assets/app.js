@@ -139,12 +139,10 @@ function ring(fraction, color) {
   return wrap.firstChild;
 }
 
-function contextReadout({ tokens, window: size }, spent) {
+/** Like "331.8k/272k". */
+function contextReadout({ tokens, window: size }) {
   const k = value => (Math.round(value / 100) / 10) + "k";
-  const counts = (tokens == null ? "—" : k(tokens)) + "/" + k(size);
-  const cost = spent == null ? "—" : spent.cost > 0 && spent.cost < 0.01
-    ? "<$0.01" : "$" + (Math.round(spent.cost * 100) / 100).toFixed(2);
-  return [counts, cost];
+  return (tokens == null ? "—" : k(tokens)) + "/" + k(size);
 }
 
 const TONES_DARK = ["#94a3b8", "#93c5fd", "#c4b5fd", "#fda4af", "#fcd34d", "#6ee7b7", "#5eead4", "#fdba74"];
@@ -1192,7 +1190,7 @@ function chatView(machine, id, fromList) {
   let chat = null, read = null, frame = null, ids = [], keepAnchor = false, pending = [];
   const feedMessages = new Map();
   let before = [], beforeChanges = [];
-  let info = null, infoFor = "", infoAt = 0, contextExpanded = false;
+  let info = null, infoFor = "", infoAt = 0;
   const rendered = new Map();
   const openGroups = new Map();
   let expandTools = false;
@@ -1847,12 +1845,10 @@ function chatView(machine, id, fromList) {
     const fraction = usage?.window > 0 && usage.tokens != null ? usage.tokens / usage.window : null;
     const tone = fraction >= 0.9 ? "var(--danger)" : fraction >= 0.75 ? "var(--warning)" : "var(--secondary)";
     const left = info.checkout && h("span", { class: "branch-ref" }, icon("branch"), h("span", { class: "txt" }, info.branch || "No ref"));
-    const figures = usage?.window > 0 ? contextReadout(usage, info.spent) : [];
-    const right = usage?.window > 0 && h("button", { class: "ctx", style: { color: fraction == null ? "var(--tertiary)" : tone },
-      "aria-label": contextExpanded ? figures.join(", ") + ". Show context ring" : "Show context usage and cost",
-      onclick: () => { contextExpanded = !contextExpanded; drawInfo(); } },
-      contextExpanded ? figures.map(value => h("span", {}, value))
-        : [ring(fraction || 0, tone), fraction == null ? "—" : `${Math.round(fraction * 100)}%`]);
+    const percent = fraction == null ? "—" : `${Math.round(fraction * 100)}%`;
+    const right = usage?.window > 0 && h("span", { class: "ctx", style: { color: fraction == null ? "var(--tertiary)" : tone },
+      role: "img", "aria-label": `${percent} of the context window used` },
+      ring(fraction || 0, tone), percent);
     meta.replaceChildren(projectChip || "", left || "");
     ctxSlot.replaceChildren(right || "");
     footer.classList.toggle("hide", !projectChip && !left && !right);
@@ -2223,7 +2219,8 @@ function detailsView(machine, id, fromChat, chatFromList) {
           : h("p", {}, "No PR links yet")),
         d.quota?.length ? h("section", {}, h("h2", {}, "Usage limits"), d.quota.map(quotaLimit)) : "",
         h("section", {}, h("h2", {}, "Session totals"),
-          h("p", {}, `${plural(d.compactions, "compaction", "compactions")} · ${(d.spent.tokens / 1_000_000).toFixed(2)}M tokens · ${cost}`)));
+          h("p", {}, [plural(d.compactions, "compaction", "compactions"),
+            d.contextUsage?.window > 0 && `${contextReadout(d.contextUsage)} context`, cost].filter(Boolean).join(" · "))));
     } catch (e) {
       if (!gone) body.replaceChildren(h("div", { class: "dempty" }, `Couldn't load details: ${e.message}`));
       throw e;

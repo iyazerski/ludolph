@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::data::{NestedCall, QuotaWindow, Spent, ToolState};
+use crate::data::{NestedCall, QuotaWindow, ToolState};
 
 pub fn ago(when: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let s = (now - when).num_seconds().max(0);
@@ -28,10 +28,10 @@ pub fn worked(secs: i64) -> String {
     }
 }
 
-pub fn context_readout(tokens: Option<u64>, window: u64, spent: Option<Spent>) -> (String, String) {
+/// Like "331.8k/272k".
+pub fn context_readout(tokens: Option<u64>, window: u64) -> String {
     let used = tokens.map_or_else(|| "—".to_owned(), thousands);
-    let cost = spent.map_or_else(|| "—".to_owned(), |spent| dollars(spent.cost));
-    (format!("{used}/{}", thousands(window)), cost)
+    format!("{used}/{}", thousands(window))
 }
 
 /// What's used, like "$8.43 of $200.00" or "12% used".

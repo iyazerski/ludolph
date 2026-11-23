@@ -1385,6 +1385,7 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
         details["spent"], info["spent"],
         "details use the same session-wide totals"
     );
+    assert_eq!(details["contextUsage"], info["contextUsage"]);
     all_exited(dir.path()).await;
 
     let models = tool(&engine, "list_models", json!({})).await.unwrap();

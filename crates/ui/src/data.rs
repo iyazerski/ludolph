@@ -311,7 +311,6 @@ pub struct ComposerInfo {
     pub context_usage: Option<ContextUsage>,
     pub model: Option<String>,
     pub reasoning: Option<String>,
-    pub spent: Option<Spent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -323,7 +322,6 @@ pub enum Checkout {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Spent {
-    pub tokens: u64,
     pub cost: f64,
 }
 
@@ -333,6 +331,7 @@ pub struct ChatDetails {
     pub compactions: usize,
     pub spent: Spent,
     pub pull_requests: Vec<PullRequest>,
+    pub context_usage: ContextUsage,
     pub quota: Vec<QuotaWindow>,
     pub changes: Option<ChangeCounts>,
     pub changes_error: Option<String>,

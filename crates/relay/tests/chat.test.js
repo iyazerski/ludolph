@@ -94,7 +94,7 @@ for (const fails of [false, true]) {
 }
 
 
-test("chat details show the provider's usage limits", async () => {
+test("chat details show the context used and the provider's usage limits", async () => {
   const window = new Window({ url: "https://relay.example/#/m/mac/chat/test/details" });
   const { document } = window;
   document.body.innerHTML = '<div id="app"></div><div id="toasts"></div>';
@@ -113,7 +113,8 @@ test("chat details show the provider's usage limits", async () => {
   const link = await seal.derive("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
   seal.links = () => new Promise(() => {});
   const details = {
-    compactions: 0, pullRequests: [], spent: { tokens: 0, cost: 0 }, changes: null,
+    compactions: 0, pullRequests: [], spent: { tokens: 2_000_000, cost: 0.5 }, changes: null,
+    contextUsage: { tokens: 1500, window: 10000 },
     quota: [
       { label: "5h", used: 0.12, resetsAt: Date.now() + 3 * 3600_000 + 60_000 },
       { label: "Week", used: 0.8, resetsAt: Date.now() + 5 * 86400_000, spent: 160, limit: 200 },
@@ -147,6 +148,7 @@ test("chat details show the provider's usage limits", async () => {
     expect(limits[1].querySelector("p").textContent).toStartWith("Resets ");
     expect(limits[1].querySelector(".meter > div").style.width).toBe("80%");
     expect(limits[1].querySelector(".meter > div").style.background).toBe("var(--warning)");
+    expect([...document.querySelectorAll(".chat-details p")].at(-1).textContent).toBe("0 compactions · 1.5k/10k context · $0.50");
   } finally {
     runInContext("current?.destroy()", context);
     await window.happyDOM.close();

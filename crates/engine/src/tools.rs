@@ -217,9 +217,13 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::TurnChanges => turn_changes(engine, parse(args)?).await,
         Tool::ChatDetails => {
             let args: ChatArgs = parse(args)?;
-            let (session, changes) =
-                tokio::join!(engine.details(&args.chat), engine.chat_counts(&args.chat));
+            let (session, changes, composer) = tokio::join!(
+                engine.details(&args.chat),
+                engine.chat_counts(&args.chat),
+                engine.composer(&args.chat)
+            );
             let (details, spent, quota) = session?;
+            let composer = composer?;
             let (changes, error) = match changes {
                 Ok(counts) => (
                     Some(
@@ -230,7 +234,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
                 Err(error) => (None, Some(format!("{error:#}"))),
             };
             Ok(
-                json!({"compactions": details.compactions, "pullRequests": details.pull_requests, "spent": spent, "quota": quota, "changes": changes, "changesError": error}),
+                json!({"compactions": details.compactions, "pullRequests": details.pull_requests, "spent": spent, "contextUsage": settings(&composer)["contextUsage"], "quota": quota, "changes": changes, "changesError": error}),
             )
         }
         Tool::ChatChanges => {

@@ -5,7 +5,7 @@ use super::icons;
 use super::widgets::{busy, head, head_titles, hide_button};
 use crate::app::{Existing, State, Window};
 use crate::data::{ChatDetails, QuotaWindow};
-use crate::labels::{quota_reset, quota_used};
+use crate::labels::{context_readout, quota_reset, quota_used};
 
 pub fn toggle(s: &State, k: &Kit) -> El {
     let shown = s.window == Window::Main && s.prefs.borrow().show_details;
@@ -191,25 +191,35 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
             .child(text("Usage limits").font(k.ty.small).color(k.c.text_faint))
             .children(details.quota.iter().map(|window| limit(window, now, k)));
     }
+    let compactions = format!(
+        "{} {}",
+        details.compactions,
+        if details.compactions == 1 {
+            "compaction"
+        } else {
+            "compactions"
+        }
+    );
+    let usage = details.context_usage;
+    let context = usage
+        .window
+        .filter(|w| *w > 0)
+        .map(|window| format!("{} context", context_readout(usage.tokens, window)));
+    let cost = crate::labels::dollars(details.spent.cost);
+    let totals = [Some(compactions), context, Some(cost)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
     body.child(rule(k)).child(
-        text(format!(
-            "{} {} · {:.2}M tokens · {}",
-            details.compactions,
-            if details.compactions == 1 {
-                "compaction"
-            } else {
-                "compactions"
-            },
-            details.spent.tokens as f64 / 1_000_000.0,
-            crate::labels::dollars(details.spent.cost)
-        ))
+        text(totals)
         .font(TextStyle {
             size: 11.0,
             ..k.ty.ui
         })
         .color(k.c.text_muted)
         .wrap()
-        .label("Session totals: compactions, tokens in millions, and cost in US dollars"),
+        .label("Session totals: compactions, context used of the model's window, and cost in US dollars"),
     )
 }
 
