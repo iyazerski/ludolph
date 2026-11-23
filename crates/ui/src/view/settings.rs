@@ -23,9 +23,9 @@ const CONTROL: f32 = 300.0;
 const THINKING: f32 = 108.0;
 const GAP: f32 = 8.0;
 const GROUP_LIST_VISIBLE: usize = 5;
-/// Five single-line rows (44 pt each) plus the four 1 pt dividers between them.
-const GROUP_LIST_MAX_HEIGHT: f32 =
-    GROUP_LIST_VISIBLE as f32 * 44.0 + (GROUP_LIST_VISIBLE - 1) as f32;
+/// Five 44 pt rows with their dividers, plus half of the sixth row so the list
+/// visibly continues: at rest, nothing else shows that it scrolls.
+const GROUP_LIST_MAX_HEIGHT: f32 = GROUP_LIST_VISIBLE as f32 * 45.0 + 22.0;
 /// The sidecar picker's id for pi's default model, which follows pi's
 /// settings; a model's id has a `/`.
 const DEFAULT_MODEL: &str = "default";
@@ -1475,14 +1475,15 @@ fn grouped_card(k: &Kit, card: GroupCard<'_>) -> El {
     let mut header = row()
         .w_full()
         .px(PAD)
-        .py(10.0)
+        .py(8.0)
         .center_y()
         .gap(8.0)
         .children(card.leading)
+        // Smaller and muted, so the header reads as a label above the rows, not as one of them.
         .child(
             text(card.title.to_owned())
-                .font(k.ty.ui_medium)
-                .color(k.c.text_base)
+                .font(k.ty.text_small_medium)
+                .color(k.c.text_muted)
                 .truncate()
                 .grow(1.0)
                 .min_w(0.0),

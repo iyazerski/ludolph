@@ -238,7 +238,8 @@ impl State {
         if section == Section::Resources && resources {
             self.resources_call("list_resources", json!({}));
         }
-        if section == Section::Accounts && accounts {
+        // Model groups its picker by provider and titles each group with the account's name.
+        if matches!(section, Section::Accounts | Section::Model) && accounts {
             self.load_accounts();
         }
     }

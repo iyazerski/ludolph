@@ -830,8 +830,8 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         "provider with 5 or fewer models does not get a nested scroll list"
     );
     assert!(
-        anthropic_scroll.rect[3] <= 225.0,
-        "provider scroll list caps visible height to 5 rows: {:?}",
+        anthropic_scroll.rect[3] < 6.0 * 45.0,
+        "provider scroll list shows five and a half rows: {:?}",
         anthropic_scroll.rect
     );
     assert!(elements.iter().any(|e| {
