@@ -181,34 +181,48 @@ fn accounts(page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>) -> El {
         Some(Err(why)) => return failed(k, format!("Couldn't list pi's providers: {why}")),
         Some(Ok(list)) => list,
     };
-    let signed_in: Vec<El> = list
-        .iter()
-        .filter_map(|a| {
-            let source = a.source.as_deref()?;
-            // Credentials pi finds outside its sign-ins, which sign-out can't remove.
-            let hint = match (source, &a.label) {
-                ("stored", _) => None,
-                (_, Some(label)) => Some(format!("From {label}")),
-                ("models_json_key" | "models_json_command", None) => {
-                    Some("From models.json".to_owned())
-                }
-                _ => None,
-            };
-            let control = if accounts.signing_out.as_ref() == Some(&a.provider) {
-                busy(16.0, k)
-            } else if source == "stored" {
-                let provider = a.provider.clone();
-                Button::new("Sign out")
-                    .variant(ButtonVariant::Outline)
-                    .disabled(accounts.signing_out.is_some())
-                    .on_press(move |s: &mut State| s.sign_out(&provider))
-                    .build(k)
-            } else {
-                el()
-            };
-            Some(compact(k, &a.name, hint.as_deref(), control).key(a.provider.clone()))
-        })
-        .collect();
+    let signed_in: Vec<El> =
+        list.iter()
+            .filter_map(|a| {
+                let source = a.source.as_deref()?;
+                // Credentials pi finds outside its sign-ins, which sign-out can't remove.
+                let hint = match (source, &a.label) {
+                    ("stored", _) => None,
+                    (_, Some(label)) => Some(format!("From {label}")),
+                    ("models_json_key" | "models_json_command", None) => {
+                        Some("From models.json".to_owned())
+                    }
+                    _ => None,
+                };
+                let control = if accounts.signing_out.as_ref() == Some(&a.provider) {
+                    busy(16.0, k)
+                } else if source == "stored" {
+                    let provider = a.provider.clone();
+                    Button::new("Sign out")
+                        .variant(ButtonVariant::Outline)
+                        .disabled(accounts.signing_out.is_some())
+                        .on_press(move |s: &mut State| s.sign_out(&provider))
+                        .build(k)
+                } else {
+                    el()
+                };
+                let record = compact(k, &a.name, hint.as_deref(), control);
+                let limits = accounts.quota.get(&a.provider).filter(|q| !q.is_empty());
+                let record =
+                    match limits {
+                        None => record,
+                        Some(limits) => {
+                            let now = chrono::Utc::now();
+                            col().w_full().child(record).child(
+                                col().w_full().px(PAD).pb(12.0).gap(12.0).children(
+                                    limits.iter().map(|w| super::details::limit(w, now, k)),
+                                ),
+                            )
+                        }
+                    };
+                Some(record.key(a.provider.clone()))
+            })
+            .collect();
     let mut out = col().w_full().gap(12.0);
     if !signed_in.is_empty() {
         out = out.child(group(k, signed_in));

@@ -214,7 +214,7 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
 }
 
 /// One window of the provider's quota: its name, what's used, a bar, and the next reset.
-fn limit(window: &QuotaWindow, now: chrono::DateTime<chrono::Utc>, k: &Kit) -> El {
+pub(super) fn limit(window: &QuotaWindow, now: chrono::DateTime<chrono::Utc>, k: &Kit) -> El {
     let used = quota_used(window);
     let reset = quota_reset(window, now);
     let fraction = window.used.clamp(0.0, 1.0);

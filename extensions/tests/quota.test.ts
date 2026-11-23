@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import quota, { STATUS_KEY } from "../quota.ts";
+import { accountQuota } from "../lib/quota.ts";
 import { type ProviderInput, withTestSession } from "./helpers.ts";
 
 const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -67,16 +68,33 @@ test("reports a Bifrost gateway's budgets by its host", async () => {
 	}
 });
 
-test("reports the tightest Antigravity window among the model's groups", async () => {
-	const bucket = (window: string, remainingFraction: number) => ({ window, remainingFraction, resetTime: "2026-11-30T09:08:00.000Z" });
-	const groups = [
-		{ displayName: "Gemini Models", buckets: [bucket("weekly", 0.9), bucket("5h", 0.7)] },
-		{ displayName: "Claude and GPT models", buckets: [bucket("weekly", 0.1), bucket("5h", 0.1)] },
-		{ displayName: "Gemini 4 Argon", buckets: [bucket("weekly", 0.6)] },
-	];
-	const antigravity: Parameters<typeof withTestSession>[0][number] = pi => {
-		pi.events.on("antigravity-acp:quota:request", request => (request as { reply: (r: unknown) => void }).reply({ ok: true, quota: { at: 0, groups } }));
+const bucket = (window: string, remainingFraction: number) => ({ window, remainingFraction, resetTime: "2026-11-30T09:08:00.000Z" });
+const groups = [
+	{ displayName: "Gemini Models", buckets: [bucket("weekly", 0.9), bucket("5h", 0.7)] },
+	{ displayName: "Claude and GPT models", buckets: [bucket("weekly", 0.1), bucket("5h", 0.1)] },
+	{ displayName: "Gemini 4 Argon", buckets: [bucket("weekly", 0.6)] },
+];
+const antigravity: Parameters<typeof withTestSession>[0][number] = pi => {
+	pi.events.on("antigravity-acp:quota:request", request => (request as { reply: (r: unknown) => void }).reply({ ok: true, quota: { at: 0, groups } }));
+};
+
+test("an account lists the Antigravity groups of its models, and providers without quota are left out", async () => {
+	let read: Promise<unknown> | undefined;
+	const setup: Parameters<typeof withTestSession>[0][number] = pi => {
+		pi.on("session_start", (_event, ctx) => { read = accountQuota(pi, ctx.modelRegistry); });
 	};
+	await withTestSession([antigravity, setup], async session => {
+		await session.bindExtensions({});
+		const resetsAt = Date.parse("2026-11-30T09:08:00.000Z");
+		expect(await read).toEqual({ "antigravity-acp": [
+			{ label: "Gemini Models · 5h", used: 1 - 0.7, resetsAt },
+			{ label: "Gemini Models · Week", used: 1 - 0.9, resetsAt },
+			{ label: "Gemini 4 Argon · Week", used: 0.4, resetsAt },
+		] });
+	}, { "antigravity-acp": provider("http://127.0.0.1:1", "x", "gemini-4-argon"), other: provider("http://127.0.0.1:1", "x", "m") });
+});
+
+test("reports the tightest Antigravity window among the model's groups", async () => {
 	const seen = await reports({ "antigravity-acp": provider("http://127.0.0.1:1", "x", "gemini-4-argon") }, ["antigravity-acp", "gemini-4-argon"], [antigravity]);
 	const resetsAt = Date.parse("2026-11-30T09:08:00.000Z");
 	expect(seen.at(-1)?.windows).toEqual([{ label: "5h", used: 1 - 0.7, resetsAt }, { label: "Week", used: 0.4, resetsAt }]);

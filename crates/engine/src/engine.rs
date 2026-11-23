@@ -1131,6 +1131,11 @@ impl Engine {
         self.pi_setup(json!({"topic": "accounts"})).await
     }
 
+    /// Each signed-in account's quota by provider, read live, so it can take seconds.
+    pub async fn account_quota(&self) -> Result<Value> {
+        self.pi_setup(json!({"topic": "quota"})).await
+    }
+
     async fn pi_setup(&self, request: Value) -> Result<Value> {
         let config = &self.0.config;
         pi_setup::ask(&config.pi, &config.extensions, config.grace, request).await

@@ -60,6 +60,7 @@ pub enum Tool {
     ListResources,
     SetResource,
     ListAccounts,
+    AccountQuota,
     SignIn,
     SignInState,
     AnswerSignIn,
@@ -85,6 +86,7 @@ impl Tool {
                 | Self::ListResources
                 | Self::SetResource
                 | Self::ListAccounts
+                | Self::AccountQuota
                 | Self::SignIn
                 | Self::SignInState
                 | Self::AnswerSignIn
@@ -137,6 +139,7 @@ impl FromStr for Tool {
             "list_resources" => Self::ListResources,
             "set_resource" => Self::SetResource,
             "list_accounts" => Self::ListAccounts,
+            "account_quota" => Self::AccountQuota,
             "sign_in" => Self::SignIn,
             "sign_in_state" => Self::SignInState,
             "answer_sign_in" => Self::AnswerSignIn,
@@ -257,6 +260,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::ListResources => engine.resources(None).await,
         Tool::SetResource => engine.resources(Some(&parse(args)?)).await,
         Tool::ListAccounts => engine.accounts().await,
+        Tool::AccountQuota => engine.account_quota().await,
         Tool::SignIn => {
             let args: SignInArgs = parse(args)?;
             Ok(serde_json::to_value(

@@ -1,10 +1,12 @@
 import { getAgentDir, ModelRuntime, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { accounts, signIn, signOut } from "./lib/accounts.ts";
+import { accountQuota } from "./lib/quota.ts";
 import { resources, type Change } from "./lib/resources.ts";
 
 type Request =
 	| { topic: "resources"; change?: Change }
 	| { topic: "accounts" }
+	| { topic: "quota" }
 	| { topic: "signIn"; provider: string; apiKey: boolean }
 	| { topic: "signOut"; provider: string };
 
@@ -21,6 +23,8 @@ export default function (pi: ExtensionAPI) {
 				const request = JSON.parse(args) as Request;
 				if (request.topic === "resources") {
 					answer = { ok: await resources(getAgentDir(), ctx.cwd, request.change) };
+				} else if (request.topic === "quota") {
+					answer = { ok: await accountQuota(pi, ctx.modelRegistry) };
 				} else {
 					// The runtime `pi auth` uses, which has providers whose catalog fills only after sign-in.
 					const runtime = await ModelRuntime.create({ allowModelNetwork: false, signal: AbortSignal.timeout(15_000) });
