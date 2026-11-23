@@ -237,7 +237,7 @@ test("user and agent skill mentions share styling without becoming links on the 
   }
 });
 
-test("model sheet shows provider labels, filters by model or provider, and uses a reasoning slider", async () => {
+test("model selector opens the effort card, drills into searchable models, and updates reasoning", async () => {
   const window = new Window({ url: "https://relay.example/#/m/mac/chat/test" });
   const { document } = window;
   document.body.innerHTML = '<div id="app"></div><div id="sheet-root"></div><div id="toasts"></div>';
@@ -312,9 +312,10 @@ test("model sheet shows provider labels, filters by model or provider, and uses 
     runInContext("links.set('mac', link); store.machines = [{id: 'mac', name: 'Mac', status: {online: true}}]; route()", context);
     await chipReady;
 
-    const sheetReady = new Promise(resolve => {
+    // Clicking the pill chip opens the compact effort card with model header + pill slider.
+    const cardReady = new Promise(resolve => {
       const observer = new window.MutationObserver(() => {
-        if (document.querySelector("#sheet-root .item-row")) {
+        if (document.querySelector('#sheet-root input[type="range"]')) {
           observer.disconnect();
           resolve();
         }
@@ -322,8 +323,36 @@ test("model sheet shows provider labels, filters by model or provider, and uses 
       observer.observe(document.body, { childList: true, subtree: true });
     });
     document.querySelector(".model-chip").click();
-    await sheetReady;
+    await cardReady;
 
+    expect(document.querySelector("#sheet-root .model-card-name").textContent).toBe("Claude Sonnet 4.5");
+    expect(document.querySelector("#sheet-root .model-card-effort").textContent).toBe("Medium");
+    expect(document.querySelectorAll("#sheet-root .pill-dots span")).toHaveLength(5);
+
+    const slider = document.querySelector('#sheet-root input[type="range"]');
+    expect(slider.value).toBe("2");
+
+    // Dragging previews without calling the engine until released.
+    slider.value = "4";
+    slider.dispatchEvent(new window.Event("input"));
+    expect(document.querySelector("#sheet-root .model-card-effort").textContent).toBe("X-High");
+    expect(modelCalls).toHaveLength(0);
+
+    const saved = new Promise(resolve => {
+      const observer = new window.MutationObserver(() => {
+        if (document.querySelector(".model-chip .lvl")?.textContent === "X-High") {
+          observer.disconnect();
+          resolve();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+    slider.dispatchEvent(new window.Event("change"));
+    await saved;
+    expect(modelCalls).toEqual([{ chat: "test", reasoning: "xhigh" }]);
+
+    // Clicking the card header drills into the searchable model list.
+    document.querySelector("#sheet-root .model-card-head").click();
     const rows = [...document.querySelectorAll("#sheet-root .item-row")];
     expect(rows.map(r => [r.querySelector(".label").firstChild.textContent, r.querySelector(".sub")?.textContent])).toEqual([
       ["Claude Sonnet 4.5", "anthropic"],
@@ -341,29 +370,21 @@ test("model sheet shows provider labels, filters by model or provider, and uses 
     expect(document.querySelector("#sheet-root .item-row")).toBeNull();
     expect(document.querySelector("#sheet-root .note")?.textContent).toBe("No matching models");
 
-    expect(document.querySelector("#sheet-root .pill")).toBeNull();
-    const slider = document.querySelector('#sheet-root input[type="range"]');
-    expect(slider.value).toBe("2");
-    expect(document.querySelector("#sheet-root .slider-val").textContent).toBe("Medium");
-
-    // Dragging previews without calling the engine until released.
-    slider.value = "4";
-    slider.dispatchEvent(new window.Event("input"));
-    expect(document.querySelector("#sheet-root .slider-val").textContent).toBe("X-High");
-    expect(modelCalls).toHaveLength(0);
-
-    const saved = new Promise(resolve => {
+    // Picking a reasoning model returns to the effort card for that model.
+    search.value = "openai";
+    search.dispatchEvent(new window.Event("input"));
+    const switched = new Promise(resolve => {
       const observer = new window.MutationObserver(() => {
-        if (document.querySelector(".model-chip .lvl")?.textContent === "X-High") {
+        if (document.querySelector("#sheet-root .model-card-name")?.textContent === "GPT-5") {
           observer.disconnect();
           resolve();
         }
       });
       observer.observe(document.body, { childList: true, subtree: true });
     });
-    slider.dispatchEvent(new window.Event("change"));
-    await saved;
-    expect(modelCalls).toEqual([{ chat: "test", reasoning: "xhigh" }]);
+    document.querySelector("#sheet-root .item-row").click();
+    await switched;
+    expect(document.querySelectorAll("#sheet-root .pill-dots span")).toHaveLength(3);
   } finally {
     runInContext("current?.destroy()", context);
     await window.happyDOM.close();

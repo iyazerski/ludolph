@@ -47,8 +47,59 @@ struct MessageDraft {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SliderState {
+pub enum ModelSelectorStep {
+    #[default]
+    Effort,
+    Models,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ModelSelectorState {
+    pub open: bool,
+    pub step: ModelSelectorStep,
+    pub search: TextEdit,
+    pub highlight: Option<String>,
     pub drag: Option<usize>,
+}
+
+impl ModelSelectorState {
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    pub fn open_with(&mut self, step: ModelSelectorStep, current: Option<&str>) {
+        self.open = true;
+        self.step = step;
+        self.search.clear();
+        self.search.focused = step == ModelSelectorStep::Models;
+        self.highlight = current.map(str::to_owned);
+        self.drag = None;
+    }
+
+    pub fn show_models(&mut self, current: Option<&str>) {
+        self.step = ModelSelectorStep::Models;
+        self.search.clear();
+        self.search.focused = true;
+        self.highlight = current.map(str::to_owned);
+        self.drag = None;
+    }
+
+    pub fn show_effort(&mut self) {
+        self.step = ModelSelectorStep::Effort;
+        self.search.clear();
+        self.search.focused = false;
+        self.search.cancel_composition();
+        self.search.break_history_group();
+        self.drag = None;
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.search.focused = false;
+        self.search.cancel_composition();
+        self.search.break_history_group();
+        self.drag = None;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +127,8 @@ pub struct State {
     pub chat_dialog: Option<ChatDialog>,
     /// Edits aimed at the rename field once its dialog is gone land here.
     scratch_title: TextEdit,
+    /// Edits aimed at a model selector search field once its page is gone land here.
+    pub(crate) scratch_search: TextEdit,
     pub catalog: Catalog,
     pub images: Option<ImageCache>,
     /// Unsent drafts (`new` for a new chat), kept while moving between chats.
@@ -185,6 +238,7 @@ impl State {
             release_notice: None,
             chat_dialog: None,
             scratch_title: TextEdit::default(),
+            scratch_search: TextEdit::default(),
             catalog: Catalog::default(),
             images: None,
             drafts: HashMap::new(),

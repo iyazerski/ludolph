@@ -1,11 +1,12 @@
 use rune::{El, Image, Key, KeyEvent, SurfaceFit, Tx, auto_grow, col, icon, row, text, text_input};
 use rune_kit::{
-    Button, ButtonVariant, Combobox, ControlSize, IconButton, IconButtonVariant, Kit, Placement,
-    PopupItem, PopupList,
+    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Placement, PopupItem,
+    PopupList,
 };
 
 use super::icons;
-use super::widgets::{ReasoningSlider, busy, markdown_spans, model_options};
+use super::model_selector::{ModelSelector, model_options};
+use super::widgets::{busy, markdown_spans};
 use crate::app::{Catalog, ChatPage, Config, LEVELS_KEPT, Pick, Prep, SkillList, State, Voice};
 use crate::data::{Skill, levels_of};
 use crate::markup;
@@ -412,48 +413,20 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
         models
             .iter()
             .filter(|m| !m.hidden || Some(m.id.as_str()) == model),
+        true,
     );
-    let trigger = row()
-        .gap(5.0)
-        .px(6.0)
-        .py(3.0)
-        .radius(7.0)
-        .center_y()
-        .min_w(0.0)
-        .max_w(210.0)
-        .hover_group()
-        .child(
-            icon(icons::mark(model.unwrap_or_default()), 13.0)
-                .color(k.c.icon_muted)
-                .group_color(k.c.text_base),
-        )
-        .child(
-            text(label)
-                .font(k.ty.small_medium)
-                .color(k.c.text_muted)
-                .group_color(k.c.text_base)
-                .truncate(),
-        )
-        .child(
-            icon(k.glyph.chevron_down, 10.0)
-                .color(k.c.icon_faint)
-                .group_color(k.c.text_base),
-        );
-    let picker = Combobox::new(
+    let levels = levels_of(models, model.unwrap_or_default());
+    let chosen = reasoning.filter(|level| levels.iter().any(|l| l == level));
+    let mut out = ModelSelector::new(
         "composer-model",
         &page.model_picker,
         &options,
-        |s: &mut State| {
-            &mut s
-                .chat_mut()
-                .expect("the model picker is on a chat")
-                .model_picker
-        },
+        |s: &mut State| s.chat_mut().map(|p| &mut p.model_picker),
     )
-    .trigger(trigger)
     .label("Model")
-    .current(model)
-    .search_placeholder("Search models")
+    .current_model(model)
+    .mark_model(model)
+    .placeholder(label)
     .empty_message(match &s.catalog {
         Catalog::Ready(_) => "No matching models".to_owned(),
         Catalog::Failed(error) => {
@@ -461,29 +434,12 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
         }
         Catalog::Unloaded | Catalog::Loading { .. } => "Loading models…".to_owned(),
     })
+    .reasoning(levels, chosen)
     .placement(Placement::TopStart)
-    .width(320.0)
     .disabled(!page.can_send())
-    .on_choose(|s: &mut State, id, _| s.pick(Pick::Model(id.to_owned())))
+    .on_choose_model(|s: &mut State, id, _| s.pick(Pick::Model(id.to_owned())))
+    .on_choose_reasoning(|s: &mut State, level| s.pick(Pick::Reasoning(level.to_owned())))
     .build(k, layer);
-    let levels = levels_of(models, model.unwrap_or_default());
-    let chosen = reasoning.filter(|level| levels.iter().any(|l| l == level));
-    let mut out = row().gap(6.0).center_y().min_w(0.0).shrink().child(picker);
-    if levels.len() > 1 {
-        let reason = ReasoningSlider::new(
-            "composer-reasoning",
-            "Reasoning",
-            levels,
-            chosen,
-            page.reasoning_slider,
-            |s: &mut State| s.chat_mut().map(|p| &mut p.reasoning_slider),
-        )
-        .track_width(68.0)
-        .disabled(!page.can_send())
-        .on_choose(|s: &mut State, level| s.pick(Pick::Reasoning(level.to_owned())))
-        .build(k);
-        out = out.child(reason);
-    }
     if !page.can_send() {
         out = out.help("Use Continue here after stopping terminal pi to change models.");
     } else if page

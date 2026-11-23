@@ -701,7 +701,7 @@ function sheet(build) {
   else history.pushState({ sheet: true }, "");
   openSheetClose = close;
   let startY = null;
-  panel.addEventListener("touchstart", e => { if (panel.scrollTop <= 0 && !e.target.closest('input[type="range"]')) startY = e.touches[0].clientY; }, { passive: true });
+  panel.addEventListener("touchstart", e => { if (panel.scrollTop <= 0) startY = e.touches[0].clientY; }, { passive: true });
   panel.addEventListener("touchmove", e => {
     if (startY == null) return;
     panel.style.transform = `translateY(${Math.max(0, e.touches[0].clientY - startY)}px)`;
@@ -715,6 +715,41 @@ function sheet(build) {
     setTimeout(() => (panel.style.transition = ""), 300);
     if (dy > 110) close();
   });
+  return close;
+}
+function popover(anchor, cls, build) {
+  const replacing = Boolean(openSheetClose);
+  openSheetClose?.(true);
+  const root = $("#sheet-root");
+  const scrim = h("div", { class: "scrim", onclick: () => close() });
+  const panel = h("div", { class: `${cls} glass`, role: "dialog" });
+  const rect = anchor?.getBoundingClientRect?.();
+  if (rect && rect.height > 0 && window.innerHeight > 0) {
+    panel.style.bottom = `${Math.max(12, Math.round(window.innerHeight - rect.top + 8))}px`;
+    const width = Math.min(336, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.right = "auto";
+    panel.style.margin = "0";
+  }
+  let closed = false;
+  const onKey = e => { if (e.key === "Escape") close(); };
+  const close = (fromHistory = false) => {
+    if (closed) return;
+    closed = true;
+    openSheetClose = null;
+    window.removeEventListener("keydown", onKey);
+    for (const el of [scrim, panel]) { el.style.animation = ""; el.classList.add("out"); }
+    setTimeout(() => { scrim.remove(); panel.remove(); }, 180);
+    if (!fromHistory && history.state?.sheet) history.back();
+  };
+  const fill = content => panel.replaceChildren(...[content].flat().filter(c => c != null && c !== false));
+  fill(build(close, fill));
+  root.append(scrim, panel);
+  window.addEventListener("keydown", onKey);
+  if (replacing) history.replaceState({ sheet: true }, "");
+  else history.pushState({ sheet: true }, "");
+  openSheetClose = close;
   return close;
 }
 window.addEventListener("popstate", () => openSheetClose?.(true));
@@ -1853,9 +1888,13 @@ function chatView(machine, id, fromList) {
     const levels = entry?.ready ? levelsOf(entry.ready, model) : null;
     const showReasoning = reasoning && (!levels || levels.length > 1);
     modelChip.disabled = !machine;
-    modelChip.replaceChildren(modelMark(model), h("span", { class: "name" }, label),
+    modelChip.replaceChildren(
+      modelMark(model),
+      h("span", { class: "name" }, label),
       // replaceChildren, unlike h(), prints null as "null": no level, no node.
-      showReasoning ? h("span", { class: "lvl" }, reasoningName(reasoning)) : "");
+      showReasoning ? h("span", { class: "lvl" }, reasoningName(reasoning)) : "",
+      icon("chevDown", "chev"),
+    );
     const project = isDraft && draft.projects.find(p => p.id === draft.project);
     const projectChip = isDraft && machine && h("button", { class: "project-chip", "aria-label": "Project", onclick: () => projectSheet() },
       tile(project || null), h("span", { class: "txt" }, project?.name || "No project"));
@@ -1881,24 +1920,26 @@ function chatView(machine, id, fromList) {
   function modelSheet() {
     if (!machine) return;
     haptic(5);
-    sheet(() => {
-      const title = h("h2", {}, "Model");
-      const reasoningSlot = h("div", {});
+    popover(modelChip, "model-popover", close => {
+      let step = null;
       const search = h("input", {
         type: "search",
-        class: "field model-search",
+        class: "model-search",
         placeholder: "Search models",
         "aria-label": "Search models",
         autocomplete: "off",
         spellcheck: "false",
       });
-      const listSlot = h("div", {}, h("div", { class: "skeleton", style: { margin: "0 0 14px" } }));
-      const pick = async change => {
+      const listSlot = h("div", { class: "model-list" });
+      const pick = async (change, after) => {
         haptic(5);
         if (isDraft) {
           Object.assign(draft, change);
+          const models = catalog(machine).ready;
+          if (models) fitDraft(models);
           drawHeader();
-          load();
+          if (after) after();
+          else draw();
           return;
         }
         try {
@@ -1906,7 +1947,8 @@ function chatView(machine, id, fromList) {
           info = { ...info, ...saved };
           prefs.set({ ...prefs.get(), machine, model: saved.model, reasoning: saved.reasoning });
           drawInfo();
-          draw();
+          if (after) after();
+          else draw();
         } catch (e) { toast({ title: "Couldn't change the model", body: e.message, kind: "error" }); }
       };
       const drawList = () => {
@@ -1930,53 +1972,110 @@ function chatView(machine, id, fromList) {
           : visible;
         listSlot.replaceChildren(
           filtered.length
-            ? h("div", { class: "group" }, filtered.map(m => itemRow({
+            ? h("div", {}, filtered.map(m => itemRow({
+              lead: modelMark(m.id),
               label: modelLabel(m),
               sub: modelProvider(m.id) || null,
               value: check(m.id === current),
               cls: m.id === current ? "on" : "",
-              onclick: () => m.id !== current && pick({ model: m.id }),
+              onclick: () => {
+                const nextHasEffort = levelsOf(models, m.id).length > 1;
+                const finish = () => {
+                  if (nextHasEffort) {
+                    step = "effort";
+                    search.value = "";
+                    draw();
+                  } else {
+                    close();
+                  }
+                };
+                if (m.id === current) finish();
+                else pick({ model: m.id }, finish);
+              },
             })))
             : h("div", { class: "note" }, "No matching models"),
         );
       };
       search.addEventListener("input", drawList);
-      let first = true;
+      const root = h("div", {}, h("div", { class: "model-card" }, h("div", { class: "skeleton" })));
       const draw = () => {
         const models = catalog(machine).ready;
+        if (!models) return;
         if (isDraft) fitDraft(models);
         const { model: current, reasoning } = config();
         const levels = levelsOf(models, current);
-        reasoningSlot.replaceChildren(
-          ...(levels.length > 1 ? reasoningSlider(levels, reasoning, l => pick({ reasoning: l })) : []),
-          isWorking() ? h("div", { class: "note", style: { marginTop: "0" } }, "Changes apply from the next turn.") : "",
-        );
+        const hasSlider = levels.length > 1;
+        if (step == null || (!hasSlider && step === "effort")) {
+          step = hasSlider ? "effort" : "models";
+        }
+        if (step === "effort") {
+          const label = models.find(m => m.id === current)?.label || shortModel(current) || "Default";
+          const idx = Math.max(0, levels.indexOf(reasoning));
+          const effort = h("span", { class: "model-card-effort" }, reasoningName(levels[idx]));
+          const header = h("button", {
+            class: "model-card-head",
+            "aria-label": `Change model: ${label}`,
+            onclick: () => {
+              step = "models";
+              search.value = "";
+              draw();
+              search.focus();
+            },
+          },
+            modelMark(current),
+            h("span", { class: "model-card-title" },
+              h("span", { class: "model-card-name" }, label),
+              effort,
+              icon("chevRight", "chev"),
+            ),
+            h("span", { class: "model-card-pad", "aria-hidden": "true" }),
+          );
+          const slider = pillSlider(
+            levels,
+            reasoning,
+            name => { effort.textContent = name; },
+            l => pick({ reasoning: l }),
+          );
+          root.replaceChildren(h("div", { class: "model-card" },
+            header,
+            slider,
+            isWorking() ? h("div", { class: "model-card-note" }, "Changes apply from the next turn.") : "",
+          ));
+          return;
+        }
+        const back = hasSlider && h("button", {
+          class: "model-back",
+          "aria-label": "Back",
+          onclick: () => { step = "effort"; search.value = ""; draw(); },
+        }, icon("back"));
         drawList();
-        if (first) listSlot.querySelector(".item-row.on")?.scrollIntoView({ block: "nearest" });
-        first = false;
+        root.replaceChildren(
+          h("div", { class: "model-list-head" }, back || "", search),
+          listSlot,
+        );
+        listSlot.querySelector(".item-row.on")?.scrollIntoView({ block: "nearest" });
       };
       const load = () => {
         const entry = catalog(machine, true);
         entry.promise.then(draw,
-          e => listSlot.replaceChildren(h("div", { class: "note" }, `Couldn't load the models: ${e.message}`)));
+          e => root.replaceChildren(h("div", { class: "model-card" },
+            h("div", { class: "note", style: { margin: "4px" } }, `Couldn't load the models: ${e.message}`))));
       };
-      redrawModels = () => { if (listSlot.isConnected) draw(); };
+      redrawModels = () => { if (root.isConnected) draw(); };
       load();
-      return [title, reasoningSlot, h("div", { class: "group-label" }, "Model"), search, listSlot];
+      return root;
     });
   }
 
-  function reasoningSlider(levels, current, onPick) {
+  function pillSlider(levels, current, onPreview, onPick) {
     const idx = Math.max(0, levels.indexOf(current));
     const max = levels.length - 1;
-    const pct = i => (max > 0 ? `${(i / max) * 100}%` : "0%");
-    const readout = h("span", { class: "slider-val" }, reasoningName(levels[idx]));
-    const rail = h("div", { class: "effort-rail", "aria-hidden": "true", style: { "--pct": pct(idx) } });
-    const ticks = h("div", { class: "effort-ticks", "aria-hidden": "true" },
-      levels.map((_, i) => h("span", { class: i <= idx ? "on" : "" })));
+    const frac = i => (max > 0 ? i / max : 0);
+    const dots = h("div", { class: "pill-dots", "aria-hidden": "true" }, levels.map(() => h("span", {})));
+    const thumb = h("div", { class: "pill-thumb", "aria-hidden": "true" });
     const input = h("input", {
       type: "range",
-      class: "effort-range",
+      class: "pill-range",
       min: "0",
       max: String(max),
       step: "1",
@@ -1984,27 +2083,19 @@ function chatView(machine, id, fromList) {
       "aria-label": "Reasoning",
       "aria-valuetext": reasoningName(levels[idx]),
     });
+    const track = h("div", { class: "pill-track", style: { "--frac": String(frac(idx)) } }, dots, thumb, input);
     const sync = i => {
       const name = reasoningName(levels[i]);
-      readout.textContent = name;
+      onPreview(name);
       input.setAttribute("aria-valuetext", name);
-      rail.style.setProperty("--pct", pct(i));
-      [...ticks.children].forEach((dot, j) => dot.classList.toggle("on", j <= i));
+      track.style.setProperty("--frac", String(frac(i)));
     };
     input.addEventListener("input", () => sync(Number(input.value)));
     input.addEventListener("change", () => {
       const next = levels[Number(input.value)];
       if (next && next !== current) onPick(next);
     });
-    const ends = h("div", { class: "effort-ends", "aria-hidden": "true" },
-      h("span", {}, reasoningName(levels[0])),
-      h("span", {}, reasoningName(levels[max])));
-    return [
-      h("div", { class: "group-label slider-head" }, h("span", {}, "Reasoning"), readout),
-      h("div", { class: "group effort-card" },
-        h("div", { class: "effort-track" }, rail, ticks, input),
-        ends),
-    ];
+    return track;
   }
 
   function fitDraft(models) {

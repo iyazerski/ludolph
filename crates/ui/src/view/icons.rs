@@ -66,6 +66,11 @@ pub static CHEV_DOWN: Icon = icon(
     24.0,
     r#"<path d="M17.5 9.25 12 14.75 6.5 9.25" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#,
 );
+pub static CHEV_RIGHT: Icon = icon(
+    "chev-right",
+    24.0,
+    r#"<path d="M9.25 6.5 14.75 12 9.25 17.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#,
+);
 pub static DIFF: Icon = icon(
     "diff",
     24.0,

@@ -1,11 +1,12 @@
 use rune::{Color, El, Icon, SurfaceFit, Tx, col, el, icon, row, text};
 use rune_kit::shell::{Sidebar, SidebarRow};
 use rune_kit::{
-    Button, ButtonVariant, Combobox, ComboboxOption, ControlSize, Kit, SegmentedControl,
+    Button, ButtonVariant, Combobox, ComboboxOption, ControlSize, Kit, Placement, SegmentedControl,
     ShortcutRecorder, Switch, TextInput, shortcut_error_message,
 };
 
-use super::widgets::{self, ReasoningSlider, busy, dot, model_options};
+use super::model_selector::{ModelOption, ModelSelector, model_options};
+use super::widgets::{self, busy, dot};
 use super::{icons, theme};
 use crate::app::{Outcome, QR_SIZE, Section, SettingsPage, State, Update};
 use crate::data::{
@@ -18,9 +19,6 @@ const MAX_WIDTH: f32 = 640.0;
 const PAD: f32 = 12.0;
 const LABEL: f32 = 170.0;
 const CONTROL: f32 = 300.0;
-const SLIDER_TRACK: f32 = 152.0;
-const SLIDER_VALUE: f32 = 52.0;
-const GAP: f32 = 8.0;
 const GROUP_LIST_VISIBLE: usize = 5;
 /// Five 44 pt rows with their dividers, plus half of the sixth row so the list
 /// visibly continues alongside its scrollbar.
@@ -639,26 +637,25 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .settings
         .as_ref()
         .and_then(|v| v.sidecar_model.as_deref());
-    let default = s.catalog.default_model().map(|id| s.catalog.label(id));
-    let default = default.map_or("Default model".to_owned(), |name| {
-        format!("{name} (default)")
-    });
-    let mut options = vec![ComboboxOption::new(DEFAULT_MODEL, default)];
+    let default_id = s.catalog.default_model();
+    let default_label = default_id
+        .map(|id| format!("{} (default)", s.catalog.label(id)))
+        .unwrap_or_else(|| "Default model".to_owned());
+    let mut options =
+        vec![ModelOption::new(DEFAULT_MODEL, default_label).mark(default_id.map(str::to_owned))];
     if let Some(models) = s.catalog.ready() {
-        options.extend(model_options(models));
+        options.extend(model_options(models, false));
     }
-    let picker = Combobox::new("sidecar", &page.model, &options, |s: &mut State| {
-        &mut s
-            .settings_page_mut()
-            .expect("the picker is on the settings page")
-            .model
+    let picker = ModelSelector::new("sidecar", &page.model, &options, |s: &mut State| {
+        s.settings_page_mut().map(|p| &mut p.model)
     })
     .label("Sidecar model")
-    .current(Some(current.unwrap_or(DEFAULT_MODEL)))
+    .current_model(Some(current.unwrap_or(DEFAULT_MODEL)))
+    .mark_model(current.or(default_id))
     .placeholder(missing_model(s, current))
-    .search_placeholder("Search models")
-    .width(CONTROL)
-    .on_choose(|s: &mut State, id, _| {
+    .placement(Placement::BottomEnd)
+    .trigger_width(CONTROL)
+    .on_choose_model(|s: &mut State, id, _| {
         let model = (id != DEFAULT_MODEL).then(|| id.to_owned());
         s.change_settings(|v| v.sidecar_model = model);
     })
@@ -740,90 +737,71 @@ fn caption(k: &Kit, title: &str) -> El {
 }
 
 fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
-    let enabled = page
-        .settings
-        .as_ref()
-        .is_some_and(|v| v.browser_use || v.computer_use);
-    let current = page.settings.as_ref().and_then(|v| v.gui_model.as_deref());
-    let default = s.catalog.default_model().map(|id| s.catalog.label(id));
-    let default = default.map_or("Default model".to_owned(), |name| {
-        format!("{name} (default)")
-    });
-    let mut options = vec![ComboboxOption::new(DEFAULT_MODEL, default)];
-    if let Some(models) = s.catalog.ready() {
-        options.extend(model_options(models));
-    }
-    let picker = Combobox::new("gui-model", &page.gui_model, &options, |s: &mut State| {
-        &mut s
-            .settings_page_mut()
-            .expect("the picker is on the settings page")
-            .gui_model
-    })
-    .label("Browser and computer use model")
-    .current(Some(current.unwrap_or(DEFAULT_MODEL)))
-    .placeholder(missing_model(s, current))
-    .search_placeholder("Search models")
-    .width(CONTROL)
-    .disabled(!enabled)
-    .on_choose(|s: &mut State, id, _| {
-        let model = (id != DEFAULT_MODEL).then(|| id.to_owned());
-        s.change_settings(|v| v.gui_model = model);
-    })
-    .build(k, layer);
-    let controls = col()
-        .w(CONTROL)
-        .gap(GAP)
-        .child(picker)
-        .child(gui_thinking(s, page, k, enabled));
-    wide(k, "Browser and computer use", controls)
-}
-
-fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, enabled: bool) -> El {
     let settings = page.settings.as_ref();
-    let model = settings
-        .and_then(|v| v.gui_model.as_deref())
-        .or_else(|| s.catalog.default_model());
-    let levels = match (s.catalog.ready(), model) {
-        (Some(models), Some(model)) => levels_of(models, model),
-        _ => &[],
-    };
+    let enabled = settings.is_some_and(|v| v.browser_use || v.computer_use);
+    let current = settings.and_then(|v| v.gui_model.as_deref());
+    let default_id = s.catalog.default_model();
+    let models = s.catalog.ready().unwrap_or_default();
+    let default_has_reasoning = default_id.is_some_and(|id| levels_of(models, id).len() > 1);
+    let default_label = default_id
+        .map(|id| format!("{} (default)", s.catalog.label(id)))
+        .unwrap_or_else(|| "Default model".to_owned());
+    let mut options = vec![
+        ModelOption::new(DEFAULT_MODEL, default_label)
+            .mark(default_id.map(str::to_owned))
+            .has_reasoning(default_has_reasoning),
+    ];
+    options.extend(model_options(models, true));
+
+    let effective = current.or(default_id);
+    let levels = effective.map_or(&[][..], |model| levels_of(models, model));
     // The extension's default, when the setting is unset.
-    let current = settings
+    let saved_thinking = settings
         .and_then(|v| v.gui_thinking.as_deref())
         .unwrap_or("medium");
-    let current = levels.iter().any(|l| l == current).then_some(current);
-    let disabled = !enabled || levels.len() < 2;
-    let slider = ReasoningSlider::new(
-        "gui-thinking",
-        "Browser and computer use reasoning",
-        levels,
-        current,
-        page.gui_thinking,
-        |s: &mut State| s.settings_page_mut().map(|p| &mut p.gui_thinking),
-    )
-    .track_width(SLIDER_TRACK)
-    .label_width(SLIDER_VALUE)
-    .disabled(disabled)
-    .on_choose(|s: &mut State, level| {
+    let chosen_thinking = levels
+        .iter()
+        .find(|l| l.as_str() == saved_thinking)
+        .or_else(|| levels.iter().find(|l| l.as_str() == "medium"))
+        .or_else(|| levels.first())
+        .map(String::as_str);
+
+    let picker = ModelSelector::new("gui-model", &page.gui_model, &options, |s: &mut State| {
+        s.settings_page_mut().map(|p| &mut p.gui_model)
+    })
+    .label("Browser and computer use model")
+    .current_model(Some(current.unwrap_or(DEFAULT_MODEL)))
+    .mark_model(effective)
+    .placeholder(missing_model(s, current))
+    .reasoning(levels, chosen_thinking)
+    .placement(Placement::BottomEnd)
+    .trigger_width(CONTROL)
+    .disabled(!enabled)
+    .on_choose_model(|s: &mut State, id, _| {
+        let model = (id != DEFAULT_MODEL).then(|| id.to_owned());
+        let effective = model
+            .as_deref()
+            .or_else(|| s.catalog.default_model())
+            .map(str::to_owned);
+        let supported: Vec<String> = effective
+            .as_deref()
+            .and_then(|m| s.catalog.ready().map(|all| levels_of(all, m).to_vec()))
+            .unwrap_or_default();
+        s.change_settings(|v| {
+            v.gui_model = model;
+            if let Some(thinking) = v.gui_thinking.as_deref()
+                && !supported.iter().any(|l| l == thinking)
+            {
+                v.gui_thinking = None;
+            }
+        });
+    })
+    .on_choose_reasoning(|s: &mut State, level| {
         let level = level.to_owned();
         s.change_settings(|v| v.gui_thinking = Some(level));
     })
-    .build(k);
-    reasoning_row(k, slider, disabled)
-}
-
-fn reasoning_row(k: &Kit, slider: El, disabled: bool) -> El {
-    row()
-        .w_full()
-        .center_y()
-        .gap(GAP)
-        .child(text("Reasoning").font(k.ty.text_small).color(if disabled {
-            k.c.text_faint
-        } else {
-            k.c.text_muted
-        }))
-        .child(rune::spacer())
-        .child(slider)
+    .build(k, layer);
+    wide(k, "Browser and computer use", picker)
 }
 
 #[derive(Clone, Copy)]
@@ -864,11 +842,11 @@ fn review_model(
     layer: &mut Vec<El>,
     family: ReviewFamily,
 ) -> El {
-    let (label, key, controls) = match family {
+    let (label, key, state) = match family {
         ReviewFamily::Claude => ("Claude reviewer", "review-claude", &page.claude_review),
         ReviewFamily::Gpt => ("GPT reviewer", "review-gpt", &page.gpt_review),
     };
-    let controls_mut: fn(&mut SettingsPage) -> &mut _ = match family {
+    let state_mut: fn(&mut SettingsPage) -> &mut _ = match family {
         ReviewFamily::Claude => |p| &mut p.claude_review,
         ReviewFamily::Gpt => |p| &mut p.gpt_review,
     };
@@ -877,26 +855,30 @@ fn review_model(
         .as_ref()
         .and_then(|v| family.choice(v).as_ref());
     let models = s.catalog.ready().unwrap_or_default();
-    let mut options = vec![ComboboxOption::new(NO_REVIEWER, "Not set")];
+    let mut options = vec![ModelOption::new(NO_REVIEWER, "Not set")];
     options.extend(model_options(
         models
             .iter()
             .filter(|m| family.matches(&m.id) && !m.reasoning_levels.is_empty()),
+        true,
     ));
     let placeholder = missing_model(s, choice.map(|peer| peer.model.as_str()));
-    let picker = Combobox::new(key, &controls.model, &options, move |s: &mut State| {
-        &mut controls_mut(
-            s.settings_page_mut()
-                .expect("the picker is on the settings page"),
-        )
-        .model
+    let levels = choice.map_or(&[][..], |peer| levels_of(models, &peer.model));
+    let current_thinking = choice
+        .map(|peer| peer.thinking.as_str())
+        .filter(|level| levels.iter().any(|supported| supported == level));
+
+    let picker = ModelSelector::new(key, state, &options, move |s: &mut State| {
+        s.settings_page_mut().map(state_mut)
     })
     .label(label)
-    .current(Some(choice.map_or(NO_REVIEWER, |peer| peer.model.as_str())))
+    .current_model(Some(choice.map_or(NO_REVIEWER, |peer| peer.model.as_str())))
+    .mark_model(choice.map(|peer| peer.model.as_str()))
     .placeholder(placeholder)
-    .search_placeholder("Search models")
-    .width(CONTROL)
-    .on_choose(move |s: &mut State, id, _| {
+    .reasoning(levels, current_thinking)
+    .placement(Placement::BottomEnd)
+    .trigger_width(CONTROL)
+    .on_choose_model(move |s: &mut State, id, _| {
         let choice = if id == NO_REVIEWER {
             None
         } else {
@@ -915,41 +897,15 @@ fn review_model(
         };
         s.change_settings(|v| *family.choice_mut(v) = choice);
     })
-    .build(k, layer);
-
-    let levels = choice.map_or(&[][..], |peer| levels_of(models, &peer.model));
-    let current = choice
-        .map(|peer| peer.thinking.as_str())
-        .filter(|level| levels.iter().any(|supported| supported == level));
-    let disabled = levels.len() < 2;
-    let thinking = ReasoningSlider::new(
-        format!("{key}-thinking"),
-        format!("{label} reasoning"),
-        levels,
-        current,
-        controls.thinking,
-        move |s: &mut State| s.settings_page_mut().map(|p| &mut controls_mut(p).thinking),
-    )
-    .track_width(SLIDER_TRACK)
-    .label_width(SLIDER_VALUE)
-    .disabled(disabled)
-    .on_choose(move |s: &mut State, level| {
+    .on_choose_reasoning(move |s: &mut State, level| {
         s.change_settings(|v| {
             if let Some(peer) = family.choice_mut(v) {
                 peer.thinking = level.to_owned();
             }
         });
     })
-    .build(k);
-    wide(
-        k,
-        label,
-        col()
-            .w(CONTROL)
-            .gap(GAP)
-            .child(picker)
-            .child(reasoning_row(k, thinking, disabled)),
-    )
+    .build(k, layer);
+    wide(k, label, picker)
 }
 
 fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
