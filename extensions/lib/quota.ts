@@ -26,7 +26,8 @@ const readers: Record<string, Reader> = { "openai-codex": codex, "antigravity-ac
 function readerOf(model: Model<Api>): Reader | undefined {
 	if (readers[model.provider]) return readers[model.provider];
 	const names = `${model.provider} ${URL.parse(model.baseUrl)?.hostname ?? ""}`.toLowerCase();
-	return names.includes("bifrost") ? bifrost : undefined;
+	if (names.includes("bifrost")) return bifrost;
+	return names.includes("litellm") ? litellm : undefined;
 }
 
 export function hasQuota(model: Model<Api>): boolean {
@@ -113,6 +114,39 @@ async function bifrost(_pi: ExtensionAPI, registry: Registry, model: Model<Api>)
 			limit: budget.max_limit,
 		};
 	});
+}
+
+interface LiteLLMBudget { max_budget: number | null; spend: number; budget_duration: string | null; budget_reset_at: string | null }
+
+/**
+ * LiteLLM budgets of the calling key and of its user. The key needs more than `llm_api_routes`
+ * to call these routes, which sit at the proxy's root rather than under its `/v1`.
+ */
+async function litellm(_pi: ExtensionAPI, registry: Registry, model: Model<Api>): Promise<QuotaWindow[]> {
+	const auth = await registry.getApiKeyAndHeaders(model);
+	if (!auth.ok || !auth.apiKey) throw new Error("no LiteLLM key");
+	const get = async <T>(path: string): Promise<T> => {
+		const response = await fetch(new URL(path, model.baseUrl), {
+			headers: { Authorization: `Bearer ${auth.apiKey}` },
+			signal: AbortSignal.timeout(TIMEOUT_MS),
+		});
+		if (!response.ok) throw new Error(`LiteLLM ${path} answered ${response.status}`);
+		return await response.json() as T;
+	};
+	const key = await get<{ info: LiteLLMBudget & { user_id: string | null } }>("/key/info");
+	const budgets: LiteLLMBudget[] = [key.info];
+	if (key.info.user_id) {
+		const user = await get<{ user_info: LiteLLMBudget }>(`/user/info?user_id=${encodeURIComponent(key.info.user_id)}`);
+		budgets.push(user.user_info);
+	}
+	return budgets.filter(budget => budget.max_budget).map(budget => ({
+		// LiteLLM snaps 30d to the 1st of the month, and 7d to Monday.
+		label: ({ "1d": "Day", "24h": "Day", "7d": "Week", "1w": "Week", "30d": "Month", "1mo": "Month" } as Record<string, string>)[budget.budget_duration ?? ""] ?? "Budget",
+		used: budget.spend / budget.max_budget!,
+		...(budget.budget_reset_at ? { resetsAt: Date.parse(budget.budget_reset_at) } : {}),
+		spent: budget.spend,
+		limit: budget.max_budget!,
+	}));
 }
 
 /** Bifrost durations: Go's plus d, w, M (calendar month), Q and Y. */
