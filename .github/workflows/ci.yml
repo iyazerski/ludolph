@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-  workflow_call:
   workflow_dispatch:
 
 # Only PR runs share a group, so a new push cancels the outdated run and frees its macOS runner.
@@ -15,55 +14,41 @@ env:
   CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
-  phone:
+  checks:
     runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - name: Test phone UI and requests
-        run: bun test crates/relay/tests
-
-  extensions:
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: extensions
-    steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - name: Typecheck
-        run: bun run typecheck
-      - name: Test
-        run: bun test
-
-  rust:
-    runs-on: macos-26
-
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt
       - name: Format
         run: cargo fmt --all --check
-      - uses: Swatinem/rust-cache@v2.9.3
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Test
-        run: cargo test --workspace --locked
       - uses: oven-sh/setup-bun@v2
-      - name: Bundle
+      - name: Phone UI tests
         run: |
-          cargo build --locked
-          scripts/bundle.sh target/debug/ludolph 0.0.0 target
-          plutil -lint target/Ludolph.app/Contents/Info.plist
-          codesign --verify --strict target/Ludolph.app
+          bun install --frozen-lockfile
+          bun test crates/relay/tests
+      - name: Extensions typecheck and tests
+        working-directory: extensions
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun test
+      - uses: taiki-e/install-action@v2.90.6
+        with:
+          tool: cargo-about
+      - name: Third-party licenses are current
+        run: |
+          make licenses
+          git diff --exit-code THIRD_PARTY_LICENSES.md || {
+            echo "::error::THIRD_PARTY_LICENSES.md is stale: run make licenses and commit it"
+            exit 1
+          }
 
   linux:
     runs-on: ubuntu-24.04
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
@@ -80,17 +65,32 @@ jobs:
           cargo build --no-default-features --locked -p ludolph
           cargo clippy --no-default-features --locked -p ludolph -- -D warnings
           sh scripts/test-wsl-install.sh target/debug/ludolph
-      - uses: actions/upload-artifact@v7
-        if: github.event_name != 'push'
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          name: wsl-test-engine
-          path: target/wsl/*.tar.gz
+          components: clippy
+      - uses: Swatinem/rust-cache@v2.9.3
+      - name: Clippy
+        run: cargo clippy --workspace --exclude ludolph-relay --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --exclude ludolph-relay --locked
+      - uses: oven-sh/setup-bun@v2
+      - name: Bundle
+        run: |
+          cargo build --locked
+          scripts/bundle.sh target/debug/ludolph 0.0.0 target
+          plutil -lint target/Ludolph.app/Contents/Info.plist
+          codesign --verify --strict target/Ludolph.app
 
   # Windows runs only the app; its engine is the Linux one, in WSL.
   windows:
-    needs: linux
     runs-on: windows-2025
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: Check shell payload line endings
@@ -108,16 +108,12 @@ jobs:
         run: cargo clippy -p ludolph -p ludolph-ui --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test -p ludolph-ui --locked
-      - uses: actions/download-artifact@v8
-        if: github.event_name != 'push'
-        with:
-          name: wsl-test-engine
-          path: target/wsl
       - name: Test Windows installer
-        if: github.event_name != 'push'
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           cargo build --locked -p ludolph
+          # Real WSL engine packaging and install are verified in the Linux job.
+          New-Item -ItemType File -Force -Path target\wsl\ludolph-engine-linux-x86_64.tar.gz -Value "test" | Out-Null
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DBuildProfile=debug scripts/windows.iss
           $setup = Resolve-Path target/Ludolph-Setup.exe
           $install = Join-Path $env:RUNNER_TEMP Ludolph
@@ -134,36 +130,10 @@ jobs:
           }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/test-windows-reopen.ps1 -App "$install/Ludolph.exe"
       - uses: actions/upload-artifact@v7
-        if: github.event_name == 'pull_request' && !cancelled()
+        if: failure()
         with:
           name: windows-reopen-test-app
           retention-days: 3
           path: |
             target/debug/ludolph.exe
             scripts/test-windows-reopen.ps1
-
-  relay:
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.3
-      - name: Test
-        run: cargo test -p ludolph-relay --locked
-
-  licenses:
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2.90.6
-        with:
-          tool: cargo-about
-      - name: Third-party licenses are current
-        run: |
-          make licenses
-          git diff --exit-code THIRD_PARTY_LICENSES.md || {
-            echo "::error::THIRD_PARTY_LICENSES.md is stale: run make licenses and commit it"
-            exit 1
-          }

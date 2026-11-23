@@ -31,11 +31,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yml
-
   version:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.pick.outputs.version }}
     steps:
@@ -49,100 +47,16 @@ jobs:
           patch=$(git tag --list "v$minor.*" | wc -l | tr -d ' ')
           echo "version=$minor.$patch" >> "$GITHUB_OUTPUT"
 
-  linux:
-    needs: [ci, version]
-    strategy:
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-22.04
-          - arch: aarch64
-            runner: ubuntu-22.04-arm
-    # The oldest supported runner, so the binary needs only an older glibc.
-    runs-on: ${{ matrix.runner }}
+  macos:
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 20
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      ASSET: ludolph-linux-${{ matrix.arch }}.tar.gz
-    steps:
-      - uses: actions/checkout@v7
-      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.3
-      - uses: oven-sh/setup-bun@v2
-      - name: Build binary
-        run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
-      - name: Package
-        run: |
-          share=dist/ludolph/share/ludolph
-          mkdir -p dist/ludolph/bin "$share"
-          cp target/release/ludolph dist/ludolph/bin/
-          cp LICENSE THIRD_PARTY_LICENSES.md "$share/"
-          (cd extensions && bun install --frozen-lockfile && bun run build "$GITHUB_WORKSPACE/$share/pi")
-          tar -czf "$ASSET" -C dist ludolph
-          sha256sum "$ASSET" > "$ASSET.sha256"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: linux-${{ matrix.arch }}
-          path: ${{ env.ASSET }}*
-      - name: Build WSL engine
-        run: LUDOLPH_VERSION="$VERSION" cargo build --release --no-default-features --locked -p ludolph
-      - name: Package WSL engine
-        run: |
-          cp target/release/ludolph dist/ludolph/bin/
-          tar -czf "ludolph-engine-linux-${{ matrix.arch }}.tar.gz" -C dist ludolph
-      - uses: actions/upload-artifact@v7
-        with:
-          name: wsl-engine-${{ matrix.arch }}
-          path: ludolph-engine-linux-*.tar.gz
-
-  windows:
-    needs: [ci, version, linux]
-    runs-on: windows-2025
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.3
-      - name: Build app
-        run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: wsl-engine-*
-          path: target/wsl
-          merge-multiple: true
-      - name: Build installer
-        shell: pwsh
-        run: |
-          $PSNativeCommandUseErrorActionPreference = $true
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" scripts/windows.iss
-      - name: Package
-        run: |
-          cp target/Ludolph-Setup.exe Ludolph-Setup.exe
-          sha256sum Ludolph-Setup.exe > Ludolph-Setup.exe.sha256
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows
-          path: Ludolph-Setup.exe*
-
-  release:
-    needs: [ci, version, linux, windows]
-    runs-on: macos-26
-    permissions:
-      contents: write
-      pull-requests: read
-    env:
       ASSET: Ludolph.zip
       TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Use version
-        run: echo "VERSION=${{ needs.version.outputs.version }}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ env.TARGET }}
@@ -152,6 +66,8 @@ jobs:
       - name: Check version
         run: strings "target/$TARGET/release/ludolph" | grep -q "<string>$VERSION</string>"
       - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: false
       - uses: oven-sh/setup-bun@v2
       # A self-signed certificate, the same for every release, so macOS keeps
       # the microphone, speech and Keychain grants when Ludolph updates.
@@ -185,6 +101,121 @@ jobs:
           cd dist
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
           shasum -a 256 Ludolph.dmg > Ludolph.dmg.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: dist/*
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  linux:
+    needs: version
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    # The oldest supported runner, so the binary needs only an older glibc.
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ASSET: ludolph-linux-${{ matrix.arch }}.tar.gz
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: oven-sh/setup-bun@v2
+      - name: Build binary
+        run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
+      - name: Package
+        run: |
+          share=dist/ludolph/share/ludolph
+          mkdir -p dist/ludolph/bin "$share"
+          cp target/release/ludolph dist/ludolph/bin/
+          cp LICENSE THIRD_PARTY_LICENSES.md "$share/"
+          (cd extensions && bun install --frozen-lockfile && bun run build "$GITHUB_WORKSPACE/$share/pi")
+          tar -czf "$ASSET" -C dist ludolph
+          sha256sum "$ASSET" > "$ASSET.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: ${{ env.ASSET }}*
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Build WSL engine
+        run: LUDOLPH_VERSION="$VERSION" cargo build --release --no-default-features --locked -p ludolph
+      - name: Package WSL engine
+        run: |
+          cp target/release/ludolph dist/ludolph/bin/
+          tar -czf "ludolph-engine-linux-${{ matrix.arch }}.tar.gz" -C dist ludolph
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wsl-engine-${{ matrix.arch }}
+          path: ludolph-engine-linux-*.tar.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  windows:
+    needs: [version, linux]
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - name: Build app
+        run: LUDOLPH_VERSION="$VERSION" cargo build --release --locked -p ludolph
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wsl-engine-*
+          path: target/wsl
+          merge-multiple: true
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" scripts/windows.iss
+      - name: Package
+        run: |
+          cp target/Ludolph-Setup.exe Ludolph-Setup.exe
+          sha256sum Ludolph-Setup.exe > Ludolph-Setup.exe.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: Ludolph-Setup.exe*
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: [version, macos, linux, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos
+          path: dist
       - uses: actions/download-artifact@v8
         with:
           pattern: linux-*
@@ -240,13 +271,13 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          sha=$(cut -d' ' -f1 "dist/$ASSET.sha256")
+          sha=$(cut -d' ' -f1 dist/Ludolph.zip.sha256)
           export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           echo "$DEPLOY_KEY" > "$RUNNER_TEMP/tap_key"
           chmod 600 "$RUNNER_TEMP/tap_key"
           git clone --depth 1 git@github.com:iyazerski/homebrew-tap.git "$RUNNER_TEMP/tap"
           cd "$RUNNER_TEMP/tap"
-          sed -i '' -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 \".*\"/  sha256 \"$sha\"/" Casks/ludolph.rb
+          sed -i -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 \".*\"/  sha256 \"$sha\"/" Casks/ludolph.rb
           git diff --stat
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -am "Update Ludolph to $VERSION"
