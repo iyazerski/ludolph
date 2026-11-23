@@ -77,8 +77,9 @@ serde_json = { version = "1", features = ["raw_value"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 ring = "0.17"
 # The windows. Rune is pre-release and changes often: keep one tested revision.
-rune = { git = "https://github.com/anomalyco/rune", rev = "2899b3d3a41b6c9d00e52884cddfdd66ab71374b" }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "2899b3d3a41b6c9d00e52884cddfdd66ab71374b", features = ["markdown"] }
+# Skip embedded-fonts (rune-theme-opencode supplies Inter + IBM Plex Mono) and ogg-audio (unused).
+rune = { git = "https://github.com/anomalyco/rune", rev = "2899b3d3a41b6c9d00e52884cddfdd66ab71374b", default-features = false, features = ["accessibility", "metal-backend", "svg"] }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "2899b3d3a41b6c9d00e52884cddfdd66ab71374b", default-features = false, features = ["markdown"] }
 rune-notify = { git = "https://github.com/anomalyco/rune", rev = "2899b3d3a41b6c9d00e52884cddfdd66ab71374b" }
 rune-theme-opencode = { git = "https://github.com/anomalyco/rune", rev = "2899b3d3a41b6c9d00e52884cddfdd66ab71374b" }
 # With only `ring` enabled, rustls picks its crypto provider on its own;

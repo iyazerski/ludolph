@@ -38,11 +38,14 @@ fn runtime(width: f32, window: Window) -> (tokio::runtime::Runtime, Runtime<Stat
         wsl_setup: Some(crate::wsl::Status::Ready),
         ..state
     };
-    let runtime = Runtime::new(
+    let text =
+        rune::text::TextSystem::new(rune_theme_opencode::FONTS, rune_theme_opencode::FAMILIES);
+    let runtime = Runtime::with_text(
         state,
         crate::view::view,
         (width, 620.0),
         Env::new(true, 1.0),
+        text,
     );
     (rt, runtime)
 }
