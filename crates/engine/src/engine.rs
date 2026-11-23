@@ -1160,10 +1160,17 @@ impl Engine {
     }
 
     pub async fn set_settings(&self, settings: Settings) -> Result<Settings> {
-        for model in [&settings.sidecar_model, &settings.gui_model]
-            .into_iter()
-            .flatten()
-        {
+        // Only check changed models: a saved one can vanish after a sign-out, and that mustn't
+        // block changing other settings.
+        let current = self.settings();
+        let changed = [
+            (&settings.sidecar_model, &current.sidecar_model),
+            (&settings.gui_model, &current.gui_model),
+        ]
+        .into_iter()
+        .filter(|(new, old)| new != old)
+        .filter_map(|(new, _)| new.as_ref());
+        for model in changed {
             if self.0.catalog.find(model).await?.is_none() {
                 bail!("pi has no model {model}");
             }

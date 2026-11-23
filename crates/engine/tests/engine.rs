@@ -1469,6 +1469,9 @@ async fn terminal_model_changes_refresh_the_catalog_and_an_existing_pi() {
     let original = tool(&engine, "list_models", json!({})).await.unwrap();
     assert_eq!(original["default"], "fake/deep");
     assert_eq!(original["defaultReasoning"], "medium");
+    tool(&engine, "set_settings", json!({"guiModel": "fake/quick"}))
+        .await
+        .unwrap();
     let mut changes = engine.subscribe_models();
     let signed_in = json!([{"provider": "openai", "id": "gpt", "name": "GPT",
                             "reasoning": true, "contextWindow": 300000}]);
@@ -1482,6 +1485,8 @@ async fn terminal_model_changes_refresh_the_catalog_and_an_existing_pi() {
     assert_eq!(refreshed["default"], "openai/gpt");
     assert_eq!(refreshed["models"].as_array().unwrap().len(), 1);
     assert_eq!(refreshed["models"][0]["id"], "openai/gpt");
+    let stale = json!({"guiModel": "fake/quick", "sidecarModel": "openai/gpt"});
+    tool(&engine, "set_settings", stale).await.unwrap();
 
     let picked = tool(
         &engine,
