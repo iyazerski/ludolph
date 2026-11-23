@@ -4,10 +4,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use rune::{Image, TextEdit};
-use rune_kit::ComboboxState;
 use rune_kit::diff::DiffState;
 
-use super::SliderState;
+use super::ModelSelectorState;
 use super::attach::Attached;
 use super::draft::Draft;
 use crate::client::Subscription;
@@ -27,8 +26,7 @@ pub struct ChatPage {
     pub composer: TextEdit,
     pub info: Option<ComposerInfo>,
     pub overlay: Overlay,
-    pub model_picker: ComboboxState,
-    pub reasoning_slider: SliderState,
+    pub model_picker: ModelSelectorState,
     pub skills: SkillMenu,
     pub queue_edit: Option<QueueEdit>,
     pub attached: Vec<Attached>,
@@ -201,8 +199,7 @@ impl ChatPage {
             composer,
             info: None,
             overlay: Overlay::Closed,
-            model_picker: ComboboxState::default(),
-            reasoning_slider: SliderState::default(),
+            model_picker: ModelSelectorState::default(),
             skills: SkillMenu::default(),
             queue_edit: None,
             attached: Vec::new(),

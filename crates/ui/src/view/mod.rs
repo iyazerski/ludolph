@@ -8,6 +8,7 @@ mod dialogs;
 mod icons;
 mod list;
 mod main_window;
+mod model_selector;
 mod project;
 mod queue;
 mod settings;
@@ -132,8 +133,7 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
         if page.shortcut.is_recording() {
             return false;
         }
-        if key.key == Key::Escape && page.model.is_open() {
-            page.model.close();
+        if key.key == Key::Escape && page.close_open_picker() {
             return true;
         }
         if key.key == Key::Escape || key.is_command('[') {
@@ -206,6 +206,7 @@ pub fn on_key(s: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
         .and_then(ChatPage::existing)
         .is_some_and(|chat| chat.details_open);
     match s.chat_mut() {
+        Some(page) if page.model_picker.is_open() => page.model_picker.close(),
         Some(page) if page.overlay != Overlay::Closed => page.overlay = Overlay::Closed,
         Some(page) if page.queue_edit.is_some() => page.cancel_queue_edit(),
         _ if changes || details => s.back(),

@@ -401,56 +401,119 @@ fn user_message_opens_bare_url_without_prose_punctuation() {
 }
 
 #[test]
-fn reasoning_slider_selects_levels() {
-    let (_rt, mut ui) = runtime(1120.0, Window::Main);
-    ui.state.catalog = Catalog::Ready(serde_json::from_value(serde_json::json!({
-        "models":[{"id":"test/model", "label":"Test", "reasoningLevels":["minimal", "low", "medium", "high", "xhigh", "max"]}],
-        "default":"test/model", "defaultReasoning":"high"
-    })).unwrap());
-    let mut chat = Existing::new(
-        "test".into(),
-        Some(
+fn model_selector_unifies_model_and_reasoning_in_main_and_quick_windows() {
+    for (width, window) in [(420.0, Window::Quick), (1120.0, Window::Main)] {
+        let (_rt, mut ui) = runtime(width, window);
+        ui.state.catalog = Catalog::Ready(serde_json::from_value(serde_json::json!({
+            "models":[
+                {"id":"test/model", "label":"Test", "reasoningLevels":["minimal", "low", "medium", "high", "xhigh", "max"]},
+                {"id":"openai/gpt-5", "label":"GPT-5", "reasoningLevels":["low", "medium", "high"]}
+            ],
+            "default":"test/model", "defaultReasoning":"high"
+        })).unwrap());
+        let mut chat = Existing::new(
+            "test".into(),
+            Some(
+                serde_json::from_value(serde_json::json!({
+                    "id":"test", "status":"idle", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z", "reasoning":"high"
+                }))
+                .unwrap(),
+            ),
+        );
+        chat.page = Some(vec![]);
+        let mut page = ChatPage::new(0, Target::Existing(chat), TextEdit::default());
+        page.info = Some(
             serde_json::from_value(serde_json::json!({
-                "id":"test", "status":"idle", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z", "reasoning":"high"
+                "model": "test/model",
+                "reasoning": "high"
             }))
             .unwrap(),
-        ),
-    );
-    chat.page = Some(vec![]);
-    let mut page = ChatPage::new(0, Target::Existing(chat), TextEdit::default());
-    page.info = Some(
-        serde_json::from_value(serde_json::json!({
-            "model": "test/model",
-            "reasoning": "high"
-        }))
-        .unwrap(),
-    );
-    ui.state.page = Page::Chat(Box::new(page));
-    settle(&mut ui);
+        );
+        ui.state.page = Page::Chat(Box::new(page));
+        settle(&mut ui);
 
-    let elements = ui.elements();
-    let slider = elements
-        .iter()
-        .find(|e| e.key.as_deref() == Some("composer-reasoning"))
-        .unwrap();
-    let [sx, sy, sw, sh] = slider.rect;
-    // Drag to stop 4 of 5 ("xhigh"): pad = 6, travel = sw - 12.
-    let target_x = sx + 6.0 + (sw - 12.0) * (4.0 / 5.0);
-    let mid_y = sy + sh / 2.0;
-    ui.pointer_move(sx + 6.0, mid_y);
-    ui.pointer_down(sx + 6.0, mid_y);
-    ui.pointer_move(target_x, mid_y);
-    settle(&mut ui);
-    assert!(
-        ui.elements()
+        // Closed state: single trigger shows model + reasoning, no separate inline slider.
+        let elements = ui.elements();
+        assert!(
+            elements.iter().all(|e| e.role != "slider"),
+            "no separate inline reasoning slider when closed: width={width}"
+        );
+        let trigger = elements
             .iter()
-            .any(|e| e.key.as_deref() == Some("composer-reasoning-label")
-                && e.text.as_deref() == Some("X-High")),
-        "dragging previews the targeted reasoning level"
-    );
-    ui.pointer_up(target_x, mid_y);
-    settle(&mut ui);
-    assert_eq!(ui.state.config().reasoning, Some("xhigh"));
+            .find(|e| e.key.as_deref() == Some("composer-model-trigger"))
+            .unwrap();
+        assert_eq!(trigger.role, "combobox");
+        assert!(
+            elements.iter().any(|e| {
+                e.key.as_deref() == Some("composer-model-trigger-effort")
+                    && e.text.as_deref() == Some("High")
+            }),
+            "trigger shows active reasoning effort: width={width}"
+        );
+
+        // Open the unified selector: shows compact effort card with header + pill slider.
+        click(&mut ui, trigger);
+        let elements = ui.elements();
+        let slider = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("composer-model-reasoning"))
+            .expect("effort card mounts pill reasoning slider");
+        assert_eq!(slider.role, "slider");
+        let [sx, sy, sw, sh] = slider.rect;
+        // Drag to stop 4 of 5 ("xhigh"): pad = 13, travel = sw - 26.
+        let target_x = sx + 13.0 + (sw - 26.0) * (4.0 / 5.0);
+        let mid_y = sy + sh / 2.0;
+        ui.pointer_move(sx + 13.0, mid_y);
+        ui.pointer_down(sx + 13.0, mid_y);
+        ui.pointer_move(target_x, mid_y);
+        settle(&mut ui);
+        assert!(
+            ui.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some("composer-model-effort")
+                    && e.text.as_deref() == Some("X-High")),
+            "dragging previews the targeted reasoning level in the card header"
+        );
+        ui.pointer_up(target_x, mid_y);
+        settle(&mut ui);
+        assert_eq!(ui.state.config().reasoning, Some("xhigh"));
+
+        // Clicking the card header drills into the searchable model list.
+        let header = ui
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("composer-model-header"))
+            .unwrap();
+        click(&mut ui, &header);
+        let gpt = ui
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("composer-model-option-openai/gpt-5"))
+            .expect("model list shows available models");
+        click(&mut ui, &gpt);
+        assert_eq!(ui.state.config().model, Some("openai/gpt-5"));
+        assert!(
+            ui.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some("composer-model-reasoning")),
+            "picking a reasoning model returns to the effort card"
+        );
+
+        // Escape closes the open selector without hiding the quick window.
+        let esc = rune::KeyEvent {
+            key: rune::Key::Escape,
+            mods: rune::Mods::default(),
+        };
+        ui.update(|s, tx| {
+            assert!(crate::view::on_key(s, &esc, tx));
+        });
+        settle(&mut ui);
+        assert!(
+            ui.elements()
+                .iter()
+                .all(|e| e.key.as_deref() != Some("composer-model-content"))
+        );
+    }
 }
 
 #[test]
@@ -756,7 +819,7 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         s.catalog = Catalog::Ready(
             serde_json::from_value(serde_json::json!({
                 "models": [
-                    {"id": "anthropic/claude-1", "label": "Claude 1", "reasoningLevels": ["medium"]},
+                    {"id": "anthropic/claude-1", "label": "Claude 1", "reasoningLevels": ["low", "medium", "high"]},
                     {"id": "anthropic/claude-2", "label": "Claude 2", "reasoningLevels": ["medium"]},
                     {"id": "anthropic/claude-3", "label": "Claude 3", "reasoningLevels": ["medium"]},
                     {"id": "anthropic/claude-4", "label": "Claude 4", "reasoningLevels": ["medium"]},
@@ -819,14 +882,35 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
             .all(|e| e.key.as_deref() != Some("chat-models-scroll-openai-scrollbar")),
         "short provider list has no scrollbar"
     );
+    assert!(
+        elements.iter().all(|e| e.role != "slider"),
+        "settings uses the unified model selector rather than separate inline sliders"
+    );
+    let claude_trigger = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("review-claude-trigger"))
+        .expect("Claude reviewer uses the unified model selector");
+    assert_eq!(claude_trigger.role, "combobox");
+    click(&mut ui, claude_trigger);
+    let claude_opt = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("review-claude-option-anthropic/claude-1"))
+        .expect("clicking unset reviewer opens the searchable model list");
+    click(&mut ui, &claude_opt);
     assert_eq!(
-        elements
+        ui.elements()
             .iter()
-            .find(|e| e.key.as_deref() == Some("review-claude-thinking"))
-            .unwrap()
+            .find(|e| e.key.as_deref() == Some("review-claude-reasoning"))
+            .expect("picking a reasoning reviewer opens the effort card with its pill slider")
             .role,
         "slider"
     );
+    ui.update(|s, _| {
+        s.settings_page_mut().unwrap().close_open_picker();
+    });
+    settle(&mut ui);
+    let elements = ui.elements();
     assert!(
         anthropic_scroll.rect[3] < 6.0 * 45.0,
         "provider scroll list shows five and a half rows: {:?}",

@@ -7,7 +7,7 @@ use rune::{Image, Shortcut, ShortcutError, TextEdit, Tx};
 use rune_kit::{ComboboxState, ShortcutRecorderState};
 use serde_json::{Value, json};
 
-use super::{Page, SliderState, State, Window};
+use super::{ModelSelectorState, Page, State, Window};
 use crate::client::Subscription;
 use crate::data::{
     Account, GuiTool, LinkStatus, Pairing, PhoneLink, PromptKind, QuotaWindow, RelayLink, Resource,
@@ -49,11 +49,10 @@ pub struct SettingsPage {
     pub settings: Option<Settings>,
     pub error: Option<String>,
     pub shortcut: ShortcutRecorderState,
-    pub model: ComboboxState,
-    pub gui_model: ComboboxState,
-    pub gui_thinking: SliderState,
-    pub claude_review: ReviewPickers,
-    pub gpt_review: ReviewPickers,
+    pub model: ModelSelectorState,
+    pub gui_model: ModelSelectorState,
+    pub claude_review: ModelSelectorState,
+    pub gpt_review: ModelSelectorState,
     pub tools: Tools,
     /// Listing them starts a pi, so they load when their section first shows.
     pub resources: Option<Result<Vec<Resource>, String>>,
@@ -63,12 +62,6 @@ pub struct SettingsPage {
     pub phone: Phone,
     pub update: Update,
     previous: Option<String>,
-}
-
-#[derive(Default)]
-pub struct ReviewPickers {
-    pub model: ComboboxState,
-    pub thinking: SliderState,
 }
 
 /// pi's providers and their sign-in. Listing them starts a pi, so they load when their section
@@ -155,6 +148,25 @@ impl Phone {
 }
 
 impl SettingsPage {
+    pub fn close_open_picker(&mut self) -> bool {
+        for picker in [
+            &mut self.model,
+            &mut self.gui_model,
+            &mut self.claude_review,
+            &mut self.gpt_review,
+        ] {
+            if picker.is_open() {
+                picker.close();
+                return true;
+            }
+        }
+        if self.accounts.picker.is_open() {
+            self.accounts.picker.close();
+            return true;
+        }
+        false
+    }
+
     pub fn connecting(&self) -> bool {
         let connecting = self
             .phone
@@ -201,11 +213,10 @@ impl State {
                 settings: None,
                 error: None,
                 shortcut,
-                model: ComboboxState::default(),
-                gui_model: ComboboxState::default(),
-                gui_thinking: SliderState::default(),
-                claude_review: ReviewPickers::default(),
-                gpt_review: ReviewPickers::default(),
+                model: ModelSelectorState::default(),
+                gui_model: ModelSelectorState::default(),
+                claude_review: ModelSelectorState::default(),
+                gpt_review: ModelSelectorState::default(),
                 tools: Tools::default(),
                 resources: None,
                 resource_saving: false,
@@ -233,6 +244,7 @@ impl State {
         let Some(page) = self.settings_page_mut() else {
             return;
         };
+        page.close_open_picker();
         page.section = section;
         let (resources, accounts) = (page.resources.is_none(), page.accounts.list.is_none());
         if section == Section::Resources && resources {
