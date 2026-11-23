@@ -89,6 +89,20 @@ pub struct Frame {
     pub messages: Vec<Message>,
 }
 
+/// A subscription window of the chat's provider.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaWindow {
+    pub label: String,
+    /// Share used, 0 to 1.
+    pub used: f64,
+    /// Epoch milliseconds.
+    pub resets_at: Option<i64>,
+    /// Dollars, for a budget.
+    pub spent: Option<f64>,
+    pub limit: Option<f64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Queued {
     pub id: String,
@@ -319,6 +333,7 @@ pub struct ChatDetails {
     pub compactions: usize,
     pub spent: Spent,
     pub pull_requests: Vec<PullRequest>,
+    pub quota: Vec<QuotaWindow>,
     pub changes: Option<ChangeCounts>,
     pub changes_error: Option<String>,
 }

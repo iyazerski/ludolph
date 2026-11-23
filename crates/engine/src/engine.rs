@@ -21,6 +21,7 @@ use crate::login;
 use crate::models::{Available, Catalog, Model, Sources};
 use crate::pi::{Event, Options, Pi, Session};
 use crate::pi_setup;
+use crate::quota;
 pub use crate::relay::SecretStore;
 use crate::relay::{self, DEFAULT_RELAY, Link, LinkStatus, Pairing, Phone, Phones};
 use crate::runtime::Runtime;
@@ -121,6 +122,8 @@ struct State {
     index: Index,
     runtime: Runtime,
     chats: HashMap<String, Chat>,
+    /// The latest subscription quota by provider, for every chat on it.
+    quotas: HashMap<String, Vec<quota::Window>>,
     stopping: bool,
 }
 
@@ -348,6 +351,7 @@ impl Engine {
             index,
             runtime,
             chats: HashMap::new(),
+            quotas: HashMap::new(),
             stopping: false,
         };
         let settings = Settings::load(&config.state_dir)?;
@@ -788,11 +792,22 @@ impl Engine {
         }
     }
 
-    pub async fn details(&self, id: &str) -> Result<(transcript::Details, Spent)> {
-        let (path, spent) = {
+    /// The session's details, its spend, and its provider's subscription quota.
+    pub async fn details(
+        &self,
+        id: &str,
+    ) -> Result<(transcript::Details, Spent, Vec<quota::Window>)> {
+        let (path, spent, quota) = {
             let state = self.state();
             known(&state, id)?;
             let summary = state.index.find(id);
+            let info = match summary {
+                Some((_, summary)) => Some(info(&state, summary)),
+                None => state
+                    .chats
+                    .get(id)
+                    .and_then(|chat| draft_info(&state, id, chat)),
+            };
             (
                 file_of(
                     &state.index,
@@ -800,6 +815,7 @@ impl Engine {
                     state.chats.get(id).and_then(|chat| chat.draft.as_ref()),
                 ),
                 summary.map_or_else(Spent::default, |(_, summary)| summary.spent),
+                info.map_or_else(Vec::new, |info| quota_of(&state, &info)),
             )
         };
         let transcripts = self.0.transcripts.clone();
@@ -809,7 +825,7 @@ impl Engine {
                 None => Ok(transcript::Details::default()),
             })
             .await??;
-        Ok((details, spent))
+        Ok((details, spent, quota))
     }
 
     pub async fn chat_changes(&self, id: &str) -> Result<Diff> {
@@ -1631,6 +1647,7 @@ impl Engine {
             runtime,
             chats,
             stopping,
+            ..
         } = &mut *state;
         let chat = chats.get_mut(id).expect("callers look the chat up first");
         if let Some(running) = &chat.process {
@@ -1717,7 +1734,32 @@ impl Engine {
         }
     }
 
+    fn set_quota(&self, text: Option<&str>) {
+        let Some(text) = text else { return };
+        let report: quota::Report = match serde_json::from_str(text) {
+            Ok(report) => report,
+            Err(e) => {
+                eprintln!("reading a quota report: {e:#}");
+                return;
+            }
+        };
+        self.state().quotas.insert(report.provider, report.windows);
+    }
+
     fn apply(&self, id: &str, pi: &Arc<Pi>, event: &Event) -> Result<()> {
+        if let Event::ExtensionUiRequest {
+            method,
+            status_key,
+            status_text,
+            ..
+        } = event
+            && method == "setStatus"
+        {
+            if status_key.as_deref() == Some(quota::STATUS_KEY) {
+                self.set_quota(status_text.as_deref());
+            }
+            return Ok(());
+        }
         let mut state = self.state();
         let State {
             index,
@@ -1895,6 +1937,7 @@ impl Engine {
             runtime,
             chats,
             stopping,
+            ..
         } = &mut *state;
         runtime.remove(id, pi.pid())?;
         let Some(chat) = chats.get_mut(id) else {
@@ -2123,6 +2166,20 @@ async fn live_composer(pi: &Pi) -> Result<Composer> {
             cost: stats["cost"].as_f64().unwrap_or_default(),
         },
     })
+}
+
+fn quota_of(state: &State, chat: &ChatInfo) -> Vec<quota::Window> {
+    let provider = chat
+        .summary
+        .as_ref()
+        .and_then(|summary| summary.model.as_deref())
+        .and_then(|model| model.split_once('/'))
+        .map(|(provider, _)| provider);
+    provider
+        .and_then(|provider| state.quotas.get(provider))
+        .map_or_else(Vec::new, |windows| {
+            quota::current(windows, Utc::now().timestamp_millis())
+        })
 }
 
 fn known(state: &State, id: &str) -> Result<()> {

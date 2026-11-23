@@ -127,6 +127,8 @@ pub enum Event {
         placeholder: Option<String>,
         prefill: Option<String>,
         timeout: Option<u64>,
+        status_key: Option<String>,
+        status_text: Option<String>,
     },
     #[serde(other)]
     Other,

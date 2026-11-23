@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::data::{NestedCall, Spent, ToolState};
+use crate::data::{NestedCall, QuotaWindow, Spent, ToolState};
 
 pub fn ago(when: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let s = (now - when).num_seconds().max(0);
@@ -32,6 +32,27 @@ pub fn context_readout(tokens: Option<u64>, window: u64, spent: Option<Spent>) -
     let used = tokens.map_or_else(|| "—".to_owned(), thousands);
     let cost = spent.map_or_else(|| "—".to_owned(), |spent| dollars(spent.cost));
     (format!("{used}/{}", thousands(window)), cost)
+}
+
+/// What's used, like "$8.43 of $200.00" or "12% used".
+pub fn quota_used(window: &QuotaWindow) -> String {
+    match (window.spent, window.limit) {
+        (Some(spent), Some(limit)) => format!("{} of {}", dollars(spent), dollars(limit)),
+        _ => format!("{}% used", (window.used * 100.0).round()),
+    }
+}
+
+/// Like "Resets in 3h" within a day, else "Resets Nov 30".
+pub fn quota_reset(window: &QuotaWindow, now: DateTime<Utc>) -> Option<String> {
+    let at = DateTime::from_timestamp_millis(window.resets_at?)?;
+    Some(if at - now < chrono::TimeDelta::days(1) {
+        format!("Resets in {}", ago(now, at))
+    } else {
+        format!(
+            "Resets {}",
+            at.with_timezone(&chrono::Local).format("%b %-d")
+        )
+    })
 }
 
 pub fn dollars(cost: f64) -> String {

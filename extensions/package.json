@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build routing.ts gui.ts second-opinion.ts pi-setup.ts background-jobs.ts --target node --external '@earendil-works/*' --external typebox --outdir",
+    "build": "bun build routing.ts gui.ts second-opinion.ts pi-setup.ts background-jobs.ts quota.ts --target node --external '@earendil-works/*' --external typebox --outdir",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

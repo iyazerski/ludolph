@@ -2178,6 +2178,22 @@ function diffFile(file) {
   return el;
 }
 
+function quotaLimit({ label, used, resetsAt, spent, limit }) {
+  const money = value => `$${value.toFixed(2)}`;
+  const amount = spent != null && limit != null ? `${money(spent)} of ${money(limit)}` : `${Math.round(used * 100)}% used`;
+  const left = (resetsAt - Date.now()) / 1000;
+  const reset = !resetsAt ? ""
+    : left < 86400 ? `Resets in ${left < 3600 ? `${Math.max(1, Math.floor(left / 60))}m` : `${Math.floor(left / 3600)}h`}`
+    : `Resets ${new Date(resetsAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  const fraction = Math.min(1, Math.max(0, used));
+  const tone = fraction >= 0.9 ? "var(--danger)" : fraction >= 0.75 ? "var(--warning)" : "var(--accent)";
+  return h("div", { class: "limit" },
+    h("div", { class: "limit-head" }, h("span", {}, label), h("span", {}, amount)),
+    h("div", { class: "meter", role: "meter", "aria-label": label, "aria-valuenow": Math.round(fraction * 100), "aria-valuemin": 0, "aria-valuemax": 100 },
+      h("div", { style: { width: `${fraction * 100}%`, background: tone } })),
+    reset && h("p", {}, reset));
+}
+
 function detailsView(machine, id, fromChat, chatFromList) {
   const cached = store.chats?.find(c => c.id === id && c.machine === machine);
   const back = () => { haptic(5); fromChat ? history.back() : go(chatHash(machine, id)); };
@@ -2205,6 +2221,7 @@ function detailsView(machine, id, fromChat, chatFromList) {
         h("section", {}, h("h2", {}, "Pull requests"), d.pullRequests.length
           ? d.pullRequests.map(pr => h("a", { class: "pr-link", href: pr.url, target: "_blank", rel: "noopener noreferrer" }, icon("fetch"), pr.label))
           : h("p", {}, "No PR links yet")),
+        d.quota?.length ? h("section", {}, h("h2", {}, "Usage limits"), d.quota.map(quotaLimit)) : "",
         h("section", {}, h("h2", {}, "Session totals"),
           h("p", {}, `${plural(d.compactions, "compaction", "compactions")} · ${(d.spent.tokens / 1_000_000).toFixed(2)}M tokens · ${cost}`)));
     } catch (e) {

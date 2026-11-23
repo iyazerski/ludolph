@@ -4,7 +4,8 @@ use rune_kit::{IconButton, IconButtonVariant, Kit};
 use super::icons;
 use super::widgets::{busy, head, head_titles, hide_button};
 use crate::app::{Existing, State, Window};
-use crate::data::ChatDetails;
+use crate::data::{ChatDetails, QuotaWindow};
+use crate::labels::{quota_reset, quota_used};
 
 pub fn toggle(s: &State, k: &Kit) -> El {
     let shown = s.window == Window::Main && s.prefs.borrow().show_details;
@@ -183,6 +184,13 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
                 .children(links),
         );
     }
+    if !details.quota.is_empty() {
+        let now = chrono::Utc::now();
+        body = body
+            .child(rule(k))
+            .child(text("Usage limits").font(k.ty.small).color(k.c.text_faint))
+            .children(details.quota.iter().map(|window| limit(window, now, k)));
+    }
     body.child(rule(k)).child(
         text(format!(
             "{} {} · {:.2}M tokens · {}",
@@ -203,6 +211,66 @@ fn content(mut body: El, details: &ChatDetails, k: &Kit) -> El {
         .wrap()
         .label("Session totals: compactions, tokens in millions, and cost in US dollars"),
     )
+}
+
+/// One window of the provider's quota: its name, what's used, a bar, and the next reset.
+fn limit(window: &QuotaWindow, now: chrono::DateTime<chrono::Utc>, k: &Kit) -> El {
+    let used = quota_used(window);
+    let reset = quota_reset(window, now);
+    let fraction = window.used.clamp(0.0, 1.0);
+    let fill = if fraction >= 0.9 {
+        k.c.danger.fg
+    } else if fraction >= 0.75 {
+        k.c.warning.fg
+    } else {
+        k.c.text_accent
+    };
+    let mut out = col()
+        .w_full()
+        .gap(6.0)
+        .child(
+            row()
+                .w_full()
+                .gap(8.0)
+                .child(
+                    text(window.label.clone())
+                        .font(k.ty.small)
+                        .color(k.c.text_base)
+                        .grow(1.0),
+                )
+                .child(text(used.clone()).font(k.ty.small).color(k.c.text_muted)),
+        )
+        .child(
+            rune::el()
+                .w_full()
+                .h(4.0)
+                .radius(2.0)
+                .fill(k.c.border_muted)
+                .child(
+                    rune::el()
+                        .w_frac(fraction as f32)
+                        .h(4.0)
+                        .radius(2.0)
+                        .fill(fill),
+                ),
+        );
+    if let Some(reset) = &reset {
+        out = out.child(
+            text(reset.clone())
+                .font(TextStyle {
+                    size: 11.0,
+                    ..k.ty.ui
+                })
+                .color(k.c.text_faint),
+        );
+    }
+    out.key(format!("limit-{}", window.label)).label(format!(
+        "{}: {used}{}",
+        window.label,
+        reset
+            .map(|r| format!(", {}", r.to_lowercase()))
+            .unwrap_or_default()
+    ))
 }
 
 fn rule(k: &Kit) -> El {

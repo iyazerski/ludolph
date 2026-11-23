@@ -216,7 +216,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
             let args: ChatArgs = parse(args)?;
             let (session, changes) =
                 tokio::join!(engine.details(&args.chat), engine.chat_counts(&args.chat));
-            let (details, spent) = session?;
+            let (details, spent, quota) = session?;
             let (changes, error) = match changes {
                 Ok(counts) => (
                     Some(
@@ -227,7 +227,7 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
                 Err(error) => (None, Some(format!("{error:#}"))),
             };
             Ok(
-                json!({"compactions": details.compactions, "pullRequests": details.pull_requests, "spent": spent, "changes": changes, "changesError": error}),
+                json!({"compactions": details.compactions, "pullRequests": details.pull_requests, "spent": spent, "quota": quota, "changes": changes, "changesError": error}),
             )
         }
         Tool::ChatChanges => {
