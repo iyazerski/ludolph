@@ -495,9 +495,39 @@ a { color: inherit; text-decoration: none; }
 .ctx { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 4px; font-size: 12.5px; }
 .ring { width: 16px; height: 16px; flex: none; }
 .group-label { font-size: 13px; color: var(--tertiary); margin: 0 6px 8px; }
-.pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-.pill { height: 34px; padding: 0 14px; border-radius: 17px; background: var(--control); color: var(--secondary); font-size: 14.5px; font-weight: 500; transition: background .15s, color .15s; }
-.pill.on { background: var(--solid); color: var(--on-solid); }
+.slider-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.slider-val { font-weight: 600; color: var(--text); }
+.effort-card { padding: 14px 16px 12px; }
+.effort-track { position: relative; height: 28px; display: flex; align-items: center; }
+.effort-rail {
+  position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+  height: 6px; border-radius: 3px; pointer-events: none; z-index: 1;
+  background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--pct, 0%), var(--rail) var(--pct, 0%), var(--rail) 100%);
+}
+.effort-ticks {
+  position: absolute; left: 9px; right: 9px; top: 50%; transform: translateY(-50%);
+  display: flex; justify-content: space-between; pointer-events: none; z-index: 2;
+}
+.effort-ticks span { width: 4px; height: 4px; border-radius: 50%; background: var(--tertiary); opacity: .65; }
+.effort-ticks span.on { background: var(--on-solid); opacity: .75; }
+.effort-range {
+  position: relative; z-index: 3; width: 100%; height: 28px; margin: 0;
+  appearance: none; -webkit-appearance: none; background: transparent; cursor: pointer;
+}
+.effort-range::-webkit-slider-runnable-track { height: 6px; background: transparent; }
+.effort-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 22px; height: 22px; margin-top: -8px; border-radius: 50%;
+  background: #fff; border: 1px solid rgb(0 0 0 / .16);
+  box-shadow: 0 1px 4px rgb(0 0 0 / .35);
+}
+.effort-range::-moz-range-track { height: 6px; background: transparent; }
+.effort-range::-moz-range-thumb {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: #fff; border: 1px solid rgb(0 0 0 / .16);
+  box-shadow: 0 1px 4px rgb(0 0 0 / .35);
+}
+.effort-ends { display: flex; justify-content: space-between; margin-top: 6px; font-size: 12px; color: var(--tertiary); }
 .composer textarea::placeholder { color: var(--tertiary); }
 .send {
   width: 34px; height: 34px; border-radius: 50%; flex: none;

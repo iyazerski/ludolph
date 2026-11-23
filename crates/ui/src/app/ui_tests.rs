@@ -398,7 +398,7 @@ fn user_message_opens_bare_url_without_prose_punctuation() {
 }
 
 #[test]
-fn reasoning_menu_fills_its_popup_and_stop_has_no_background() {
+fn reasoning_slider_selects_levels_details_names_session_and_stop_has_no_background() {
     let (_rt, mut ui) = runtime(1120.0, Window::Main);
     ui.state.catalog = Catalog::Ready(serde_json::from_value(serde_json::json!({
         "models":[{"id":"test/model", "label":"Test", "reasoningLevels":["minimal", "low", "medium", "high", "xhigh", "max"]}],
@@ -408,19 +408,40 @@ fn reasoning_menu_fills_its_popup_and_stop_has_no_background() {
         "test".into(),
         Some(
             serde_json::from_value(serde_json::json!({
-                "id":"test", "status":"working", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z"
+                "id":"test", "status":"working", "cwd":"/tmp", "createdAt":"2026-01-01T00:00:00Z", "reasoning":"high"
             }))
             .unwrap(),
         ),
     );
     chat.page = Some(vec![]);
-    ui.state.page = Page::Chat(Box::new(ChatPage::new(
-        0,
-        Target::Existing(chat),
-        TextEdit::default(),
-    )));
+    chat.details = Some(Ok(serde_json::from_value(serde_json::json!({
+        "compactions": 0,
+        "pullRequests": [],
+        "spent": { "tokens": 1000, "cost": 0.5 },
+        "contextUsage": { "tokens": 1000, "window": 10000 },
+        "quota": [],
+        "changes": null
+    }))
+    .unwrap()));
+    let mut page = ChatPage::new(0, Target::Existing(chat), TextEdit::default());
+    page.info = Some(
+        serde_json::from_value(serde_json::json!({
+            "model": "test/model",
+            "reasoning": "high"
+        }))
+        .unwrap(),
+    );
+    ui.state.page = Page::Chat(Box::new(page));
+    ui.state.prefs.borrow_mut().show_details = true;
     settle(&mut ui);
+
     let elements = ui.elements();
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Current session")),
+        "chat details panel labels its last section"
+    );
     let stop = elements
         .iter()
         .find(|e| e.label.as_deref() == Some("Stop"))
@@ -438,31 +459,30 @@ fn reasoning_menu_fills_its_popup_and_stop_has_no_background() {
             .fill,
         rune::Color::TRANSPARENT
     );
-    let reason = elements
+
+    let slider = elements
         .iter()
-        .find(|e| e.key.as_deref() == Some("composer-reasoning-trigger"))
+        .find(|e| e.key.as_deref() == Some("composer-reasoning"))
         .unwrap();
-    click(&mut ui, reason);
-    let elements = ui.elements();
-    let option = elements
-        .iter()
-        .find(|e| e.text.as_deref() == Some("Minimal"))
-        .unwrap();
-    let menu = elements
-        .iter()
-        .find(|e| e.role == "listbox" && e.rect[1] <= option.rect[1])
-        .unwrap();
-    let popup = elements
-        .iter()
-        .find(|e| e.key.as_deref() == Some("composer-reasoning-content"))
-        .unwrap();
+    assert_eq!(slider.role, "slider");
+    let [sx, sy, sw, sh] = slider.rect;
+    // Drag to stop 4 of 5 ("xhigh"): pad = 6, travel = sw - 12.
+    let target_x = sx + 6.0 + (sw - 12.0) * (4.0 / 5.0);
+    let mid_y = sy + sh / 2.0;
+    ui.pointer_move(sx + 6.0, mid_y);
+    ui.pointer_down(sx + 6.0, mid_y);
+    ui.pointer_move(target_x, mid_y);
+    settle(&mut ui);
     assert!(
-        (popup.rect[2] - menu.rect[2] - 8.0).abs() < 1.0,
-        "menu should fill its popup: popup={:?}, menu={:?}",
-        popup.rect,
-        menu.rect
+        ui.elements()
+            .iter()
+            .any(|e| e.key.as_deref() == Some("composer-reasoning-label")
+                && e.text.as_deref() == Some("X-High")),
+        "dragging previews the targeted reasoning level"
     );
-    assert!(elements.iter().any(|e| e.text.as_deref() == Some("X-High")));
+    ui.pointer_up(target_x, mid_y);
+    settle(&mut ui);
+    assert_eq!(ui.state.config().reasoning, Some("xhigh"));
 }
 
 #[test]
@@ -832,11 +852,35 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         .iter()
         .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic"))
         .expect("provider with more than 5 models gets a scrollable list");
+    let anthropic_thumb = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic-thumb"))
+        .expect("scrollable provider list has a visible scrollbar thumb");
+    assert_eq!(anthropic_thumb.opacity, 1.0);
+    assert!(
+        anthropic_thumb.rect[2] > 0.0 && anthropic_thumb.rect[3] >= 24.0,
+        "scrollbar thumb is sized visibly at rest: {:?}",
+        anthropic_thumb.rect
+    );
     assert!(
         elements
             .iter()
             .all(|e| e.key.as_deref() != Some("chat-models-scroll-openai")),
         "provider with 5 or fewer models does not get a nested scroll list"
+    );
+    assert!(
+        elements
+            .iter()
+            .all(|e| e.key.as_deref() != Some("chat-models-scroll-openai-scrollbar")),
+        "short provider list has no scrollbar"
+    );
+    assert_eq!(
+        elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("review-claude-thinking"))
+            .unwrap()
+            .role,
+        "slider"
     );
     assert!(
         anthropic_scroll.rect[3] < 6.0 * 45.0,
@@ -865,6 +909,11 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         .iter()
         .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic"))
         .unwrap();
+    let thumb_before = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic-thumb"))
+        .unwrap()
+        .rect[1];
     let seventh_before = elements
         .iter()
         .find(|e| e.key.as_deref() == Some("anthropic/claude-7"))
@@ -873,15 +922,24 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
     let [sx, sy, sw, sh] = anthropic_scroll.rect;
     ui.wheel(sx + sw / 2.0, sy + sh / 2.0, -200.0);
     settle(&mut ui);
-    let seventh_after = ui
-        .elements()
-        .into_iter()
+    let after = ui.elements();
+    let seventh_after = after
+        .iter()
         .find(|e| e.key.as_deref() == Some("anthropic/claude-7"))
+        .unwrap()
+        .rect[1];
+    let thumb_after = after
+        .iter()
+        .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic-thumb"))
         .unwrap()
         .rect[1];
     assert!(
         seventh_after < seventh_before - 10.0,
         "scrolling inside the provider list moves later models into view: {seventh_before} -> {seventh_after}"
+    );
+    assert!(
+        thumb_after > thumb_before + 5.0,
+        "scrolling moves the visible scrollbar thumb down: {thumb_before} -> {thumb_after}"
     );
 
     // Skills and extensions group by source.

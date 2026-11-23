@@ -1,30 +1,29 @@
 use rune::{Color, El, Icon, SurfaceFit, Tx, col, el, icon, row, text};
 use rune_kit::shell::{Sidebar, SidebarRow};
 use rune_kit::{
-    Button, ButtonVariant, Combobox, ComboboxOption, ControlSize, Kit, Placement, SegmentedControl,
-    Select, SelectAppearance, ShortcutRecorder, Switch, TextInput, shortcut_error_message,
+    Button, ButtonVariant, Combobox, ComboboxOption, ControlSize, Kit, SegmentedControl,
+    ShortcutRecorder, Switch, TextInput, shortcut_error_message,
 };
 
-use super::widgets::{self, busy, dot, model_options};
+use super::widgets::{self, ReasoningSlider, busy, dot, model_options};
 use super::{icons, theme};
 use crate::app::{Outcome, QR_SIZE, Section, SettingsPage, State, Update};
 use crate::data::{
     Account, GuiTool, LinkStatus, Notify, Pairing, PromptKind, RelayLink, ResourceKind,
     ReviewModel, SendBehavior, Settings, SignInPrompt, ToolStatus, levels_of,
 };
-use crate::labels::reasoning_name;
 use crate::prefs::{Accent, TextSize};
 
 const MAX_WIDTH: f32 = 640.0;
 const PAD: f32 = 12.0;
 const LABEL: f32 = 170.0;
 const CONTROL: f32 = 300.0;
-/// The reasoning picker next to a model picker; the pair is `CONTROL` wide.
-const THINKING: f32 = 108.0;
+const SLIDER_TRACK: f32 = 152.0;
+const SLIDER_VALUE: f32 = 52.0;
 const GAP: f32 = 8.0;
 const GROUP_LIST_VISIBLE: usize = 5;
 /// Five 44 pt rows with their dividers, plus half of the sixth row so the list
-/// visibly continues: at rest, nothing else shows that it scrolls.
+/// visibly continues alongside its scrollbar.
 const GROUP_LIST_MAX_HEIGHT: f32 = GROUP_LIST_VISIBLE as f32 * 45.0 + 22.0;
 /// The sidecar picker's id for pi's default model, which follows pi's
 /// settings; a model's id has a `/`.
@@ -768,21 +767,22 @@ fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El
     .current(Some(current.unwrap_or(DEFAULT_MODEL)))
     .placeholder(missing_model(s, current))
     .search_placeholder("Search models")
-    .width(CONTROL - THINKING - GAP)
+    .width(CONTROL)
     .disabled(!enabled)
     .on_choose(|s: &mut State, id, _| {
         let model = (id != DEFAULT_MODEL).then(|| id.to_owned());
         s.change_settings(|v| v.gui_model = model);
     })
     .build(k, layer);
-    let pickers = row()
+    let controls = col()
+        .w(CONTROL)
         .gap(GAP)
         .child(picker)
-        .child(gui_thinking(s, page, k, layer, enabled));
-    wide(k, "Browser and computer use", pickers)
+        .child(gui_thinking(s, page, k, enabled));
+    wide(k, "Browser and computer use", controls)
 }
 
-fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>, enabled: bool) -> El {
+fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, enabled: bool) -> El {
     let settings = page.settings.as_ref();
     let model = settings
         .and_then(|v| v.gui_model.as_deref())
@@ -791,55 +791,43 @@ fn gui_thinking(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>, en
         (Some(models), Some(model)) => levels_of(models, model),
         _ => &[],
     };
-    let options = reasoning_options(levels);
     // The extension's default, when the setting is unset.
     let current = settings
         .and_then(|v| v.gui_thinking.as_deref())
         .unwrap_or("medium");
     let current = levels.iter().any(|l| l == current).then_some(current);
     let disabled = !enabled || levels.len() < 2;
-    let label = "Browser and computer use reasoning";
-    let trigger = reasoning_trigger(k, "gui-thinking", label, current, disabled);
-    Combobox::new(
+    let slider = ReasoningSlider::new(
         "gui-thinking",
-        &page.gui_thinking,
-        &options,
-        |s: &mut State| {
-            &mut s
-                .settings_page_mut()
-                .expect("the picker is on the settings page")
-                .gui_thinking
-        },
+        "Browser and computer use reasoning",
+        levels,
+        current,
+        page.gui_thinking,
+        |s: &mut State| s.settings_page_mut().map(|p| &mut p.gui_thinking),
     )
-    .label(label)
-    .current(current)
-    .trigger(trigger)
-    .placement(Placement::BottomEnd)
-    .width(200.0)
+    .track_width(SLIDER_TRACK)
+    .label_width(SLIDER_VALUE)
     .disabled(disabled)
-    .on_choose(|s: &mut State, level, _| {
+    .on_choose(|s: &mut State, level| {
         let level = level.to_owned();
         s.change_settings(|v| v.gui_thinking = Some(level));
     })
-    .build(k, layer)
+    .build(k);
+    reasoning_row(k, slider, disabled)
 }
 
-fn reasoning_options(levels: &[String]) -> Vec<ComboboxOption> {
-    levels
-        .iter()
-        .map(|level| ComboboxOption::new(level.clone(), reasoning_name(level)))
-        .collect()
-}
-
-fn reasoning_trigger(k: &Kit, key: &str, label: &str, current: Option<&str>, disabled: bool) -> El {
-    // Keep the field narrow without shrinking Rune's 200-point popover.
-    Select::new::<&str>(format!("{key}-value"), &[])
-        .current(current.map(reasoning_name).as_deref())
-        .label(label)
-        .appearance(SelectAppearance::Field)
-        .width(THINKING)
-        .disabled(disabled)
-        .trigger(k)
+fn reasoning_row(k: &Kit, slider: El, disabled: bool) -> El {
+    row()
+        .w_full()
+        .center_y()
+        .gap(GAP)
+        .child(text("Reasoning").font(k.ty.text_small).color(if disabled {
+            k.c.text_faint
+        } else {
+            k.c.text_muted
+        }))
+        .child(rune::spacer())
+        .child(slider)
 }
 
 #[derive(Clone, Copy)]
@@ -911,7 +899,7 @@ fn review_model(
     .current(Some(choice.map_or(NO_REVIEWER, |peer| peer.model.as_str())))
     .placeholder(placeholder)
     .search_placeholder("Search models")
-    .width(CONTROL - THINKING - GAP)
+    .width(CONTROL)
     .on_choose(move |s: &mut State, id, _| {
         let choice = if id == NO_REVIEWER {
             None
@@ -937,37 +925,35 @@ fn review_model(
     let current = choice
         .map(|peer| peer.thinking.as_str())
         .filter(|level| levels.iter().any(|supported| supported == level));
-    let disabled = levels.is_empty() || (levels.len() == 1 && current.is_some());
-    let thinking_label = format!("{label} reasoning");
-    let thinking_key = format!("{key}-thinking");
-    let trigger = reasoning_trigger(k, &thinking_key, &thinking_label, current, disabled);
-    let thinking = Combobox::new(
-        thinking_key,
-        &controls.thinking,
-        &reasoning_options(levels),
-        move |s: &mut State| {
-            &mut controls_mut(
-                s.settings_page_mut()
-                    .expect("the picker is on the settings page"),
-            )
-            .thinking
-        },
+    let disabled = levels.len() < 2;
+    let thinking = ReasoningSlider::new(
+        format!("{key}-thinking"),
+        format!("{label} reasoning"),
+        levels,
+        current,
+        controls.thinking,
+        move |s: &mut State| s.settings_page_mut().map(|p| &mut controls_mut(p).thinking),
     )
-    .label(thinking_label)
-    .current(current)
-    .trigger(trigger)
-    .placement(Placement::BottomEnd)
-    .width(200.0)
+    .track_width(SLIDER_TRACK)
+    .label_width(SLIDER_VALUE)
     .disabled(disabled)
-    .on_choose(move |s: &mut State, level, _| {
+    .on_choose(move |s: &mut State, level| {
         s.change_settings(|v| {
             if let Some(peer) = family.choice_mut(v) {
                 peer.thinking = level.to_owned();
             }
         });
     })
-    .build(k, layer);
-    wide(k, label, row().gap(GAP).child(picker).child(thinking))
+    .build(k);
+    wide(
+        k,
+        label,
+        col()
+            .w(CONTROL)
+            .gap(GAP)
+            .child(picker)
+            .child(reasoning_row(k, thinking, disabled)),
+    )
 }
 
 fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
@@ -1503,12 +1489,7 @@ fn grouped_card(k: &Kit, card: GroupCard<'_>) -> El {
     }
     let mut list = divided(k, card.rows);
     if let Some(scroll_key) = card.scroll_key {
-        list = list
-            .key(scroll_key)
-            .max_h(GROUP_LIST_MAX_HEIGHT)
-            .scroll(rune::ScrollSpec {
-                stick_bottom: false,
-            });
+        list = widgets::visible_scroll_bar(k, scroll_key, GROUP_LIST_MAX_HEIGHT, list);
     }
     col()
         .key(card.key)

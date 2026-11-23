@@ -7,7 +7,7 @@ use rune::{Image, Shortcut, ShortcutError, TextEdit, Tx};
 use rune_kit::{ComboboxState, ShortcutRecorderState};
 use serde_json::{Value, json};
 
-use super::{Page, State, Window};
+use super::{Page, SliderState, State, Window};
 use crate::client::Subscription;
 use crate::data::{
     Account, GuiTool, LinkStatus, Pairing, PhoneLink, PromptKind, QuotaWindow, RelayLink, Resource,
@@ -51,7 +51,7 @@ pub struct SettingsPage {
     pub shortcut: ShortcutRecorderState,
     pub model: ComboboxState,
     pub gui_model: ComboboxState,
-    pub gui_thinking: ComboboxState,
+    pub gui_thinking: SliderState,
     pub claude_review: ReviewPickers,
     pub gpt_review: ReviewPickers,
     pub tools: Tools,
@@ -68,7 +68,7 @@ pub struct SettingsPage {
 #[derive(Default)]
 pub struct ReviewPickers {
     pub model: ComboboxState,
-    pub thinking: ComboboxState,
+    pub thinking: SliderState,
 }
 
 /// pi's providers and their sign-in. Listing them starts a pi, so they load when their section
@@ -203,7 +203,7 @@ impl State {
                 shortcut,
                 model: ComboboxState::default(),
                 gui_model: ComboboxState::default(),
-                gui_thinking: ComboboxState::default(),
+                gui_thinking: SliderState::default(),
                 claude_review: ReviewPickers::default(),
                 gpt_review: ReviewPickers::default(),
                 tools: Tools::default(),

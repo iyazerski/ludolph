@@ -1,14 +1,13 @@
 use rune::{El, Image, Key, KeyEvent, SurfaceFit, Tx, auto_grow, col, icon, row, text, text_input};
 use rune_kit::{
-    Button, ButtonVariant, Combobox, ComboboxOption, ControlSize, IconButton, IconButtonVariant,
-    Kit, Placement, PopupItem, PopupList,
+    Button, ButtonVariant, Combobox, ControlSize, IconButton, IconButtonVariant, Kit, Placement,
+    PopupItem, PopupList,
 };
 
 use super::icons;
-use super::widgets::{busy, markdown_spans, model_options};
+use super::widgets::{ReasoningSlider, busy, markdown_spans, model_options};
 use crate::app::{Catalog, ChatPage, Config, LEVELS_KEPT, Pick, Prep, SkillList, State, Voice};
 use crate::data::{Skill, levels_of};
-use crate::labels::reasoning_name;
 use crate::markup;
 use ludolph_prompt::skill_query;
 
@@ -468,52 +467,21 @@ fn model_picker(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El 
     .on_choose(|s: &mut State, id, _| s.pick(Pick::Model(id.to_owned())))
     .build(k, layer);
     let levels = levels_of(models, model.unwrap_or_default());
-    let options: Vec<_> = levels
-        .iter()
-        .map(|level| ComboboxOption::new(level.clone(), reasoning_name(level)))
-        .collect();
     let chosen = reasoning.filter(|level| levels.iter().any(|l| l == level));
-    let reason = Combobox::new(
-        "composer-reasoning",
-        &page.reasoning_picker,
-        &options,
-        |s: &mut State| {
-            &mut s
-                .chat_mut()
-                .expect("the reasoning picker is on a chat")
-                .reasoning_picker
-        },
-    )
-    .label("Reasoning")
-    .current(chosen)
-    .trigger(
-        row()
-            .gap(4.0)
-            .px(4.0)
-            .py(3.0)
-            .radius(7.0)
-            .center_y()
-            .child(
-                text(chosen.map_or("Loading…".to_owned(), reasoning_name))
-                    .font(k.ty.small)
-                    .color(k.c.text_faint)
-                    .group_color(k.c.text_base),
-            )
-            .child(
-                icon(k.glyph.chevron_down, 10.0)
-                    .color(k.c.icon_faint)
-                    .group_color(k.c.text_base),
-            )
-            .hover_group(),
-    )
-    .placement(Placement::TopStart)
-    // Rune's popover has a 200-point minimum; its content must fill that width.
-    .width(200.0)
-    .disabled(!page.can_send())
-    .on_choose(|s: &mut State, level, _| s.pick(Pick::Reasoning(level.to_owned())))
-    .build(k, layer);
-    let mut out = row().gap(2.0).center_y().min_w(0.0).shrink().child(picker);
+    let mut out = row().gap(6.0).center_y().min_w(0.0).shrink().child(picker);
     if levels.len() > 1 {
+        let reason = ReasoningSlider::new(
+            "composer-reasoning",
+            "Reasoning",
+            levels,
+            chosen,
+            page.reasoning_slider,
+            |s: &mut State| s.chat_mut().map(|p| &mut p.reasoning_slider),
+        )
+        .track_width(68.0)
+        .disabled(!page.can_send())
+        .on_choose(|s: &mut State, level| s.pick(Pick::Reasoning(level.to_owned())))
+        .build(k);
         out = out.child(reason);
     }
     if !page.can_send() {
