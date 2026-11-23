@@ -806,11 +806,20 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
             }))
             .unwrap(),
         );
-        s.settings_page_mut().unwrap().settings = Some(test_settings());
+        s.settings_page_mut().unwrap().settings = Some(crate::data::Settings {
+            sidecar_model: Some("openai-codex/gone".into()),
+            ..test_settings()
+        });
     });
     settle(&mut ui);
 
     let elements = ui.elements();
+    assert!(
+        elements
+            .iter()
+            .any(|e| e.text.as_deref() == Some("openai-codex/gone (unavailable)")),
+        "a saved model pi no longer offers stays visible"
+    );
     let anthropic_card = elements
         .iter()
         .find(|e| e.key.as_deref() == Some("chat-models-anthropic"))
