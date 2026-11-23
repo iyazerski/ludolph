@@ -460,11 +460,11 @@ fn model_selector_unifies_model_and_reasoning_in_main_and_quick_windows() {
             .expect("effort card mounts pill reasoning slider");
         assert_eq!(slider.role, "slider");
         let [sx, sy, sw, sh] = slider.rect;
-        // Drag to stop 4 of 5 ("xhigh"): pad = 16, travel = sw - 32.
-        let target_x = sx + 16.0 + (sw - 32.0) * (4.0 / 5.0);
+        // Drag to stop 4 of 5 ("xhigh"): pad = 13, travel = sw - 26.
+        let target_x = sx + 13.0 + (sw - 26.0) * (4.0 / 5.0);
         let mid_y = sy + sh / 2.0;
-        ui.pointer_move(sx + 16.0, mid_y);
-        ui.pointer_down(sx + 16.0, mid_y);
+        ui.pointer_move(sx + 13.0, mid_y);
+        ui.pointer_down(sx + 13.0, mid_y);
         ui.pointer_move(target_x, mid_y);
         settle(&mut ui);
         assert!(

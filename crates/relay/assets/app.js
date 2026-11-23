@@ -726,7 +726,7 @@ function popover(anchor, cls, build) {
   const rect = anchor?.getBoundingClientRect?.();
   if (rect && rect.height > 0 && window.innerHeight > 0) {
     panel.style.bottom = `${Math.max(12, Math.round(window.innerHeight - rect.top + 8))}px`;
-    const width = Math.min(336, window.innerWidth - 24);
+    const width = Math.min(296, window.innerWidth - 24);
     const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
     panel.style.left = `${Math.round(left)}px`;
     panel.style.right = "auto";
@@ -2071,7 +2071,9 @@ function chatView(machine, id, fromList) {
     const idx = Math.max(0, levels.indexOf(current));
     const max = levels.length - 1;
     const frac = i => (max > 0 ? i / max : 0);
-    const dots = h("div", { class: "pill-dots", "aria-hidden": "true" }, levels.map(() => h("span", {})));
+    const fill = h("div", { class: "pill-fill", "aria-hidden": "true" });
+    const dots = h("div", { class: "pill-dots", "aria-hidden": "true" },
+      levels.map((_, i) => h("span", { class: i < idx ? "on" : "" })));
     const thumb = h("div", { class: "pill-thumb", "aria-hidden": "true" });
     const input = h("input", {
       type: "range",
@@ -2083,12 +2085,21 @@ function chatView(machine, id, fromList) {
       "aria-label": "Reasoning",
       "aria-valuetext": reasoningName(levels[idx]),
     });
-    const track = h("div", { class: "pill-track", style: { "--frac": String(frac(idx)) } }, dots, thumb, input);
+    const track = h(
+      "div",
+      { class: "pill-track", style: { "--frac": String(frac(idx)), "--on": idx > 0 ? "1" : "0" } },
+      fill,
+      dots,
+      thumb,
+      input,
+    );
     const sync = i => {
       const name = reasoningName(levels[i]);
       onPreview(name);
       input.setAttribute("aria-valuetext", name);
       track.style.setProperty("--frac", String(frac(i)));
+      track.style.setProperty("--on", i > 0 ? "1" : "0");
+      [...dots.children].forEach((dot, j) => dot.classList.toggle("on", j < i));
     };
     input.addEventListener("input", () => sync(Number(input.value)));
     input.addEventListener("change", () => {

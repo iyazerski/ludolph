@@ -10,14 +10,15 @@ use crate::app::{ModelSelectorState, ModelSelectorStep, State};
 use crate::data::Model;
 use crate::labels::{reasoning_name, short_model};
 
-const POPOVER_WIDTH: f32 = 300.0;
-const CARD_PAD: f32 = 12.0;
-const CARD_RADIUS: f32 = 16.0;
-const PILL_H: f32 = 32.0;
-const PILL_THUMB: f32 = 32.0;
-const PILL_DOT: f32 = 5.0;
-const ROW_H: f32 = 30.0;
-const LIST_MAX_H: f32 = 224.0;
+const POPOVER_WIDTH: f32 = 264.0;
+const CARD_PAD: f32 = 10.0;
+const CARD_RADIUS: f32 = 14.0;
+const PILL_H: f32 = 26.0;
+const PILL_INSET: f32 = 2.0;
+const PILL_THUMB: f32 = PILL_H - 2.0 * PILL_INSET;
+const PILL_DOT: f32 = 4.0;
+const ROW_H: f32 = 26.0;
+const LIST_MAX_H: f32 = 208.0;
 const TRIGGER_H: f32 = 28.0;
 
 type SelectorAccess = Rc<dyn Fn(&mut State) -> Option<&mut ModelSelectorState>>;
@@ -208,7 +209,7 @@ impl<'a> ModelSelector<'a> {
         let effort_label = active.map(|i| reasoning_name(&self.reasoning_levels[i]));
         let open = self.state.open && !self.disabled;
         let anchor_key = format!("{}-anchor", self.key);
-        let muted_trigger = self.current_model.is_none();
+        let muted_trigger = self.mark_model.is_none();
 
         let mut trigger_content = row().gap(6.0).center_y().min_w(0.0);
         if self.trigger_width.is_some() {
@@ -267,7 +268,7 @@ impl<'a> ModelSelector<'a> {
             .child(trigger_content)
             .child(
                 icon(k.glyph.chevron_down, 11.0)
-                    .color(k.c.icon_faint)
+                    .color(k.c.icon_muted)
                     .group_color(k.c.text_base),
             );
         if let Some(w) = self.trigger_width {
@@ -362,17 +363,17 @@ impl<'a> ModelSelector<'a> {
             .role("button")
             .label(format!("Change model: {model_label}"))
             .w_full()
-            .h(32.0)
-            .px(6.0)
-            .gap(8.0)
-            .radius(9.0)
+            .h(26.0)
+            .px(4.0)
+            .gap(6.0)
+            .radius(7.0)
             .center_y()
             .hover(k.c.hover)
             .hover_group()
             .focus_ring(2.0, 1.0, k.c.border_focus);
         if let Some(mark_id) = self.mark_model {
             header = header.child(
-                icon(icons::mark(mark_id), 15.0)
+                icon(icons::mark(mark_id), 13.0)
                     .color(k.c.icon_muted)
                     .group_color(k.c.text_base),
             );
@@ -383,27 +384,27 @@ impl<'a> ModelSelector<'a> {
                 .min_w(0.0)
                 .center_y()
                 .justify_center()
-                .gap(6.0)
+                .gap(5.0)
                 .child(
                     text(model_label)
-                        .font(k.ty.body_medium)
+                        .font(k.ty.text_xsmall_medium)
                         .color(k.c.text_base)
                         .truncate(),
                 )
                 .child(
                     text(effort_label.clone())
                         .key(format!("{}-effort", self.key))
-                        .font(k.ty.body)
+                        .font(k.ty.text_xsmall)
                         .color(k.c.text_muted),
                 )
                 .child(
-                    icon(&icons::CHEV_RIGHT, 13.0)
+                    icon(&icons::CHEV_RIGHT, 11.0)
                         .color(k.c.icon_muted)
                         .group_color(k.c.text_base),
                 ),
         );
         if self.mark_model.is_some() {
-            header = header.child(el().size(15.0, 15.0).a11y_hidden());
+            header = header.child(el().size(13.0, 13.0).a11y_hidden());
         }
         let header = header.on_press_tx(move |s: &mut State, tx: &mut Tx| {
             if let Some(st) = access_models(s) {
@@ -421,7 +422,7 @@ impl<'a> ModelSelector<'a> {
             .label(self.label.clone())
             .w(self.popover_width)
             .padding(CARD_PAD)
-            .gap(12.0)
+            .gap(8.0)
             .child(header)
             .child(slider)
     }
@@ -434,14 +435,15 @@ impl<'a> ModelSelector<'a> {
         display: String,
     ) -> El {
         let count = self.reasoning_levels.len();
-        let track_w = (self.popover_width - 2.0 * CARD_PAD).max(PILL_THUMB);
-        let pad = PILL_THUMB / 2.0;
-        let travel = (track_w - PILL_THUMB).max(1.0);
+        let track_w = (self.popover_width - 2.0 * CARD_PAD).max(PILL_H);
+        let pad = PILL_H / 2.0;
+        let travel = (track_w - PILL_H).max(1.0);
         let frac = if count > 1 {
             active.map_or(0.0, |i| i as f32 / (count - 1) as f32)
         } else {
             0.0
         };
+        let has_fill = active.is_some_and(|i| i > 0);
 
         let mut track = el()
             .key(format!("{}-reasoning", self.key))
@@ -458,17 +460,42 @@ impl<'a> ModelSelector<'a> {
                 count.saturating_sub(1) as f64,
             )
             .range_step(1.0)
-            .focus_ring(2.0, 1.0, k.c.border_focus);
+            .focus_ring(2.0, 1.0, k.c.border_focus)
+            .child(
+                el().key("fill")
+                    .absolute(0.0, 0.0)
+                    .size(
+                        if has_fill {
+                            PILL_H + frac * travel
+                        } else {
+                            PILL_H
+                        },
+                        PILL_H,
+                    )
+                    .radius(PILL_H / 2.0)
+                    .fill(if has_fill {
+                        k.c.bg_accent
+                    } else {
+                        Color::TRANSPARENT
+                    })
+                    .motion(k.motion.control)
+                    .a11y_hidden(),
+            );
 
         if count > 1 {
             for i in 0..count {
                 let cx = pad + (i as f32 / (count - 1) as f32) * travel;
+                let filled = active.is_some_and(|a| i < a);
                 track = track.child(
                     el().key(format!("stop-{i}"))
                         .absolute(cx - PILL_DOT / 2.0, (PILL_H - PILL_DOT) / 2.0)
                         .size(PILL_DOT, PILL_DOT)
                         .radius(PILL_DOT / 2.0)
-                        .fill(k.c.text_faint.alpha(0.65))
+                        .fill(if filled {
+                            k.c.knob_on.alpha(0.75)
+                        } else {
+                            k.c.text_muted.alpha(0.65)
+                        })
                         .a11y_hidden(),
                 );
             }
@@ -478,7 +505,7 @@ impl<'a> ModelSelector<'a> {
             let knob = el()
                 .key("thumb")
                 .size(PILL_THUMB, PILL_THUMB)
-                .absolute(frac * travel, (PILL_H - PILL_THUMB) / 2.0)
+                .absolute(PILL_INSET + frac * travel, PILL_INSET)
                 .radius(PILL_THUMB / 2.0)
                 .fill(k.c.knob_on);
             track = track.child(
@@ -567,7 +594,7 @@ impl<'a> ModelSelector<'a> {
         let mut search = TextInput::new(&self.state.search)
             .plain()
             .leading_icon(k.glyph.search)
-            .height(36.0)
+            .height(30.0)
             .width(None)
             .placeholder("Search models")
             .label(format!("Search {}", self.label))
@@ -633,11 +660,12 @@ impl<'a> ModelSelector<'a> {
             } else {
                 "No matching models".to_owned()
             };
-            col()
-                .w_full()
-                .px(8.0)
-                .py(10.0)
-                .child(text(message).font(k.ty.ui).color(k.c.text_muted).wrap())
+            col().w_full().px(8.0).py(8.0).child(
+                text(message)
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_muted)
+                    .wrap(),
+            )
         } else {
             let rows = choices.iter().enumerate().map(|(pos, &orig)| {
                 let option = &options[orig];
@@ -663,11 +691,11 @@ impl<'a> ModelSelector<'a> {
                         Color::TRANSPARENT
                     });
                 if let Some(ref mark_id) = option.mark_id {
-                    line = line.child(icon(icons::mark(mark_id), 14.0).color(k.c.icon_muted));
+                    line = line.child(icon(icons::mark(mark_id), 13.0).color(k.c.icon_muted));
                 }
                 let mut labels = row().grow(1.0).min_w(0.0).gap(6.0).center_y().child(
                     text(&option.label)
-                        .font(k.ty.ui)
+                        .font(k.ty.text_xsmall)
                         .color(k.c.text_base)
                         .truncate(),
                 );
@@ -680,7 +708,7 @@ impl<'a> ModelSelector<'a> {
                     );
                 }
                 line = line.child(labels).child(
-                    icon(k.glyph.check_small, 14.0)
+                    icon(k.glyph.check_small, 12.0)
                         .color(k.c.icon_base)
                         .opacity(if is_selected { 1.0 } else { 0.0 }),
                 );
@@ -884,8 +912,8 @@ fn pill_index(x: f32, width: f32, count: usize) -> usize {
     if count <= 1 {
         return 0;
     }
-    let pad = PILL_THUMB / 2.0;
-    let travel = (width - PILL_THUMB).max(1.0);
+    let pad = PILL_H / 2.0;
+    let travel = (width - PILL_H).max(1.0);
     let frac = ((x - pad) / travel).clamp(0.0, 1.0);
     (frac * (count - 1) as f32).round() as usize
 }
