@@ -660,6 +660,7 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
     })
     .label("Sidecar model")
     .current(Some(current.unwrap_or(DEFAULT_MODEL)))
+    .placeholder(missing_model(s, current))
     .search_placeholder("Search models")
     .width(CONTROL)
     .on_choose(|s: &mut State, id, _| {
@@ -672,6 +673,15 @@ fn sidecar(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El {
         k,
         "Names chats and cleans up dictation.",
     )
+}
+
+/// What a picker shows when its saved model isn't among the options, e.g. after a sign-out.
+fn missing_model(s: &State, model: Option<&str>) -> String {
+    match (model, s.catalog.ready()) {
+        (None, _) => String::new(),
+        (Some(model), Some(_)) => format!("{model} (unavailable)"),
+        (Some(model), None) => model.to_owned(),
+    }
 }
 
 fn chat_models(s: &State, page: &SettingsPage, k: &Kit) -> Vec<El> {
@@ -756,6 +766,7 @@ fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El
     })
     .label("Browser and computer use model")
     .current(Some(current.unwrap_or(DEFAULT_MODEL)))
+    .placeholder(missing_model(s, current))
     .search_placeholder("Search models")
     .width(CONTROL - THINKING - GAP)
     .disabled(!enabled)
@@ -888,13 +899,7 @@ fn review_model(
             .iter()
             .filter(|m| family.matches(&m.id) && !m.reasoning_levels.is_empty()),
     ));
-    let placeholder = choice.map_or_else(String::new, |peer| {
-        if s.catalog.ready().is_some() {
-            format!("{} (unavailable)", peer.model)
-        } else {
-            peer.model.clone()
-        }
-    });
+    let placeholder = missing_model(s, choice.map(|peer| peer.model.as_str()));
     let picker = Combobox::new(key, &controls.model, &options, move |s: &mut State| {
         &mut controls_mut(
             s.settings_page_mut()
