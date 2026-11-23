@@ -366,8 +366,9 @@ async fn a_chat_runs_stops_when_idle_and_resumes() {
     assert_eq!(
         log[0],
         format!(
-            "start --mode rpc --session-id {id} --extension {} --extension {}",
+            "start --mode rpc --session-id {id} --extension {} --extension {} --extension {}",
             extensions.join("background-jobs.js").display(),
+            extensions.join("quota.js").display(),
             extensions.join("routing.js").display()
         )
     );
@@ -546,6 +547,27 @@ async fn an_extensions_dialog_waits_for_an_answer() {
     until(&engine, |c| c[0].status == Status::AwaitingInput).await;
     assert_eq!(last_reply(&engine, &id).await, "You picked nothing.");
     assert_eq!(engine.question(&id), None);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chat_details_show_the_providers_quota() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path(), Duration::from_secs(60)).await;
+    let id = engine.create(dir.path()).await.unwrap();
+
+    engine.send(&id, "quota", Vec::new()).await.unwrap();
+    last_reply(&engine, &id).await;
+    let details = tool(&engine, "chat_details", json!({"chat": id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        details["quota"],
+        json!([
+            {"label": "5h", "used": 0.0, "resetsAt": null},
+            {"label": "Week", "used": 0.25, "resetsAt": 4102444800000_i64},
+        ])
+    );
     engine.shutdown().await.unwrap();
 }
 
@@ -1363,6 +1385,7 @@ async fn chats_use_the_model_and_thinking_level_picked_for_them() {
         details["spent"], info["spent"],
         "details use the same session-wide totals"
     );
+    assert_eq!(details["contextUsage"], info["contextUsage"]);
     all_exited(dir.path()).await;
 
     let models = tool(&engine, "list_models", json!({})).await.unwrap();

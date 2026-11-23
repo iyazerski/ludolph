@@ -24,6 +24,15 @@ Ludolph uses pi's RPC mode (`docs/rpc.md`, `docs/rpc-extension-ui.md`), its sess
 - An extension command sent as an RPC `prompt` runs before pi answers, so its `notify` comes first.
 - `ctx.modelRegistry` lists providers only through their models, so a provider whose catalog is empty until sign-in (`typesafe` in 1.5.2) is missing. `ModelRuntime.create()`, which `pi auth` uses, lists every provider, so the account list and sign-in use it. `provider.auth` tells account sign-in (`oauth`) from API key login (`apiKey.login`).
 - An RPC pi reads its input while a command runs, so a long command can wait on `ctx.ui.input` and `ctx.ui.select` dialogs.
+- `ctx.ui.setStatus` reaches the client as a fire-and-forget `extension_ui_request` with `statusKey` and `statusText`. The quota extension reports through it, so its readings arrive whenever they finish, not with any event.
+
+## Subscription quota
+
+The Codex and Antigravity sources aren't documented, so either may change without notice. Gateways have no fixed provider id, so the extension finds them by name in the provider id or the base URL's host.
+
+- `openai-codex`: `GET {baseUrl}/wham/usage`, the endpoint behind Codex CLI's `/status`, with the access token and the `chatgpt-account-id` from its claims. `rate_limit` has the 5h and weekly windows, or is `null` on an enterprise plan. `spend_control.individual_limit` has a workspace budget in dollars.
+- `antigravity-acp`: the `antigravity-acp:quota:request` event of `pi-antigravity-acp-provider` (0.1.19 or later). It parses agy's `/usage`, which spends no quota. Gemini models share a "Gemini Models" group, and some also have their own, such as "Gemini 4 Argon".
+- Bifrost: `GET /api/governance/virtual-keys/quota` with the virtual key. It's the one governance route a virtual key may call. Its `budgets` have no reset time, so the extension adds `reset_duration` to `last_reset`.
 
 ## Sign-in
 

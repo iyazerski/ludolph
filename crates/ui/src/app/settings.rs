@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{TimeDelta, Utc};
 use qrcode::QrCode;
 use qrcode::render::svg;
@@ -8,7 +10,7 @@ use serde_json::{Value, json};
 use super::{Page, State, Window};
 use crate::client::Subscription;
 use crate::data::{
-    Account, GuiTool, LinkStatus, Pairing, PhoneLink, PromptKind, RelayLink, Resource,
+    Account, GuiTool, LinkStatus, Pairing, PhoneLink, PromptKind, QuotaWindow, RelayLink, Resource,
     ResourceKind, Settings, Setup, SignIn, ToolStatus, ToolStatuses,
 };
 use crate::update;
@@ -79,6 +81,8 @@ pub struct Accounts {
     pub sign_in: SignIn,
     pub answer: TextEdit,
     pub signing_out: Option<String>,
+    /// Each signed-in account's limits by provider, read after the list since it's slower.
+    pub quota: HashMap<String, Vec<QuotaWindow>>,
     /// The engine's sign-in this page shows; other states are late replies about earlier ones.
     attempt: Option<u64>,
     /// The start sent last, while its attempt isn't known yet. A reply for another start is late.
@@ -244,6 +248,18 @@ impl State {
             "list_accounts",
             json!({}),
             |s, result: Result<Vec<Account>, String>, _| s.show_accounts(result),
+        );
+        self.api.call(
+            "account_quota",
+            json!({}),
+            |s, result: Result<HashMap<String, Vec<QuotaWindow>>, String>, _| match result {
+                Ok(quota) => {
+                    if let Some(page) = s.settings_page_mut() {
+                        page.accounts.quota = quota;
+                    }
+                }
+                Err(e) => eprintln!("reading the accounts' quota: {e}"),
+            },
         );
     }
 

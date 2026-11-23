@@ -94,6 +94,67 @@ for (const fails of [false, true]) {
 }
 
 
+test("chat details show the context used and the provider's usage limits", async () => {
+  const window = new Window({ url: "https://relay.example/#/m/mac/chat/test/details" });
+  const { document } = window;
+  document.body.innerHTML = '<div id="app"></div><div id="toasts"></div>';
+  const context = createContext({
+    window, document, location: window.location, history: window.history,
+    navigator: window.navigator, localStorage: window.localStorage,
+    Event: window.Event, ResizeObserver: window.ResizeObserver,
+    matchMedia: window.matchMedia.bind(window),
+    setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
+    setInterval: () => 0, clearInterval() {},
+    crypto, TextEncoder, TextDecoder, btoa, atob, AbortSignal, AbortController,
+    PROVIDER_MARKS: {},
+  });
+  runInContext(sealing, context);
+  const seal = runInContext("Seal", context);
+  const link = await seal.derive("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
+  seal.links = () => new Promise(() => {});
+  const details = {
+    compactions: 0, pullRequests: [], spent: { tokens: 2_000_000, cost: 0.5 }, changes: null,
+    contextUsage: { tokens: 1500, window: 10000 },
+    quota: [
+      { label: "5h", used: 0.12, resetsAt: Date.now() + 3 * 3600_000 + 60_000 },
+      { label: "Week", used: 0.8, resetsAt: Date.now() + 5 * 86400_000, spent: 160, limit: 200 },
+    ],
+  };
+  context.fetch = async (path, options) => {
+    if (path.startsWith("/api/watch/")) return new Promise(() => {});
+    const { data } = JSON.parse(options.body);
+    const request = JSON.parse(await seal.open(link.key, seal.aad.call(), data));
+    const nonce = Uint8Array.from(atob(data.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)).slice(1, 13);
+    const sealed = await seal.seal(link.key, seal.aad.reply(nonce), JSON.stringify({ ok: request.tool === "chat_details" ? details : {} }));
+    return Response.json({ sealed: sealed.data });
+  };
+  try {
+    runInContext(app, context);
+    context.link = link;
+    const drawn = new Promise(resolve => {
+      const observer = new window.MutationObserver(() => {
+        if (document.querySelector(".limit")) {
+          observer.disconnect();
+          resolve();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+    runInContext("links.set('mac', link); store.machines = [{id: 'mac', name: 'Mac', status: {online: true}}]; route()", context);
+    await drawn;
+    const limits = [...document.querySelectorAll(".limit")];
+    expect(limits.map(l => [...l.querySelectorAll(".limit-head span")].map(s => s.textContent))).toEqual([["5h", "12% used"], ["Week", "$160.00 of $200.00"]]);
+    expect(limits[0].querySelector("p").textContent).toBe("Resets in 3h");
+    expect(limits[1].querySelector("p").textContent).toStartWith("Resets ");
+    expect(limits[1].querySelector(".meter > div").style.width).toBe("80%");
+    expect(limits[1].querySelector(".meter > div").style.background).toBe("var(--warning)");
+    expect([...document.querySelectorAll(".chat-details p")].at(-1).textContent).toBe("0 compactions · 1.5k/10k context · $0.50");
+  } finally {
+    runInContext("current?.destroy()", context);
+    await window.happyDOM.close();
+  }
+});
+
 test("user and agent skill mentions share styling without becoming links on the phone", async () => {
   const window = new Window({ url: "https://relay.example/#/m/mac/chat/test" });
   const { document } = window;

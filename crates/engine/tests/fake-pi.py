@@ -271,6 +271,13 @@ def prompt(command):
     if command["message"] == "crash":
         log("crash")
         os._exit(1)
+    if command["message"] == "quota":
+        # Like Ludolph's quota extension, for this provider and another.
+        for provider, used in (("other", 0.9), ("fake", 0.25)):
+            windows = [{"label": "5h", "used": 0.5, "resetsAt": 1000},
+                       {"label": "Week", "used": used, "resetsAt": 4102444800000}]
+            emit({"type": "extension_ui_request", "id": f"q-{provider}", "method": "setStatus",
+                  "statusKey": "ludolph-quota", "statusText": json.dumps({"provider": provider, "windows": windows})})
     if command["message"] in ("ask", "ask-briefly"):
         ask(command["message"] == "ask-briefly")
         return

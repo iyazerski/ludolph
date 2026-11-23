@@ -575,6 +575,12 @@ a { color: inherit; text-decoration: none; }
 .chat-details p { font-size: 13.5px; color: var(--secondary); overflow-wrap: anywhere; }
 .chat-details .pr-link { display: flex; align-items: center; gap: 8px; padding: 8px 0; overflow-wrap: anywhere; }
 .chat-details .pr-link .i { flex: none; }
+.chat-details .limit + .limit { margin-top: 14px; }
+.limit-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13.5px; margin-bottom: 6px; }
+.limit-head span:last-child { color: var(--secondary); }
+.meter { height: 4px; border-radius: 2px; background: var(--rail); overflow: hidden; }
+.meter > div { height: 100%; border-radius: 2px; }
+.chat-details .limit p { font-size: 12px; color: var(--tertiary); margin-top: 6px; }
 .dempty { padding: 24px 18px; text-align: center; color: var(--secondary); font-size: 14.5px; }
 .dfile { border-bottom: 1px solid var(--rail); }
 .dfile summary {

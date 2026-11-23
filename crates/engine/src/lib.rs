@@ -20,6 +20,7 @@ pub mod pi_setup;
 #[cfg_attr(target_os = "macos", path = "power/iokit.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "power/none.rs")]
 pub mod power;
+pub mod quota;
 pub mod relay;
 pub mod repo;
 pub mod runtime;

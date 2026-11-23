@@ -9,7 +9,13 @@ export function assistant(calls: ToolCall[]): AssistantMessage {
 	return { role: "assistant", content: calls, api: "openai-completions", provider: "test", model: "gui", usage, stopReason: "toolUse", timestamp: 0 };
 }
 
-export async function withTestSession(factories: ExtensionFactory[], run: (session: AgentSession, root: string) => Promise<void>): Promise<void> {
+export type ProviderInput = Parameters<ModelRuntime["registerProvider"]>[1];
+
+const testProvider: ProviderInput = { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "test",
+	models: [{ id: "gui", name: "GUI", input: ["text", "image"], reasoning: true, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000 }] };
+
+export async function withTestSession(factories: ExtensionFactory[], run: (session: AgentSession, root: string) => Promise<void>,
+	providers: Record<string, ProviderInput> = { test: testProvider }): Promise<void> {
 	const root = await mkdtemp(join("/tmp", "pi-setup-test-"));
 	let session: AgentSession | undefined;
 	try {
@@ -20,8 +26,7 @@ export async function withTestSession(factories: ExtensionFactory[], run: (sessi
 		await loader.reload();
 		if (loader.getExtensions().errors.length) throw new Error(JSON.stringify(loader.getExtensions().errors));
 		const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
-		runtime.registerProvider("test", { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "test",
-			models: [{ id: "gui", name: "GUI", input: ["text", "image"], reasoning: true, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000 }] });
+		for (const [id, config] of Object.entries(providers)) runtime.registerProvider(id, config);
 		({ session } = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime,
 			resourceLoader: loader, settingsManager, sessionManager: SessionManager.inMemory(root) }));
 		await run(session, root);
