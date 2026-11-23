@@ -47,6 +47,3 @@ if HOME="$work/home" sh scripts/wsl-install.sh "$work/assets" 999.0.0; then
   exit 1
 fi
 test "$("$work/home/.local/bin/ludolph" --version)" = "$version"
-# The Windows runner uses the real Linux payload to exercise installer packaging.
-mkdir -p target/wsl
-cp "$work/assets/ludolph-engine-linux-$(uname -m).tar.gz" target/wsl/
