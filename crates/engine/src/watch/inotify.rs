@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify::event::CreateKind;
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use notify::{Config, EventKind, EventKindMask, RecommendedWatcher, RecursiveMode, Watcher as _};
 use tokio::sync::Notify;
 
 use super::Changes;
@@ -26,14 +26,10 @@ impl Watcher {
     pub fn start(dir: &Path, latency: Duration) -> Result<Self> {
         let shared = Arc::new(Shared::default());
         let events = shared.clone();
-        let mut inotify =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                // The engine's own reads open files; they change nothing.
-                if let Ok(event) = &event
-                    && event.kind.is_access()
-                {
-                    return;
-                }
+        // Exclude access events at the kernel level so the engine's own reads never wake inotify.
+        let config = Config::default().with_event_kinds(EventKindMask::CORE);
+        let mut inotify = RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
                 let mut pending = events.pending.lock().expect("lock poisoned");
                 match event {
                     // Files written into a new folder before its watch begins send no events.
@@ -51,8 +47,10 @@ impl Watcher {
                 }
                 drop(pending);
                 events.notify.notify_one();
-            })
-            .context("starting inotify")?;
+            },
+            config,
+        )
+        .context("starting inotify")?;
         inotify
             .watch(dir, RecursiveMode::Recursive)
             .with_context(|| format!("watching {}", dir.display()))?;

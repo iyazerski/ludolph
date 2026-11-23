@@ -861,13 +861,16 @@ fn footer(page: &Existing, k: &Kit, m: &Message) -> El {
                 .variant(IconButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
                 .label(if copied { "Copied" } else { "Copy" })
-                .help(if m.role == Role::User {
+                .help(if copied {
+                    "Copied"
+                } else if m.role == Role::User {
                     "Copy the message"
                 } else {
                     "Copy the answer"
                 })
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_message(&id, tx))
-                .build(k),
+                .build(k)
+                .help_open(copied),
         );
     }
     if let Some(at) = chrono::DateTime::from_timestamp_millis(m.created_at) {

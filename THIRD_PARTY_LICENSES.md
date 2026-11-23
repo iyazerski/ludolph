@@ -1837,8 +1837,8 @@ Used by:
 ## Apache License 2.0
 
 Used by:
-- zerocopy-derive 0.8.63
-- zerocopy 0.8.63
+- zerocopy-derive 0.8.64
+- zerocopy 0.8.64
 
 ```text
                                  Apache License
@@ -2684,13 +2684,13 @@ Used by:
 ## Apache License 2.0
 
 Used by:
-- clap 4.6.8
+- clap 4.6.9
 - clap_builder 4.6.7
-- clap_derive 4.6.8
+- clap_derive 4.6.9
 - clap_lex 1.1.2
 - toml_datetime 1.1.3+spec-1.1.0
-- toml_edit 0.25.19+spec-1.1.0
-- toml_parser 1.1.5+spec-1.1.0
+- toml_edit 0.25.20+spec-1.1.0
+- toml_parser 1.1.6+spec-1.1.0
 
 ```text
                                  Apache License
@@ -4158,7 +4158,7 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- cookie 0.18.2
+- cookie 0.18.3
 
 ```text
                               Apache License
@@ -6511,14 +6511,14 @@ Used by:
 - fixedbitset 0.5.9
 - flate2 1.1.11
 - fontique 0.12.0
-- form_urlencoded 1.2.2
+- form_urlencoded 1.2.3
 - futures-lite 2.6.1
 - gethostname 1.1.0
 - group 0.13.0
 - group 0.14.0
 - hashbrown 0.15.5
 - hashbrown 0.16.1
-- hashbrown 0.17.1
+- hashbrown 0.17.2
 - heck 0.5.0
 - httparse 1.10.1
 - hyper-rustls 0.27.10
@@ -6526,7 +6526,7 @@ Used by:
 - idna_adapter 1.2.2
 - indexmap 2.14.2
 - lazy_static 1.5.1
-- linkify 0.11.0
+- linkify 0.12.0
 - linux-raw-sys 0.12.1
 - linux-raw-sys 0.4.15
 - lock_api 0.4.14
@@ -6567,8 +6567,8 @@ Used by:
 - security-framework-sys 2.17.0
 - security-framework 3.7.0
 - serde_cbor_2 0.13.0
-- serde_with 3.24.0
-- serde_with_macros 3.24.0
+- serde_with 3.25.0
+- serde_with_macros 3.25.0
 - signal-hook-registry 1.4.8
 - simplecss 0.2.2
 - smallvec 1.16.6
@@ -6584,7 +6584,7 @@ Used by:
 - unicase 2.10.0
 - unicode-segmentation 1.13.3
 - unicode-width 0.2.3
-- url 2.5.8
+- url 2.5.9
 - uuid 1.29.3
 - wl-clipboard-rs 0.9.5
 - x509-parser 0.18.1
@@ -7509,7 +7509,7 @@ Used by:
 - universal-hash 0.5.1
 - universal-hash 0.6.1
 - wnaf 0.14.1
-- x509-cert 0.3.0
+- x509-cert 0.3.1
 
 ```text
                               Apache License
@@ -10201,7 +10201,7 @@ Used by:
 - accesskit_consumer 0.39.2
 - accesskit_unix 0.24.1
 - allocator-api2 0.2.21
-- anyhow 1.0.104
+- anyhow 1.0.105
 - arboard 3.7.0
 - asn1-rs-impl 0.2.0
 - async-trait 0.1.92
@@ -10240,7 +10240,7 @@ Used by:
 - objc2-metal 0.3.2
 - objc2-quartz-core 0.3.2
 - objc2-speech 0.3.2
-- pin-project-lite 0.2.17
+- pin-project-lite 0.2.18
 - portable-atomic 1.15.0
 - proc-macro2 1.0.107
 - profiling 1.0.18
@@ -10750,7 +10750,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## BSD 3-Clause "New" or "Revised" License
 
 Used by:
-- tiny-skia-path 0.11.4
+- rune-tiny-skia-path 0.11.4
 - tiny-skia-path 0.11.4
 - tiny-skia 0.11.4
 
@@ -10865,6 +10865,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 - error-code 3.4.0
+- xxhash-rust 0.8.21
 
 ```text
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -10912,7 +10913,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## Creative Commons Zero v1.0 Universal
 
 Used by:
-- notify 8.2.2
+- notify 9.0.0
 
 ```text
 Creative Commons CC0 1.0 Universal
@@ -12799,11 +12800,8 @@ THE SOFTWARE.
 
 Used by:
 - zbus 5.19.0
-- zbus 6.3.0
 - zbus_macros 5.19.0
-- zbus_macros 6.3.0
 - zbus_names 4.3.5
-- zbus_utils 6.1.0
 - zbus_xml 5.2.1
 - zvariant 5.15.1
 - zvariant_derive 5.15.1
@@ -12840,7 +12838,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- zcheapstr 1.2.0
+- zcheapstr 1.4.0
 
 ```text
 Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors
@@ -12868,46 +12866,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
-```
-
-## MIT License
-
-Used by:
-- zruntime 0.2.3
-
-```text
-Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-The broadcast channel (`src/broadcast.rs`), its tests (`src/tests/broadcast.rs`) and its
-benchmark (`benches/broadcast.rs`) come from the async-broadcast crate
-(https://github.com/smol-rs/async-broadcast), under the license above and this notice:
-
-Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan
 
 ```
 
@@ -13679,7 +13637,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Used by:
 - byteorder-lite 0.1.0
 - memchr 2.8.3
-- walkdir 2.5.0
+- walkdir 2.5.1
 
 ```text
 The MIT License (MIT)

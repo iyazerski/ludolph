@@ -107,8 +107,10 @@ fn card(k: &Kit, key: &str, language: Option<&str>, source: &str, wrap: bool, co
                 .variant(IconButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
                 .label(if copied { "Copied" } else { "Copy code" })
+                .help(if copied { "Copied" } else { "Copy code" })
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| s.copy_text(&copy_key, &copy, tx))
-                .build(k),
+                .build(k)
+                .help_open(copied),
         );
     let theme = COLORS
         .iter()
@@ -116,8 +118,12 @@ fn card(k: &Kit, key: &str, language: Option<&str>, source: &str, wrap: bool, co
             theme.with(kind, color)
         });
     let spans = theme.spans(&syntax::highlight(language, shown), 0);
-    let mut body = text(shown)
+    // Keep wrapping flags and the scroll -> pad -> body path in both states so toggling wrap
+    // rebreaks already-shaped lines in place and keeps the body's NodeId (preserving selection).
+    let body = text(shown)
         .by_line()
+        .wrap_anywhere()
+        .wrap_greedy()
         .spans(spans)
         .font(TextStyle {
             size: 13.0,
@@ -127,8 +133,10 @@ fn card(k: &Kit, key: &str, language: Option<&str>, source: &str, wrap: bool, co
         .color(k.c.text_base)
         .selectable(true);
     let content = if wrap {
-        body = body.wrap_anywhere().w_full();
-        col().w_full().px(16.0).pb(14.0).child(body)
+        col()
+            .key("scroll")
+            .w_full()
+            .child(col().w_full().px(16.0).pb(14.0).child(body.w_full()))
     } else {
         col()
             .key("scroll")
