@@ -89,16 +89,12 @@ pub struct Frame {
     pub messages: Vec<Message>,
 }
 
-/// A subscription window of the chat's provider.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaWindow {
     pub label: String,
-    /// Share used, 0 to 1.
     pub used: f64,
-    /// Epoch milliseconds.
     pub resets_at: Option<i64>,
-    /// Dollars, for a budget.
     pub spent: Option<f64>,
     pub limit: Option<f64>,
 }
@@ -489,7 +485,6 @@ mod tests {
     }
 }
 
-/// A provider pi can sign in to, or already has credentials for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
@@ -502,13 +497,11 @@ pub struct Account {
     pub label: Option<String>,
 }
 
-/// The engine's run of `pi auth login`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignIn {
     pub attempt: u64,
     pub provider: Option<String>,
-    /// The sign-in page, which the app opens in the browser.
     pub browser: Option<String>,
     pub device_code: Option<DeviceCode>,
     pub prompt: Option<SignInPrompt>,
@@ -524,7 +517,6 @@ pub struct DeviceCode {
     pub open: bool,
 }
 
-/// A question pi asks, in its own words.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SignInPrompt {
     pub id: String,
@@ -550,7 +542,6 @@ pub struct SignInResult {
     pub error: Option<String>,
 }
 
-/// A skill or extension from pi's own setup, and whether pi loads it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Resource {
     pub kind: ResourceKind,

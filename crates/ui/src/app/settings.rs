@@ -392,7 +392,6 @@ impl State {
         }
     }
 
-    /// Answers pi's question with `choice`, or with what the field holds.
     pub fn answer_sign_in(&mut self, choice: Option<String>) {
         let Some(page) = self.settings_page_mut() else {
             return;
@@ -405,7 +404,11 @@ impl State {
         let blank_ok = prompt.kind == PromptKind::Text;
         let value = match choice {
             Some(choice) => choice,
-            None => std::mem::take(&mut page.accounts.answer).text.clone(),
+            None => {
+                let text = std::mem::take(&mut page.accounts.answer.text);
+                page.accounts.answer = TextEdit::default();
+                text
+            }
         };
         if value.trim().is_empty() && !blank_ok {
             return;
@@ -426,7 +429,6 @@ impl State {
         }
     }
 
-    /// Stops a running sign-in, or clears how the last one ended.
     pub fn close_sign_in(&mut self) {
         let Some(page) = self.settings_page_mut() else {
             return;
@@ -494,8 +496,10 @@ impl State {
             tool,
             args,
             move |s, result: Result<Vec<Resource>, String>, _| {
-                if let (Err(e), "set_resource") = (&result, tool) {
-                    s.fail("Couldn't change pi's settings", e.clone());
+                if tool == "set_resource"
+                    && let Err(e) = result
+                {
+                    s.fail("Couldn't change pi's settings", e);
                     return s.resources_call("list_resources", json!({}));
                 }
                 if let Some(page) = s.settings_page_mut() {
@@ -680,22 +684,19 @@ impl State {
             .map(|m| m.id.clone())
             .collect();
         self.change_settings(|v| {
-            let mut picked = if v.chat_models.is_empty() {
-                all.clone()
-            } else {
-                v.chat_models.clone()
-            };
-            match picked.iter().position(|m| m == id) {
+            if v.chat_models.is_empty() {
+                v.chat_models.clone_from(&all);
+            }
+            match v.chat_models.iter().position(|m| m == id) {
                 Some(at) => {
-                    picked.remove(at);
+                    v.chat_models.remove(at);
                 }
-                None => picked.push(id.to_owned()),
+                None => v.chat_models.push(id.to_owned()),
             }
             // Picking every model is the same as picking none, so new models show up too.
-            if all.iter().all(|m| picked.contains(m)) {
-                picked.clear();
+            if all.iter().all(|m| v.chat_models.contains(m)) {
+                v.chat_models.clear();
             }
-            v.chat_models = picked;
         });
     }
 
@@ -770,7 +771,6 @@ impl State {
         }
     }
 
-    /// Install the tool if needed, ask for its permissions or pair it, then turn it on.
     pub fn set_up_gui_tool(&mut self, tool: GuiTool) {
         let Some(page) = self.settings_page_mut() else {
             return;

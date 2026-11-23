@@ -55,7 +55,6 @@ fn distribution_of(path: &str) -> Option<&str> {
     path[prefix.len()..].split('\\').next()
 }
 
-/// Opens a file in its default app.
 #[cfg(not(windows))]
 pub async fn open(path: &str) -> Result<(), String> {
     let opener = if cfg!(target_os = "macos") {
