@@ -24,7 +24,6 @@ export interface ChildOptions {
 }
 
 export interface ChildResult {
-	/** The child's final message, or why it failed. */
 	text: string;
 	failed: boolean;
 	usage: Usage;
@@ -44,7 +43,6 @@ export function resolveModel(ctx: ExtensionContext, requested: string): { id: st
 	return match && { id: `${match.provider}/${match.id}`, images: match.input.includes("image") };
 }
 
-/** Run `pi --mode json -p` with the given arguments and return its final message. */
 export async function runPi(options: ChildOptions): Promise<ChildResult> {
 	const usage = emptyUsage();
 	const messages: Message[] = [];
@@ -101,7 +99,6 @@ export async function runPi(options: ChildOptions): Promise<ChildResult> {
 		});
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk: string) => {
-			// Only the tail is reported, so don't keep more.
 			stderr = (stderr + chunk).slice(-STDERR_TAIL);
 		});
 		child.on("error", reject);
@@ -122,7 +119,6 @@ export async function runPi(options: ChildOptions): Promise<ChildResult> {
 	return { text, failed, usage };
 }
 
-/** Return the command that starts another pi like this one, as the subagent example does. */
 function piInvocation(args: string[]): { command: string; args: string[] } {
 	const script = process.argv[1];
 	// A compiled pi (Bun) has its entry point inside the executable.

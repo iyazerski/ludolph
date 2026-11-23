@@ -31,7 +31,6 @@ const MODEL = process.env.LUDOLPH_GUI_MODEL || undefined;
 const THINKING = THINKING_LEVELS.find((level) => level === process.env.LUDOLPH_GUI_THINKING) ?? "medium";
 const TIMEOUT_MS = 20 * 60_000;
 const SESSION_DIR = path.join(getAgentDir(), "gui-subagent-sessions");
-// How long the subagent waits for its MCP server before the first request.
 const SERVER_WAIT_MS = 15_000;
 
 const REPORT_FORMAT = `The caller sees only your final message. Return a short report:
@@ -53,9 +52,7 @@ interface Role {
 	// `deferred` keeps a rarely used tool out of every request, schema and codemode listing alike,
 	// like the web tools: the gui_subagents prompt section names it instead.
 	exposure: "direct" | "deferred";
-	// A rule for the main agent, added to the gui_subagents prompt section while the tool is reachable.
 	mainRule?: string;
-	// How the child reaches the server's tools.
 	serverExposure: "codemode" | "direct";
 }
 
@@ -115,12 +112,10 @@ const params = Type.Object({
 	thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Per-call reasoning level." })),
 });
 
-/** Return the prefix pi gives the tools of an MCP server. */
 function toolPrefix(server: string): string {
 	return `mcp__${server.replace(/-/g, "_")}__`;
 }
 
-/** Resolve the requested model to an available, image-capable `provider/model`. */
 function guiModel(ctx: ExtensionContext, requested: string): string {
 	const model = resolveModel(ctx, requested);
 	if (!model) throw new Error(`GUI model ${requested} is unavailable. Pick an available model in Ludolph's settings or pass the model argument.`);
@@ -128,7 +123,6 @@ function guiModel(ctx: ExtensionContext, requested: string): string {
 	return model.id;
 }
 
-/** Register the role's MCP server and prompt: this process is a GUI subagent. */
 function setUpSubagent(pi: ExtensionAPI, role: Role): void {
 	pi.registerMcpServer(role.server, { ...role.serverConfig, exposure: role.serverExposure });
 	const prefix = toolPrefix(role.server);
@@ -153,7 +147,6 @@ Call ${role.server} tools only in \`codemode\`: \`tools.${prefix}<name>(args)\`.
 	});
 }
 
-/** Register the delegating tools in the main session. */
 function setUpMain(pi: ExtensionAPI, roles: Record<string, Role>, extensionPath: string): void {
 	for (const [roleName, role] of Object.entries(roles)) {
 		pi.registerTool({
@@ -166,7 +159,6 @@ function setUpMain(pi: ExtensionAPI, roles: Record<string, Role>, extensionPath:
 			executionMode: "sequential",
 
 			async execute(_toolCallId, { task, files, model: requestedModel, thinking }, signal, onUpdate, ctx) {
-				// One child session per main session and role, kept across calls.
 				const sessionId = `${ctx.sessionManager.getSessionId()}-${roleName}`;
 				const requested = requestedModel ?? MODEL;
 				const model = requested ? guiModel(ctx, requested) : undefined;
@@ -179,7 +171,6 @@ function setUpMain(pi: ExtensionAPI, roles: Record<string, Role>, extensionPath:
 					...(model ? ["--model", model] : []),
 					"--thinking",
 					level,
-					// Only this extension, MCP, and codemode: no other tools, skills, or prompt templates.
 					"--no-extensions",
 					"-e",
 					"builtin:mcp",
@@ -224,7 +215,6 @@ function setUpMain(pi: ExtensionAPI, roles: Record<string, Role>, extensionPath:
 					return {
 						content: [{ type: "text", text }],
 						details: undefined,
-						// Count the child's tokens in this session's totals.
 						usage: result.usage,
 						isError: failed,
 					};
@@ -266,6 +256,5 @@ export default function (pi: ExtensionAPI) {
 	}
 	const enabled = process.env.LUDOLPH_GUI_TOOLS?.split(",");
 	const roles = Object.fromEntries(Object.entries(ROLES).filter(([name]) => !enabled || enabled.includes(name)));
-	// Child processes load this same module and pick their role by name.
 	setUpMain(pi, roles, fileURLToPath(import.meta.url));
 }

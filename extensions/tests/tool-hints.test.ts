@@ -128,7 +128,6 @@ test("prefers the job tool over a detached watcher or foreground CI wait", async
 });
 
 test("points symbol searches to the connected language server", async () => {
-	// Stands in for the lspyx MCP server's tools, which pi lists once the server connects.
 	const lspyx = (pi: ExtensionAPI) => pi.registerTool({ name: "mcp__lspyx__explore", label: "explore", description: "",
 		parameters: Type.Object({}), execute: async () => ({ content: [], details: undefined }) });
 	const cases: [string, "lspyx" | "gopls", boolean][] = [

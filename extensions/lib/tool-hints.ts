@@ -36,52 +36,37 @@ const HINTS: Record<HintKind, string> = {
 const CHECKS_BEFORE_PUBLISH = "A failed check would not stop the commit or push in this command. Log each check to a file and save `$?`, then commit or push only after the checks pass, chained with `&&` or in a later call.";
 
 const RUNS_SCRIPT = /\b(python3?|bun\s+-e|node\s+-e)\b/;
-// Writes to stdout or stderr print, so they don't count.
 const WRITES_FROM_SCRIPT = /\bwrite_text\(|(?<!\bsys\.std(out|err))\.write\(|\bopen\([^)]*,\s*["'][wa]|writeFileSync|Bun\.write\(/;
-// A script that reads a file and changes its text edits it, unlike one that only writes new output.
 const READS_FROM_SCRIPT = /\bread_text\(|\.read\(\)|readFileSync|Bun\.file\(/;
 const CHANGES_TEXT = /\.replace\(|\.subn?\(|\.index\(/;
-// `cat > file <<EOF`, `cat <<EOF > file`, `tee file <<EOF`, but not into /dev/null.
 const HEREDOC_WRITE = /\b(cat\s*>>?\s*(?!\/dev\/)\S+\s*<<|cat\s+<<-?\s*\S+\s*>>?\s*(?!\/dev\/)\S|tee\s+(-a\s+)?(?!\/dev\/)\S+\s*<<)/;
 const PARSES_JSON = /\bjson\.loads?\(|-m\s+json\.tool\b/;
-// `source .venv/bin/activate`, `. venv/bin/activate`, `.venv/bin/pytest`, ...: group 1 is the path before the venv.
 const USES_VENV = /(?:^|[\s;&|(])(?:(?:source|\.)\s+)?((?:[^\s;&|()'"]*\/)?)\.?venv\/bin\/\w/;
-// A leading `cd dir &&` or `cd dir;`, which sets where the rest of the command runs.
 const LEADING_CD = /^\s*cd\s+([^\s;&|]+)\s*(?:&&|;)/;
-// Scripts that do more than reshape JSON, where jq is no replacement.
 const DOES_MORE = /\b(requests|urllib|http|subprocess|sqlite3|import\s+(?!json\b|sys\b)\w+)/;
-// A command that reads a file, first in its pipeline: a file argument, not stdin.
 const READS_FILE = /^(cat\s+(?!<<)[^\s|<>-]|head\s|tail\s(?!(.*\s)?(-[a-zA-Z]*[fF]|--follow))|sed\s+-n\s|nl\s)/;
-// Commands that run on another machine, where `read`, `edit`, and jq may not reach.
 const REMOTE = /\b(ssh|docker\s+(exec|run)|kubectl\s+exec|adb\s+shell)\b/;
-// Loops and conditionals, where a file read is one step of shell logic that `read` can't replace.
 const CONTROL_FLOW = /\b(while|until|for|then|else)\b/;
-// Commands that only look things up, for counting turns of lookups in a row.
 const LOOKUP_COMMANDS = new Set([
 	"rg", "fd", "ls", "cat", "head", "tail", "sed", "nl", "wc", "jq", "tree", "pwd", "echo", "printf", "sort",
 	"uniq", "cut", "tr", "awk", "file", "stat", "which", "command", "grep", "find", "du", "basename", "dirname",
 	"readlink", "realpath", "cd", "true", "diff",
 ]);
-// A content search, first in its pipeline: a search of piped text is no workspace lookup.
 const SEARCH = /^(?:rg|grep|git\s+(?:-C\s+\S+\s+)?grep)\s/;
-// Text dumps and scratch clones, which the session's language server doesn't index.
+// Text dumps and scratch clones aren't indexed by the session's language server.
 const OUTSIDE_WORKSPACE = /(?:^|\s)\/(?:tmp|private)\/|\.txt\b/;
 const PYTHON_SCOPE = /\s(?:-t\s*|--type[= ])py\b|\.py\b/;
 const GO_SCOPE = /\s(?:-t\s*|--type[= ])go\b|\.go\b/;
-// Whitespace in a search pattern, literal or as `\s`.
 const SPACE = String.raw`(?:\s|\\s)`;
 const PYTHON_DEF = new RegExp(String.raw`\bdef${SPACE}`);
 const PYTHON_DEFINITION = new RegExp(String.raw`\b(?:def|class)${SPACE}`);
 const GO_DEFINITION = new RegExp(String.raw`\bfunc${SPACE}|\btype${SPACE}+\w+${SPACE}+(?:struct|interface)\b`);
-// A whole-word search, which looks for an identifier's usages.
 const WORD_SEARCH = /\s-\w*w\b|--word-regexp|\\b\w+\\b/;
 const LOOKUP_GIT = /^git\s+(-C\s+\S+\s+)?(status|log|diff|show|blame|grep|ls-files|rev-parse|branch|remote)\b/;
-// Lookups in a row before the batch hint: the third one gets it.
 const BATCH_AFTER_TURNS = 2;
 // Direct tool results to wait before repeating a hint: repeating it on every call adds noise, not habits.
 const HINT_COOLDOWN = 10;
 
-/** Split a command into its simple commands, at `;`, `&&`, `||`, newlines, and optionally pipes. */
 export function segments(command: string, pipes: boolean): string[] {
 	return command
 		.split(pipes ? /&&|\|\||[;\n|]/ : /&&|\|\||[;\n]/)
@@ -89,7 +74,6 @@ export function segments(command: string, pipes: boolean): string[] {
 		.filter(Boolean);
 }
 
-/** Return whether a command only looks things up and changes nothing. */
 function isLookup(command: string): boolean {
 	const unredirected = command.replace(/\d?>&\d|\d?>\s*\/dev\/null/g, "");
 	if (/>|<</.test(unredirected) || shellEdits(command) || RUNS_SCRIPT.test(command)) return false;
@@ -98,18 +82,15 @@ function isLookup(command: string): boolean {
 	);
 }
 
-/** Return the part of a command before its first remote command, which is the only part that runs here. */
 function localPart(command: string): string {
 	const remote = command.search(REMOTE);
 	return remote < 0 ? command : command.slice(0, remote);
 }
 
-/** Resolve a shell path against a directory, expanding a leading `~`. */
 function resolvePath(base: string, path: string): string {
 	return resolve(base, path.replace(/^~(?=\/|$)/, homedir()));
 }
 
-/** Return whether a directory or one of its parents has a `uv.lock`. */
 function inUvProject(dir: string): boolean {
 	for (let current = dir; ; current = dirname(current)) {
 		if (existsSync(join(current, "uv.lock"))) return true;
@@ -117,7 +98,6 @@ function inUvProject(dir: string): boolean {
 	}
 }
 
-/** Return whether a command activates or calls a venv of a uv project, which `uv run` replaces. */
 export function usesVenvInUvProject(command: string, cwd: string): boolean {
 	const local = localPart(command);
 	const venv = USES_VENV.exec(local);
@@ -127,19 +107,16 @@ export function usesVenvInUvProject(command: string, cwd: string): boolean {
 	return inUvProject(resolvePath(base, venv[1] || "."));
 }
 
-/** Return whether a local inline script reads a file, changes its text, and writes it back. */
 function rewritesFile(local: string): boolean {
 	return RUNS_SCRIPT.test(local) && WRITES_FROM_SCRIPT.test(local) && READS_FROM_SCRIPT.test(local) && CHANGES_TEXT.test(local);
 }
 
-/** Return whether a simple command shows a file's text, not a count or a log tail. */
 function readsIntoContext(part: string): boolean {
 	const [first, next] = part.split("|").map((piece) => piece.trim());
 	if (!READS_FILE.test(first) || /\.log\b/.test(first)) return false;
 	return next === undefined || /^(head|tail|sed|nl|cat)\b/.test(next);
 }
 
-/** Return the hints a bash command deserves, apart from the batch and uv hints. */
 export function commandHints(command: string): HintKind[] {
 	const hints: HintKind[] = [];
 	if (waitsInForeground(command)) hints.push("sleep");
@@ -170,29 +147,22 @@ export function symbolLookup(command: string): "lspyx" | "gopls" | undefined {
 	}
 }
 
-/** Identify likely scripted patches for hints and guarded existing-file writes. */
 export function codemodeHints(code: string): HintKind[] {
 	const writes = /tools\.write\s*\(/.test(code);
 	const reads = /tools\.read\s*\(|tools\.bash\s*\(\{\s*command:\s*[`"']cat\s/.test(code);
 	return writes && reads && /\.(replace(?:All)?|slice|splice|indexOf)\s*\(/.test(code) ? ["edit"] : [];
 }
 
-/** Render hints as the text block appended to a tool result. */
 function hintText(hints: Iterable<HintKind>): string {
 	return [...hints].map((kind) => `Hint [${kind}]: ${HINTS[kind]}`).join("\n");
 }
 
 export default function (pi: ExtensionAPI) {
-	// Hints from calls inside a codemode script, keyed by the script's tool call.
 	const nested = new Map<string, Set<HintKind>>();
 	const scriptedPatches = new Set<string>();
-	// Turns in a row whose direct calls were all lookups in bash.
 	let lookupTurns = 0;
-	// What this turn's direct calls were: none yet, only bash lookups, or anything else.
 	let turn: "none" | "lookup" | "other" = "none";
-	// Names of this turn's direct calls, which all come from one message and run in parallel.
 	const turnCalls = new Map<string, string>();
-	// Direct tool results so far, and the one each hint was last shown on.
 	let results = 0;
 	const shown = new Map<HintKind, { result: number; count: number }>();
 
@@ -259,11 +229,9 @@ export default function (pi: ExtensionAPI) {
 		if ((isBashToolResult(event) && event.details?.truncation)
 			|| (event.toolName === "codemode" && output.startsWith("Warning: truncated output (original token count:"))) hints.add("output");
 		if (command && usesVenvInUvProject(command, ctx.cwd)) hints.add("uv");
-		// A read that fails on a missing file, next to a call that may be creating it.
 		const siblings = [...turnCalls].filter(([id, name]) => id !== event.toolCallId && name !== "read");
-		if (event.toolName === "read" && !event.parentToolCallId && event.isError && siblings.length > 0) {
-			const text = event.content.map((part) => (part.type === "text" ? part.text : "")).join("");
-			if (text.includes("ENOENT")) hints.add("parallel");
+		if (event.toolName === "read" && !event.parentToolCallId && event.isError && siblings.length > 0 && output.includes("ENOENT")) {
+			hints.add("parallel");
 		}
 
 		if (event.parentToolCallId) {

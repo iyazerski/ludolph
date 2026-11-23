@@ -24,7 +24,6 @@ export interface RecordedCall {
 	argumentsMissing?: boolean;
 }
 
-/** Select session files by age in days, session ID, or an explicit JSONL path. */
 export async function sessionFiles(selector: string, sessionsDir = `${process.env.PI_CODING_AGENT_DIR ?? `${process.env.HOME}/.pi/agent`}/sessions`): Promise<string[]> {
 	if (existsSync(selector) && (await stat(selector)).isFile()) return [resolve(selector)];
 	const days = Number(selector);
@@ -42,7 +41,6 @@ export async function sessionFiles(selector: string, sessionsDir = `${process.en
 	return files.sort();
 }
 
-/** Stream actual direct and nested calls, joining each result to its assistant context. */
 export async function* recordedCalls(path: string): AsyncGenerator<RecordedCall> {
 	const pending = new Map<string, RecordedCall>();
 	let afterCompaction = false;
@@ -92,7 +90,6 @@ export async function* recordedCalls(path: string): AsyncGenerator<RecordedCall>
 	for (const call of pending.values()) yield call;
 }
 
-/** Classify observed calls without reconstructing nested calls from JavaScript source. */
 export function classifyCall(call: RecordedCall): { kind: "edit" | "read" | "search"; broke: boolean }[] {
 	if (call.name === "edit" || call.name === "read") return [{ kind: call.name, broke: false }];
 	if (call.name === "codemode" && typeof call.arguments.code === "string") {
