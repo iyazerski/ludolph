@@ -17,7 +17,6 @@ use crate::settings::Settings;
 /// Cua Driver's permission guide waits for the user to flip both switches.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
-/// The `--extension` paths and environment for a chat's pi.
 pub fn pi_options(dir: &Path, settings: &Settings) -> (Vec<PathBuf>, Vec<(String, String)>) {
     let mut extensions = vec![dir.join("background-jobs.js"), dir.join("quota.js")];
     let mut env = Vec::new();
@@ -165,8 +164,6 @@ impl GuiTool {
         }
     }
 
-    /// Install the tool if it's missing, then ask for the macOS permissions it needs, or pair
-    /// browse with a browser.
     pub async fn set_up(self) -> Setup {
         match self.try_set_up().await {
             Ok(status) => Setup::Done(status),
@@ -197,7 +194,6 @@ impl GuiTool {
             ),
             Status::NeedsPermissions => {
                 let program = on_path(command).context("cua-driver disappeared")?;
-                // Opens a guide through both switches in System Settings and waits until it's done.
                 run(Command::new(program).args(["permissions", "grant"]))
                     .await
                     .context("cua-driver couldn't ask for Accessibility and Screen Recording")?;
@@ -236,7 +232,6 @@ fn on_path(command: &str) -> Option<PathBuf> {
         .find(|program| program.is_file())
 }
 
-/// Run a command and return its stdout, or fail with all of its output.
 async fn run(command: &mut Command) -> Result<String> {
     let child = command
         .stdin(Stdio::null())

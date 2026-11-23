@@ -13,7 +13,6 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::pi::{Event, Pi};
 use crate::pi_setup;
 
-/// How long a sign-in may wait on the user before it gives up.
 const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -29,7 +28,6 @@ pub struct State {
     pub prompt: Option<Prompt>,
     /// Something pi says to do outside Ludolph, such as a command to run.
     pub note: Option<String>,
-    /// How the sign-in ended, once it has.
     pub result: Option<Outcome>,
 }
 
@@ -45,7 +43,6 @@ pub struct DeviceCode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prompt {
-    /// pi's dialog, which the answer names.
     pub id: String,
     pub kind: PromptKind,
     pub message: String,
@@ -92,7 +89,6 @@ struct AskedPrompt {
     message: String,
 }
 
-/// pi's `AuthEvent`.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AuthEvent {
@@ -129,7 +125,6 @@ struct Inner {
 #[derive(Debug)]
 struct Running {
     pi: Arc<Pi>,
-    /// Dropping it stops the attempt.
     _stop: oneshot::Sender<()>,
 }
 
@@ -148,7 +143,6 @@ impl SignIn {
         self.lock().state.clone()
     }
 
-    /// Replaces a sign-in that is still running.
     pub fn start(
         &self,
         program: &Path,
@@ -184,7 +178,6 @@ impl SignIn {
         Ok(state)
     }
 
-    /// Answers pi's question `prompt` of the running sign-in.
     pub async fn answer(&self, prompt: &str, value: &str) -> Result<State> {
         let (pi, answer) = {
             let mut inner = self.lock();
@@ -211,7 +204,6 @@ impl SignIn {
         Ok(self.state())
     }
 
-    /// Stops `attempt` if it still runs, and clears it either way.
     pub fn cancel(&self, attempt: u64) {
         let mut inner = self.lock();
         if inner.state.attempt != attempt {
@@ -235,7 +227,6 @@ impl SignIn {
     }
 }
 
-/// Turns one attempt's pi into its state until pi answers or the attempt stops.
 struct Relay {
     inner: Arc<Mutex<Inner>>,
     revision: watch::Sender<u64>,
@@ -350,11 +341,10 @@ impl Relay {
         }
     }
 
-    /// Changes the state if this is still the current attempt, and says whether it was.
-    fn update(&self, ended: bool, change: impl FnOnce(&mut State)) -> bool {
+    fn update(&self, ended: bool, change: impl FnOnce(&mut State)) {
         let mut inner = self.inner.lock().expect("lock poisoned");
         if inner.state.attempt != self.attempt || inner.running.is_none() {
-            return false;
+            return;
         }
         if ended {
             inner.running.take();
@@ -362,6 +352,5 @@ impl Relay {
         change(&mut inner.state);
         drop(inner);
         self.revision.send_modify(|r| *r += 1);
-        true
     }
 }

@@ -2,18 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The `setStatus` key the extension reports under.
 pub const STATUS_KEY: &str = "ludolph-quota";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Window {
     pub label: String,
-    /// Share used, 0 to 1.
     pub used: f64,
-    /// Epoch milliseconds.
     pub resets_at: Option<i64>,
-    /// Dollars, for a budget.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

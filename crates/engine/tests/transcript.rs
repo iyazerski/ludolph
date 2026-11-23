@@ -204,7 +204,7 @@ fn nested_calls_show_live_and_reopen_without_losing_their_own_outcomes() {
         json!({"type": "tool_execution_start", "toolCallId": "c1/2", "parentToolCallId": "c1", "toolName": "mcp__check", "args": {"query": "diagnostics"}}),
         json!({"type": "tool_execution_end", "toolCallId": "c1/2", "parentToolCallId": "c1", "isError": true, "durationMs": 4, "result": {"content": [{"type": "text", "text": "permission denied"}]}}),
     ] {
-        live.apply(&serde_json::from_value::<Event>(event).unwrap());
+        live.apply(serde_json::from_value::<Event>(event).unwrap());
     }
     let running = transcripts
         .page(
@@ -252,7 +252,7 @@ fn nested_calls_show_live_and_reopen_without_losing_their_own_outcomes() {
             {"id": "c1/3", "name": "read", "args": "{}", "status": "cancelled"}
         ]}
     });
-    live.apply(&Event::MessageEnd {
+    live.apply(Event::MessageEnd {
         message: result.clone(),
     });
     assert!(live.calls().is_empty(), "the result replaces live metadata");

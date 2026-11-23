@@ -300,6 +300,7 @@ impl Engine {
                 }
                 let (cancel, mut cancelled) = oneshot::channel();
                 let (settled, done) = watch::channel(false);
+                let reply = serde_json::to_value(&info)?;
                 registry.jobs.push_back(Job {
                     chat: chat.to_owned(),
                     info: info.clone(),
@@ -308,7 +309,7 @@ impl Engine {
                     cancel: Some(cancel),
                     settled: done,
                 });
-                let (engine, chat, task) = (self.clone(), chat.to_owned(), info.clone());
+                let (engine, chat, task) = (self.clone(), chat.to_owned(), info);
                 tokio::spawn(async move {
                     let jobs = &engine.0.jobs;
                     let outcome =
@@ -368,25 +369,27 @@ impl Engine {
                         ),
                         None => outcome.description(),
                     };
+                    let resume = actions.resume_chat.map(|next| {
+                        format!(
+                            "Ludolph background job: {}\nStatus: {status}\nJob ID: {}\nUse background_job status to read its output.\n\nContinuation requested when this job started: {next}",
+                            task.title, task.id
+                        )
+                    });
                     if actions.notify_user {
                         engine.alert(
                             &chat,
                             AlertKind::Job {
-                                id: task.id.clone(),
-                                title: task.title.clone(),
-                                status: status.clone(),
+                                id: task.id,
+                                title: task.title,
+                                status,
                             },
                         );
                     }
-                    if let Some(next) = actions.resume_chat {
-                        let message = format!(
-                            "Ludolph background job: {}\nStatus: {status}\nJob ID: {}\nUse background_job status to read its output.\n\nContinuation requested when this job started: {next}",
-                            task.title, task.id
-                        );
+                    if let Some(message) = resume {
                         engine.resume_job(&chat, stops, message);
                     }
                 });
-                Ok(serde_json::to_value(info)?)
+                Ok(reply)
             }
         }
     }
