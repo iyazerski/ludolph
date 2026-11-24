@@ -65,7 +65,7 @@ const ROLES: Record<string, Role> = {
 		description: [
 			"Delegate macOS app, window, menu, and dialog tasks to a cua-driver subagent on the user's desktop.",
 			"Returns Status (done, failed, needs_input), Result, Evidence, and Notes. State persists between calls.",
-			"Prefer CLI/API/file access when possible; use browser_use for Chrome pages.",
+			"Prefer CLI/API/file access when possible; use browser_use for web apps open in Chrome (Slack, Jira, dashboards) even if a desktop app exists.",
 		].join(" "),
 		exposure: "deferred",
 		serverExposure: "codemode",
@@ -92,7 +92,7 @@ ${REPORT_FORMAT}`,
 		serverExposure: "direct",
 		prompt: `Use browse in the user's running Chrome:
 - Work only in tabs you open, and pass the tab id from each execute result to the next call. Close your tabs when done unless asked to keep them.
-- Batch dependent steps in one execute script and return only what you need.
+- Batch dependent steps in one execute script (wait for target elements or text after navigating or clicking instead of calling snapshot() in a separate turn) and return only what you need.
 - Read pages with snapshot(). Take screenshots only for layout checks or requested visual proof.
 - Don't call handoff(): report needs_input instead.
 - If no browser is connected, report failed with the nextStep from status.
@@ -234,10 +234,12 @@ function setUpMain(pi: ExtensionAPI, roles: Record<string, Role>, extensionPath:
 		if (tools.length === 0) return;
 		const name = (role: Role): string =>
 			role.exposure === "deferred" ? `\`tools.${role.tool}({ task })\` in \`codemode\` (${role.server})` : `\`${role.tool}\` (${role.server})`;
+		const preferBrowser = tools.some((role) => role.tool === "browser_use") && tools.some((role) => role.tool === "computer_use");
 		// Instructions shared across harnesses may name these MCP servers: point the model to the tools.
 		event.systemPromptOptions.sections.gui_subagents = [
 			`GUI automation uses subagents: ${tools.map(name).join(", ")}.`,
 			"Use these tools even when instructions name their MCP servers; those servers aren't connected here.",
+			...(preferBrowser ? ["Prefer `browser_use` over `computer_use` for web apps open in Chrome (Slack, Jira, dashboards), even when a desktop app exists."] : []),
 			"Pass input paths in `files`; outputs are exported to temporary paths in the result. Never stage GUI artifacts in a repository.",
 			"Change models/reasoning with `model`/`thinking`, not shell wrappers. Change providers only when asked.",
 			"Check Status and Evidence before relying on results.",

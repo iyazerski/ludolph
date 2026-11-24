@@ -14,6 +14,7 @@ test("hints account switching only for failed gh auth and access commands", asyn
 		["gh pr create", "GraphQL: Resource not accessible by integration (createPullRequest)", true, true],
 		["gh api repos/owner/repo", "gh: Forbidden (HTTP 403)", true, true],
 		["gh repo clone owner/repo", "remote: Repository not found.", true, true],
+		["gh event listen --resource https://github.com/o/r/pull/1", "event subscriptions are in preview and not enabled for this account: HTTP 403", true, false],
 		["gh api user", "HTTP 500: Internal Server Error", true, false],
 		["gh api user", "HTTP 404", false, false],
 		["curl --fail https://example.com", "HTTP 403", true, false],
@@ -104,9 +105,15 @@ test("hints at foreground waits, hidden check status, file reads, and truncated 
 		bash("cat docs/design.md | wc -l", "read", false),
 		bash("tail -5 target/dev.log", "read", false),
 		bash("cat /tmp/t.code", "read", false),
+		bash("cd /tmp/m3src && sed -n 1,20p Menu.kt", "read", false),
+		bash("cd /tmp/m3src && cat ~/repo/README.md", "read", true),
+		bash("head -c 1000 data/s.jsonl | sed '$d' > data/out.jsonl", "read", false),
 		bash("head -1 $(readlink -f ~/.bun/bin/pi)", "read", false),
+		bash("for n in a b; do cat > $n.xml <<EOF\n<x/>\nEOF\ndone", "write", false),
+		bash("cat > script.py <<'EOF'\nfor x in [1]:\n  print(x)\nEOF", "write", true),
+		bash("timeout 1200 gh pr checks 1 --watch --interval 20", "sleep", true),
 		[{ type: "tool_result", toolName: "bash", toolCallId: "call", input: { command: "cargo build" }, content: [], isError: false, details: { truncation } }, "output", true],
-		[{ type: "tool_result", toolName: "codemode", toolCallId: "call", input: { code: "" }, content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }, { type: "text", text: "Warning: truncated output (original token count: 9000)\n…" }], isError: false, details: { fullOutputPath: "/tmp/out.txt" } }, "output", true],
+		[{ type: "tool_result", toolName: "codemode", toolCallId: "call", input: { code: "" }, content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n\nWarning: truncated output (original token count: 9000)\n…" }], isError: false, details: undefined }, "output", true],
 		[{ type: "tool_result", toolName: "read", toolCallId: "call", input: { path: "hints.ts" }, content: [{ type: "text", text: "Warning: truncated output" }], isError: false, details: undefined }, "output", false],
 	];
 	for (const [event, kind, expected] of cases) {
@@ -136,6 +143,20 @@ test("prefers the job tool over a detached watcher or foreground CI wait", async
 			expect(JSON.stringify(result?.content ?? []).includes("Use `background_job`"), command).toBe(expected);
 		});
 	}
+	await withTestSession([hints, jobs], async (session) => {
+		const runner = session.extensionRunner;
+		const callCases: [string, boolean][] = [
+			["gh run watch 1 --exit-status", true],
+			["timeout 1200 gh pr checks 1 --watch --interval 20", true],
+			["gh run watch --help", false],
+			["cat > /tmp/w.sh <<'EOF'\ngh run watch 1\nEOF", false],
+			["ssh host 'gh run watch 1'", false],
+		];
+		for (const [command, blocked] of callCases) {
+			const result = await runner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "call", input: { command } });
+			expect(result?.block ?? false, command).toBe(blocked);
+		}
+	});
 });
 
 test("points symbol searches to the connected language server", async () => {
@@ -172,6 +193,21 @@ test("blocks reads beside a producer and permits the next chained read", async (
 		]));
 		const event = { type: "tool_call", toolName: "read", toolCallId: "read", input: { path: image } } as const;
 		expect((await runner.emitToolCall(event))?.block).toBe(true);
+		// Local redirections on adb/ssh produce local files; nested codemode reads beside a sibling producer are blocked too.
+		session.sessionManager.appendMessage(assistant([
+			{ type: "toolCall", id: "shot", name: "bash", arguments: { command: "adb exec-out screencap -p > " + image } },
+			{ type: "toolCall", id: "script", name: "codemode", arguments: { code: "tools.read({path: '" + image + "'})" } },
+		]));
+		expect((await runner.emitToolCall({ type: "tool_call", toolName: "read", toolCallId: "script/1", parentToolCallId: "script", input: { path: image } }))?.block).toBe(true);
+		// Runtime ENOENT on codemode with a sibling producer emits Hint [parallel].
+		await runner.emit({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+		await runner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "shot", input: { command: "/tmp/shot.sh" } });
+		await runner.emitToolCall({ type: "tool_call", toolName: "codemode", toolCallId: "script", input: { code: "" } });
+		const res = await runner.emitToolResult({
+			type: "tool_result", toolName: "codemode", toolCallId: "script", input: { code: "" },
+			content: [{ type: "text", text: "Error: ENOENT: no such file or directory" }], isError: true, details: undefined,
+		});
+		expect(JSON.stringify(res?.content ?? [])).toContain("Hint [parallel]");
 		session.sessionManager.appendMessage(assistant([{ type: "toolCall", id: "read", name: "read", arguments: { path: image } }]));
 		expect(await runner.emitToolCall(event)).toBeUndefined();
 	});
@@ -199,5 +235,36 @@ test("blocks scripted patches, aggregates recovery hints, and preserves structur
 		const scratchRes = await runner.emitToolResult({ type: "tool_result", toolName: "codemode", toolCallId: "scratch",
 			input: { code: scratch }, content: [], isError: false, details: undefined });
 		expect(JSON.stringify(scratchRes?.content ?? [])).not.toContain("Hint [edit]");
+	});
+});
+
+test("counts single read turns in lookup streaks for batch hints", async () => {
+	const codemode = (pi: ExtensionAPI) => pi.registerTool({
+		name: "codemode", label: "codemode", description: "",
+		parameters: Type.Object({}), execute: async () => ({ content: [], details: undefined }),
+	});
+	await withTestSession([hints, codemode], async (session) => {
+		const runner = session.extensionRunner;
+		const endTurn = (turnIndex: number) => runner.emitBoundary(
+			{ type: "turn_end", turnIndex, message: assistant([]), toolResults: [], messageEntryId: "m" + turnIndex, toolResultEntryIds: [], outcome: "completed" },
+			() => ({ contextEntries: [], contextMessages: [], llmMessages: [], pendingMessages: [], canContinue: false }),
+		);
+		for (const [index, tool] of ["bash", "read", "read"].entries()) {
+			await runner.emit({ type: "turn_start", turnIndex: index, timestamp: index });
+			const input = tool === "bash" ? { command: "rg -n foo src" } : { path: "file" + index + ".ts" };
+			await runner.emitToolCall({ type: "tool_call", toolName: tool, toolCallId: "c" + index, input });
+			const res = await runner.emitToolResult({ type: "tool_result", toolName: tool, toolCallId: "c" + index, input, content: [], isError: false, details: undefined });
+			await endTurn(index);
+			expect(JSON.stringify(res?.content ?? []).includes("Hint [batch]"), "turn " + index).toBe(index === 2);
+		}
+		// Parallel reads in one turn are already batched and reset the streak.
+		for (let index = 3; index < 6; index++) {
+			await runner.emit({ type: "turn_start", turnIndex: index, timestamp: index });
+			await runner.emitToolCall({ type: "tool_call", toolName: "read", toolCallId: "a" + index, input: { path: "a.ts" } });
+			await runner.emitToolCall({ type: "tool_call", toolName: "read", toolCallId: "b" + index, input: { path: "b.ts" } });
+			const res = await runner.emitToolResult({ type: "tool_result", toolName: "read", toolCallId: "a" + index, input: { path: "a.ts" }, content: [], isError: false, details: undefined });
+			await endTurn(index);
+			expect(JSON.stringify(res?.content ?? []).includes("Hint [batch]"), "parallel " + index).toBe(false);
+		}
 	});
 });

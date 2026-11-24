@@ -2,7 +2,7 @@ import { type ExtensionAPI, isBashToolResult } from "@earendil-works/pi-coding-a
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { checkRisk, executable, producesFile, shellCommands, shellEdits, waitsInForeground } from "./shell.ts";
+import { checkRisk, executable, producesFile, shellCommands, shellEdits, waitsInForeground, watchesCi } from "./shell.ts";
 
 /**
  * Add a one-line hint to a tool result when the call drifts from tool-routing.ts's list.
@@ -28,12 +28,13 @@ const HINTS: Record<HintKind, string> = {
 	batch: "Batch the next independent lookups in one codemode script.",
 	checks: "A pipe filter hides the check's exit code. Log the check to a file, save `$?`, then filter the log.",
 	recovery: "Reread the failed region. Retry `edit` with exact, unique, non-overlapping `oldText`; don't rewrite the whole file.",
-	output: "Bound output in the command or script (filters, `head`, `rg -m`) before returning it.",
+	output: "Bound output in the command or script (filters, `head`, `rg -m`, or `read` `offset`/`limit`) before returning it.",
 	uv: "Use `uv run <tool>`, not venv activation or `.venv/bin/`. Each bash call starts fresh.",
 	lspyx: "For Python symbols, call `tools.mcp__lspyx__explore` in codemode: `query` + `workspace` finds definitions, `file` outlines a file, and `file` + `line` + `column` lists usages. Keep `rg` for plain text.",
 	gopls: "For Go symbols, use gopls in codemode: `tools.mcp__gopls__go_search` finds definitions, `go_symbol_references` lists usages, and `go_package_api` shows a package's API. Keep `rg` for plain text.",
 };
 const CHECKS_BEFORE_PUBLISH = "A failed check would not stop the commit or push in this command. Log each check to a file and save `$?`, then commit or push only after the checks pass, chained with `&&` or in a later call.";
+const CI_WATCH_IN_BACKGROUND = "Watch CI or workflow runs with `background_job` (using `on_success`/`on_failure` hooks or `resume_chat`) instead of blocking in Bash.";
 
 const RUNS_SCRIPT = /\b(python3?|bun\s+-e|node\s+-e)\b/;
 const TEMP_SCRIPT_WRITE = /\b(?:Bun\.write|writeFileSync)\(\s*["'`]\/(?:private\/)?tmp\/|\bopen\(\s*["'`]\/(?:private\/)?tmp\/[^)]*\)(?:\.write\()?|\bPath\(\s*["'`]\/(?:private\/)?tmp\/[^)]*\)\.write_text\(/g;
@@ -110,9 +111,12 @@ function rewritesFile(local: string): boolean {
 		&& READS_FROM_SCRIPT.test(local) && CHANGES_TEXT.test(local);
 }
 
-function readsIntoContext(part: string): boolean {
-	const [first, next] = part.split("|").map((piece) => piece.trim());
+function readsIntoContext(part: string, inTemp: boolean): boolean {
+	const cleaned = part.replace(/\d?>&\d|\d?>\s*\/dev\/null/g, "");
+	if (/>/.test(cleaned)) return false;
+	const [first, next] = cleaned.split("|").map((piece) => piece.trim());
 	if (!READS_FILE.test(first) || /\.log\b|\/(?:private\/)?tmp\/|\$\(/.test(first)) return false;
+	if (inTemp && !/(?:^|\s)(?:~\/|\/(?!private\/tmp\/|tmp\/))/.test(first)) return false;
 	return next === undefined || /^(head|tail|sed|nl|cat)\b/.test(next);
 }
 
@@ -124,9 +128,23 @@ export function commandHints(command: string): HintKind[] {
 	const script = RUNS_SCRIPT.test(local);
 	const writes = script && WRITES_FROM_SCRIPT.test(local);
 	if (rewritesFile(local) || shellEdits(local)) hints.push("edit");
-	else if (HEREDOC_WRITE.test(local)) hints.push("write");
+	else if (HEREDOC_WRITE.test(local)
+		&& shellCommands(local).some(({ words, loop }) => !loop && ["cat", "tee"].includes(executable(words)[0]))) hints.push("write");
 	if (script && !writes && PARSES_JSON.test(local) && !DOES_MORE.test(local)) hints.push("jq");
-	if (!CONTROL_FLOW.test(local) && segments(local, false).some(readsIntoContext)) hints.push("read");
+	if (!CONTROL_FLOW.test(local)) {
+		let inTemp = false;
+		for (const part of segments(local, false)) {
+			const cd = /^cd\s+([^\s;&|]+)/.exec(part);
+			if (cd) {
+				inTemp = TEMP_DIR.test(cd[1].replace(/^["']|["']$/g, ""));
+				continue;
+			}
+			if (readsIntoContext(part, inTemp)) {
+				hints.push("read");
+				break;
+			}
+		}
+	}
 	return hints;
 }
 
@@ -221,13 +239,15 @@ export default function (pi: ExtensionAPI) {
 			const command = event.input.command;
 			if (pi.getActiveTools().includes("edit") && (shellEdits(command) || rewritesFile(localPart(command)))) return { block: true, reason: HINTS.edit };
 			if (checkRisk(command) === "publish") return { block: true, reason: CHECKS_BEFORE_PUBLISH };
+			if (pi.getActiveTools().includes("background_job") && watchesCi(command)) return { block: true, reason: CI_WATCH_IN_BACKGROUND };
 		}
-		if (event.toolName !== "read" || event.parentToolCallId || typeof event.input.path !== "string") return;
+		if (event.toolName !== "read" || typeof event.input.path !== "string") return;
+		const topCallId = event.parentToolCallId ?? event.toolCallId;
 		const file = resolvePath(ctx.cwd, event.input.path.replace(/^@/, ""));
 		const leaf = ctx.sessionManager.getLeafEntry();
 		if (leaf?.type !== "message" || leaf.message.role !== "assistant") return;
 		const producer = leaf.message.content.some((part) => {
-			if (part.type !== "toolCall" || part.id === event.toolCallId) return false;
+			if (part.type !== "toolCall" || part.id === topCallId) return false;
 			if (["edit", "write"].includes(part.name) && typeof part.arguments.path === "string") {
 				return resolvePath(ctx.cwd, part.arguments.path.replace(/^@/, "")) === file;
 			}
@@ -261,13 +281,14 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName === "edit" && event.isError) hints.add("recovery");
 		const output = event.content.map((part) => part.type === "text" ? part.text : "").join("\n");
 		if (event.isError && /\bgh\s/.test(localPart(command))
+			&& !/\bevent[- ]subscriptions\b/i.test(output)
 			&& /HTTP (?:401|403|404)\b|Could not resolve to a Repository|Resource not accessible|Bad credentials|authentication failed|repository[^\n]*not found/i.test(output)) hints.add("github");
 		if ((isBashToolResult(event) && event.details?.truncation)
 			|| (event.toolName === "codemode" && (Boolean((event.details as { fullOutputPath?: string } | undefined)?.fullOutputPath)
-				|| event.content.some((part) => part.type === "text" && part.text.startsWith("Warning: truncated output (original token count:"))))) hints.add("output");
+				|| event.content.some((part) => part.type === "text" && /^Warning: truncated output \(original token count:/m.test(part.text))))) hints.add("output");
 		if (command && usesVenvInUvProject(command, ctx.cwd)) hints.add("uv");
 		const siblings = [...turnCalls].filter(([id, name]) => id !== event.toolCallId && name !== "read");
-		if (event.toolName === "read" && !event.parentToolCallId && event.isError && siblings.length > 0 && output.includes("ENOENT")) {
+		if ((event.toolName === "read" || event.toolName === "codemode") && !event.parentToolCallId && event.isError && siblings.length > 0 && output.includes("ENOENT")) {
 			hints.add("parallel");
 		}
 
@@ -283,7 +304,7 @@ export default function (pi: ExtensionAPI) {
 		nested.delete(event.toolCallId);
 		results++;
 
-		const lookup = command !== "" && isLookup(command);
+		const lookup = turnCalls.size <= 1 && (event.toolName === "read" || (command !== "" && isLookup(command)));
 		if (!lookup) turn = "other";
 		else if (turn === "none") {
 			turn = "lookup";

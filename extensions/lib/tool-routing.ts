@@ -13,7 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const TOOL_ROUTING = `Minimize tool turns and returned output.
 - One quick call whose full output you need: call directly.
 - Batch independent lookups, dependent steps, MCP/web calls, and edits with checks in \`codemode\`. Calls in one message run in parallel; chain dependent steps inside the script.
-- Bound returned results. Don't dump whole files or logs.
+- Bound returned results. Don't dump whole files or logs; in \`codemode\`, slice large reads with \`offset\`/\`limit\` or filter before returning (~10k token cap).
 - Search: \`rg\` for content, \`fd\` for filenames, not grep or find.
 - Code navigation: when \`lspyx\` (Python) or \`gopls\` (Go) is in mcp_servers, find definitions, usages, and outlines with it in codemode, not \`rg\`.
 - Read files: \`read\` with offset/limit, not cat, head, tail, or sed -n. Batch reads with parallel \`tools.read\` calls in codemode.
@@ -24,7 +24,7 @@ const TOOL_ROUTING = `Minimize tool turns and returned output.
 - Checks: log each check to a file and save \`$?\` before filtering. Commit or push only after checks pass. In codemode, check Bash \`exit_code\`, not just \`output\`.
 - Waiting: keep short prerequisite waits bounded in one command. Don't sleep across turns. Codemode has no timers.`;
 
-const BACKGROUND = "- Long waits: use `background_job` instead of a detached watcher or foreground polling. Return control when no remaining work in this turn needs the result.";
+const BACKGROUND = "- Long waits: use `background_job` for CI watches (`gh pr checks --watch`, `gh run watch`), polling loops, or detached work. Put follow-up steps in `on_success`/`on_failure` (`command` or `resume_chat`) and return control instead of blocking in Bash.";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
