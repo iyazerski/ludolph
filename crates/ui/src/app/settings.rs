@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use chrono::{TimeDelta, Utc};
 use qrcode::QrCode;
@@ -16,7 +17,9 @@ use crate::data::{
 use crate::update;
 
 pub const QR_SIZE: f32 = 184.0;
-const RELEASE_CHECK_EVERY: TimeDelta = TimeDelta::days(1);
+const RELEASE_CHECK_SECS: u64 = 60 * 60;
+const RELEASE_CHECK_EVERY: TimeDelta = TimeDelta::seconds(RELEASE_CHECK_SECS as i64);
+const RELEASE_CHECK_WAIT: Duration = Duration::from_secs(RELEASE_CHECK_SECS);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Section {
@@ -572,15 +575,21 @@ impl State {
         );
     }
 
-    /// Runs when a window shows, at most once a day across both windows and restarts.
+    /// Runs at most once an hour across both windows and restarts while a window is shown.
     pub fn check_release(&mut self) {
         let now = Utc::now();
         let last = self.prefs.borrow().release_checked;
-        if last.is_some_and(|at| now - at < RELEASE_CHECK_EVERY) {
+        if let Some(at) = last
+            && now >= at
+            && let Ok(left) = (RELEASE_CHECK_EVERY - (now - at)).to_std()
+            && !left.is_zero()
+        {
+            self.schedule_release_check(left.max(Duration::from_secs(1)));
             return;
         }
         self.prefs.borrow_mut().release_checked = Some(now);
         self.save_prefs();
+        self.schedule_release_check(RELEASE_CHECK_WAIT);
         self.api.run(
             |_| async { tokio::task::spawn_blocking(update::available).await },
             move |s, result, _| match result.map_err(anyhow::Error::from).and_then(|r| r) {
@@ -600,6 +609,22 @@ impl State {
         );
     }
 
+    fn schedule_release_check(&mut self, after: Duration) {
+        if self.release_check_scheduled {
+            return;
+        }
+        self.release_check_scheduled = true;
+        self.api.run(
+            move |_| async move { tokio::time::sleep(after).await },
+            |s, (), _| {
+                s.release_check_scheduled = false;
+                if s.shown {
+                    s.check_release();
+                }
+            },
+        );
+    }
+
     pub fn dismiss_release(&mut self) {
         let Some(version) = self.release_notice.take() else {
             return;
@@ -607,6 +632,23 @@ impl State {
         self.prefs.borrow_mut().dismissed_release = Some(version);
         self.save_prefs();
         self.api.peer().update(|s, _| s.release_notice = None);
+    }
+
+    pub fn open_updated_release_notes(&mut self, tx: &mut Tx) {
+        let Some(version) = self.updated_notice.clone() else {
+            return;
+        };
+        if let Err(e) = tx.open_url(&update::release_page(&version)) {
+            self.fail("Couldn't open the release notes", e.to_string());
+            return;
+        }
+        self.dismiss_updated();
+    }
+
+    pub fn dismiss_updated(&mut self) {
+        if self.updated_notice.take().is_some() {
+            self.api.peer().update(|s, _| s.updated_notice = None);
+        }
     }
 
     pub fn install_release(&mut self, tx: &mut Tx) {
@@ -622,6 +664,7 @@ impl State {
         }
         self.api.peer().update(|s, _| s.release_notice = None);
         self.open_settings();
+        self.show_settings_section(Section::About);
         if let Some(page) = self.settings_page_mut()
             && !matches!(page.update, Update::Installing(_))
         {

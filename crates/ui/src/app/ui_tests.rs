@@ -624,7 +624,7 @@ fn sent_messages_start_at_the_top_then_follow_the_reply_unless_scrolled_up() {
 }
 
 #[test]
-fn closing_the_release_notice_keeps_that_release_from_being_offered_again() {
+fn release_notice_is_one_line_dismissible_and_updates_on_about() {
     let (_rt, mut ui) = runtime(420.0, Window::Quick);
     ui.state.release_notice = Some("9.9.9".into());
     settle(&mut ui);
@@ -635,20 +635,106 @@ fn closing_the_release_notice_keeps_that_release_from_being_offered_again() {
         .unwrap();
     assert!((release.rect[1] - 16.0).abs() < 1.0);
     assert!(
-        elements
-            .iter()
-            .any(|e| e.label.as_deref() == Some("Update"))
+        release.rect[3] <= 44.0,
+        "release notice should be one line: {:?}",
+        release.rect
     );
+    assert!(
+        !elements
+            .iter()
+            .any(|e| e.text.as_deref().is_some_and(|t| t.contains("restarts"))),
+        "release notice should omit the description"
+    );
+    let update = elements
+        .iter()
+        .find(|e| e.label.as_deref() == Some("Update"))
+        .unwrap();
     let close = elements
         .iter()
         .find(|e| e.label.as_deref() == Some("Close"))
         .unwrap();
+    let center_y = |e: &ElementInfo| e.rect[1] + e.rect[3] / 2.0;
+    assert!(
+        (center_y(update) - center_y(close)).abs() < 1.0
+            && (center_y(update) - center_y(release)).abs() < 1.0,
+        "title, update button and close button share one line: release={:?} update={:?} close={:?}",
+        release.rect,
+        update.rect,
+        close.rect
+    );
     click(&mut ui, close);
     assert!(ui.state.release_notice.is_none());
     assert_eq!(
         ui.state.prefs.borrow().dismissed_release.as_deref(),
         Some("9.9.9")
     );
+
+    let (_rt, mut main) = runtime(1120.0, Window::Main);
+    main.state.prefs.borrow_mut().release_checked = Some(chrono::Utc::now());
+    main.state.release_notice = Some("0.0.1".into());
+    settle(&mut main);
+    let update = main
+        .elements()
+        .into_iter()
+        .find(|e| e.label.as_deref() == Some("Update"))
+        .unwrap();
+    click(&mut main, &update);
+    assert!(main.state.release_notice.is_none());
+    assert_eq!(
+        main.state.settings_page().map(|p| p.section),
+        Some(Section::About)
+    );
+}
+
+#[test]
+fn updated_notice_opens_github_release_notes_and_dismisses() {
+    let (_rt, mut ui) = runtime(420.0, Window::Quick);
+    ui.state.updated_notice = Some("0.2.19".into());
+    settle(&mut ui);
+    let elements = ui.elements();
+    let notice = elements
+        .iter()
+        .find(|e| e.role == "status" && e.label.as_deref() == Some("Ludolph updated to 0.2.19"))
+        .unwrap();
+    assert!((notice.rect[1] - 16.0).abs() < 1.0);
+    assert!(
+        notice.rect[3] <= 44.0,
+        "updated notice should be one line: {:?}",
+        notice.rect
+    );
+    let notes = elements
+        .iter()
+        .find(|e| e.label.as_deref() == Some("Release notes"))
+        .unwrap();
+    let close = elements
+        .iter()
+        .find(|e| e.label.as_deref() == Some("Close"))
+        .unwrap();
+    let center_y = |e: &ElementInfo| e.rect[1] + e.rect[3] / 2.0;
+    assert!((center_y(notes) - center_y(close)).abs() < 1.0);
+    assert!(
+        notice.rect[0] >= 15.0 && notice.rect[0] + notice.rect[2] <= 405.0,
+        "updated notice fits inside the quick window: {:?}",
+        notice.rect
+    );
+
+    click(&mut ui, notes);
+    assert_eq!(
+        ui.take_url_requests(),
+        ["https://github.com/iyazerski/ludolph/releases/tag/v0.2.19"]
+    );
+    assert!(ui.state.updated_notice.is_none());
+
+    ui.update(|s, _| s.updated_notice = Some("0.2.19".into()));
+    settle(&mut ui);
+    let close = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.label.as_deref() == Some("Close"))
+        .unwrap();
+    click(&mut ui, &close);
+    assert!(ui.state.updated_notice.is_none());
+    assert!(ui.take_url_requests().is_empty());
 }
 
 #[test]

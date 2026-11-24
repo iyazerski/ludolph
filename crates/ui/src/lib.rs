@@ -150,7 +150,17 @@ pub fn run(opts: Opts) -> Result<()> {
         .context("starting the runtime")?;
     let link = client::Link::new(&opts.state_dir).context("finding the engine")?;
     let prefs_path = opts.state_dir.join("ui.json");
-    let prefs = Rc::new(RefCell::new(Prefs::load(&prefs_path)));
+    let (mut prefs, existed) = Prefs::load(&prefs_path);
+    let previous_version = prefs.last_version.clone();
+    let updated_notice = prefs
+        .note_launch_version(VERSION, existed)
+        .then(|| VERSION.to_owned());
+    if prefs.last_version != previous_version
+        && let Err(e) = ludolph_json_file::save(&prefs_path, &prefs)
+    {
+        eprintln!("{e:#}");
+    }
+    let prefs = Rc::new(RefCell::new(prefs));
     let shared = Shared::start(rt.handle().clone(), link, prefs_path);
     let hotkey = Rc::new(Cell::new(None));
     let expand_tools = Rc::new(Cell::new(false));
@@ -183,18 +193,21 @@ pub fn run(opts: Opts) -> Result<()> {
     let quick = {
         let (shared, prefs, hotkey) = (shared.clone(), prefs.clone(), hotkey.clone());
         let expand_tools = expand_tools.clone();
+        let updated_notice = updated_notice.clone();
         let (me, peer) = (quick_handle, main_handle.clone());
         quick
             .init(move || {
                 let api = Api::start(&shared, me, peer);
-                State::new(
+                let mut state = State::new(
                     api,
                     Window::Quick,
                     prefs,
                     hotkey,
                     expand_tools,
                     Rc::default(),
-                )
+                );
+                state.updated_notice = updated_notice;
+                state
             })
             .on_visibility(|s, shown, _| s.visibility_changed(shown))
     };
@@ -202,7 +215,9 @@ pub fn run(opts: Opts) -> Result<()> {
         let (peer, handle, prefs) = (quick.handle(), main_window.clone(), prefs.clone());
         main.init(move || {
             let api = Api::start(&shared, main_handle, peer);
-            State::new(api, Window::Main, prefs, hotkey, expand_tools, handle)
+            let mut state = State::new(api, Window::Main, prefs, hotkey, expand_tools, handle);
+            state.updated_notice = updated_notice;
+            state
         })
         .chrome(Chrome {
             full_size_content: true,

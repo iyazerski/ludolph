@@ -37,13 +37,11 @@ pub fn available() -> Result<Option<String>> {
     Ok(newer(latest, crate::VERSION)?.then(|| latest.to_owned()))
 }
 
-/// Linux users install updates from the release page.
-#[cfg(target_os = "linux")]
 pub fn release_page(version: &str) -> String {
     format!("https://github.com/{REPO}/releases/tag/v{version}")
 }
 
-fn newer(candidate: &str, current: &str) -> Result<bool> {
+pub(crate) fn newer(candidate: &str, current: &str) -> Result<bool> {
     let parse =
         |v: &str| semver::Version::parse(v).with_context(|| format!("unexpected version {v}"));
     Ok(parse(candidate)? > parse(current)?)
