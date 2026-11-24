@@ -69,7 +69,7 @@ export function shellCommands(command: string): ShellCommand[] {
 }
 
 export function executable(words: string[]): string[] {
-	const start = words.findIndex((word) => !/^\w+=/.test(word) && !["do", "then", "else", "!"].includes(word));
+	const start = words.findIndex((word) => !/^\w+=/.test(word) && !["if", "elif", "do", "then", "else", "!"].includes(word));
 	if (start < 0) return [];
 	return [basename(words[start]), ...words.slice(start + 1)];
 }
@@ -117,12 +117,30 @@ export function shellEdits(command: string): boolean {
 	return false;
 }
 
+const PY_CHECKS = ["pytest", "mypy", "pyright", "ruff", "ty"];
+
+function firstSubcommand(args: string[], valueFlags: string[] = []): string[] {
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--") return args.slice(index + 1);
+		if (valueFlags.includes(arg)) { index++; continue; }
+		if (arg.startsWith("-")) continue;
+		return args.slice(index);
+	}
+	return [];
+}
+
 function isCheck(name: string, args: string[]): boolean {
-	return (name === "cargo" && ["test", "check", "clippy", "build", "fmt"].includes(args[0]))
-		|| (["bun", "npm", "pnpm"].includes(name) && (args[0] === "test" || (args[0] === "run" && /^(test|check|typecheck|lint|build)(:|$)/.test(args[1] ?? ""))))
-		|| (name === "prek" && args[0] === "run")
-		|| ["pytest", "mypy", "pyright", "ruff"].includes(name)
-		|| (name === "uv" && args[0] === "run" && ["pytest", "mypy", "pyright", "ruff"].includes(args[1]));
+	if (name === "cargo") return ["test", "check", "clippy", "build", "fmt"].includes(args[0]);
+	if (name === "go") return ["test", "vet", "build"].includes(args[0]);
+	if (["bun", "npm", "pnpm"].includes(name)) {
+		const sub = firstSubcommand(args, ["--cwd", "-C"]);
+		return sub[0] === "test" || (sub[0] === "run" && /^(test|check|typecheck|lint|build)(:|$)/.test(sub[1] ?? ""));
+	}
+	if (name === "prek") return args[0] === "run";
+	if (PY_CHECKS.includes(name)) return true;
+	return name === "uv" && args[0] === "run"
+		&& PY_CHECKS.includes(firstSubcommand(args.slice(1), ["--with", "--extra", "--group", "--directory", "--python", "-p"])[0] ?? "");
 }
 
 function publishes(name: string, args: string[]): boolean {
@@ -139,6 +157,10 @@ function publishes(name: string, args: string[]): boolean {
  * status is hidden by a pipe filter or a `;` separates them. `hidden`: a pipe filter hides a check's
  * status, but nothing depends on it.
  */
+function testsStatus(name: string, args: string[], statuses: Set<string>): boolean {
+	return ["[", "[[", "test"].includes(name) && args.some((arg) => statuses.has(arg.replace(/^\$\{?(\w+)\}?$/, "$1")));
+}
+
 export function checkRisk(command: string): "publish" | "hidden" | undefined {
 	const capturesStatus = /\$\{?PIPESTATUS\b/.test(command);
 	let pipefail = false, errexit = false, hidden = false;
@@ -150,7 +172,11 @@ export function checkRisk(command: string): "publish" | "hidden" | undefined {
 	let cleared = false;
 	// The state before a check ended with `||`, restored when what runs on failure is `exit`.
 	let beforeOr: { current: boolean; pending: boolean } | undefined;
+	// A saved-status test joined with `&&`/`||`; an immediate `exit` clears earlier failures.
+	let statusExit = false;
+	const ifStack: { guarded: boolean; branch: "cond" | "then" | "else"; exited: boolean }[] = [];
 	for (const { words, operator } of shellCommands(command)) {
+		const lead = words[0];
 		const [name = "", ...args] = executable(words);
 		for (const word of words) {
 			const saved = /^(\w+)=\$\?$/.exec(word);
@@ -158,7 +184,24 @@ export function checkRisk(command: string): "publish" | "hidden" | undefined {
 		}
 		if (beforeOr && name === "exit") ({ current, pending } = beforeOr);
 		beforeOr = undefined;
-		if (["[", "[[", "test"].includes(name) && operator === "&&" && args.some((arg) => statuses.has(arg.replace(/^\$\{?(\w+)\}?$/, "$1")))) cleared = true;
+		if (statusExit && name === "exit") carried = current = pending = false;
+		statusExit = false;
+		if (lead === "if") ifStack.push({ guarded: testsStatus(name, args, statuses), branch: "cond", exited: false });
+		else if (lead === "then" && ifStack.length) ifStack[ifStack.length - 1].branch = "then";
+		else if (lead === "elif" && ifStack.length) {
+			ifStack[ifStack.length - 1] = { guarded: testsStatus(name, args, statuses), branch: "cond", exited: false };
+		} else if (lead === "else" && ifStack.length) {
+			ifStack[ifStack.length - 1].branch = "else";
+		} else if (lead === "fi") {
+			const frame = ifStack.pop();
+			if (frame?.guarded && frame.exited) carried = current = pending = false;
+		}
+		const activeIf = ifStack.at(-1);
+		if (activeIf?.guarded && activeIf.branch === "then" && name === "exit") activeIf.exited = true;
+		if (testsStatus(name, args, statuses)) {
+			if (operator === "&&") { cleared = true; statusExit = true; }
+			else if (operator === "||") statusExit = true;
+		}
 		if (name === "set") {
 			for (let index = 0; index < args.length; index++) {
 				const flags = /^([-+])([a-zA-Z]*)$/.exec(args[index]);
@@ -171,7 +214,8 @@ export function checkRisk(command: string): "publish" | "hidden" | undefined {
 				if (option === "errexit") errexit = on;
 			}
 		}
-		if ((carried || current) && !cleared && publishes(name, args)) return "publish";
+		const inGuardedIf = ifStack.some((frame) => frame.guarded && frame.branch !== "cond");
+		if ((carried || current) && !cleared && !inGuardedIf && publishes(name, args)) return "publish";
 		if (isCheck(name, args)) check = checkLast = true;
 		else if (check) checkLast = false;
 		if (operator === "|" || operator === "|&") continue;
@@ -199,7 +243,9 @@ export function waitsInForeground(command: string): boolean {
 	return shellCommands(command).some(({ words, background, loop }) => {
 		if (background || loop) return false;
 		const [name, ...args] = executable(words);
-		if (name === "gh") return (args[0] === "run" && args[1] === "watch") || (args[0] === "pr" && args[1] === "checks" && args.includes("--watch"));
+		if (name === "gh" && !args.includes("-h") && !args.includes("--help")) {
+			return (args[0] === "run" && args[1] === "watch") || (args[0] === "pr" && args[1] === "checks" && args.includes("--watch"));
+		}
 		const duration = name === "sleep" ? /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(args[0] ?? "") : null;
 		return duration !== null && Number(duration[1]) * SECONDS[duration[2]] >= 10;
 	});

@@ -36,6 +36,7 @@ const HINTS: Record<HintKind, string> = {
 const CHECKS_BEFORE_PUBLISH = "A failed check would not stop the commit or push in this command. Log each check to a file and save `$?`, then commit or push only after the checks pass, chained with `&&` or in a later call.";
 
 const RUNS_SCRIPT = /\b(python3?|bun\s+-e|node\s+-e)\b/;
+const TEMP_SCRIPT_WRITE = /\b(?:Bun\.write|writeFileSync)\(\s*["'`]\/(?:private\/)?tmp\/|\bopen\(\s*["'`]\/(?:private\/)?tmp\/[^)]*\)(?:\.write\()?|\bPath\(\s*["'`]\/(?:private\/)?tmp\/[^)]*\)\.write_text\(/g;
 const WRITES_FROM_SCRIPT = /\bwrite_text\(|(?<!\bsys\.std(out|err))\.write\(|\bopen\([^)]*,\s*["'][wa]|writeFileSync|Bun\.write\(/;
 const READS_FROM_SCRIPT = /\bread_text\(|\.read\(\)|readFileSync|Bun\.file\(/;
 const CHANGES_TEXT = /\.replace\(|\.subn?\(|\.index\(/;
@@ -52,16 +53,13 @@ const LOOKUP_COMMANDS = new Set([
 	"uniq", "cut", "tr", "awk", "file", "stat", "which", "command", "grep", "find", "du", "basename", "dirname",
 	"readlink", "realpath", "cd", "true", "diff",
 ]);
-const SEARCH = /^(?:rg|grep|git\s+(?:-C\s+\S+\s+)?grep)\s/;
 // Text dumps and scratch clones aren't indexed by the session's language server.
-const OUTSIDE_WORKSPACE = /(?:^|\s)\/(?:tmp|private)\/|\.txt\b/;
-const PYTHON_SCOPE = /\s(?:-t\s*|--type[= ])py\b|\.py\b/;
-const GO_SCOPE = /\s(?:-t\s*|--type[= ])go\b|\.go\b/;
+const TEMP_DIR = /^\/(?:private\/)?tmp(?:\/|$)/;
+const OUTSIDE_WORKSPACE = /(?:^|\s)\/(?:tmp|private)(?:\/|\s|$)|\.txt\b/;
 const SPACE = String.raw`(?:\s|\\s)`;
 const PYTHON_DEF = new RegExp(String.raw`\bdef${SPACE}`);
 const PYTHON_DEFINITION = new RegExp(String.raw`\b(?:def|class)${SPACE}`);
 const GO_DEFINITION = new RegExp(String.raw`\bfunc${SPACE}|\btype${SPACE}+\w+${SPACE}+(?:struct|interface)\b`);
-const WORD_SEARCH = /\s-\w*w\b|--word-regexp|\\b\w+\\b/;
 const LOOKUP_GIT = /^git\s+(-C\s+\S+\s+)?(status|log|diff|show|blame|grep|ls-files|rev-parse|branch|remote)\b/;
 const BATCH_AFTER_TURNS = 2;
 // Direct tool results to wait before repeating a hint: repeating it on every call adds noise, not habits.
@@ -108,12 +106,13 @@ export function usesVenvInUvProject(command: string, cwd: string): boolean {
 }
 
 function rewritesFile(local: string): boolean {
-	return RUNS_SCRIPT.test(local) && WRITES_FROM_SCRIPT.test(local) && READS_FROM_SCRIPT.test(local) && CHANGES_TEXT.test(local);
+	return RUNS_SCRIPT.test(local) && WRITES_FROM_SCRIPT.test(local.replace(TEMP_SCRIPT_WRITE, ""))
+		&& READS_FROM_SCRIPT.test(local) && CHANGES_TEXT.test(local);
 }
 
 function readsIntoContext(part: string): boolean {
 	const [first, next] = part.split("|").map((piece) => piece.trim());
-	if (!READS_FILE.test(first) || /\.log\b/.test(first)) return false;
+	if (!READS_FILE.test(first) || /\.log\b|\/(?:private\/)?tmp\/|\$\(/.test(first)) return false;
 	return next === undefined || /^(head|tail|sed|nl|cat)\b/.test(next);
 }
 
@@ -136,21 +135,56 @@ export function commandHints(command: string): HintKind[] {
  * `class` and whole-word searches count only when scoped to the language's files, since other
  * languages share them. `def` and Go's `func` or `type T struct` mark the language on their own.
  */
+const SEARCH_VALUE_FLAGS = new Set(["-g", "--glob", "-t", "--type", "-T", "--type-not", "-A", "-B", "-C", "-m", "--max-count", "-f", "--file"]);
+
+function searchPattern(args: string[]): string | undefined {
+	let pattern: string | undefined;
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "-e" || arg === "--regexp") { pattern = args[++index]; continue; }
+		if (arg === "--") return args[index + 1];
+		if (SEARCH_VALUE_FLAGS.has(arg)) { index++; continue; }
+		if (arg.startsWith("-")) continue;
+		return pattern ?? arg;
+	}
+	return pattern;
+}
+
 export function symbolLookup(command: string): "lspyx" | "gopls" | undefined {
 	const local = localPart(command);
 	if (OUTSIDE_WORKSPACE.test(local)) return undefined;
-	for (const part of segments(local, false)) {
-		if (!SEARCH.test(part)) continue;
-		const python = PYTHON_SCOPE.test(part), go = GO_SCOPE.test(part);
-		if (go ? GO_DEFINITION.test(part) || WORD_SEARCH.test(part) : !python && GO_DEFINITION.test(part)) return "gopls";
-		if (python ? PYTHON_DEFINITION.test(part) || WORD_SEARCH.test(part) : PYTHON_DEF.test(part)) return "lspyx";
+	let piped = false;
+	for (const { words, operator } of shellCommands(local)) {
+		const wasPiped = piped;
+		piped = operator === "|" || operator === "|&";
+		const [name = "", ...args] = executable(words);
+		if (name === "cd" && args[0] && TEMP_DIR.test(args[0])) return undefined;
+		if (wasPiped) continue;
+		let searchArgs: string[] | undefined;
+		if (name === "rg" || name === "grep") searchArgs = args;
+		else if (name === "git") {
+			const grepAt = args.findIndex((arg, index) => !arg.startsWith("-") && !["-C", "-c"].includes(args[index - 1]));
+			if (grepAt >= 0 && args[grepAt] === "grep") searchArgs = args.slice(grepAt + 1);
+		}
+		if (!searchArgs) continue;
+		const pattern = searchPattern(searchArgs);
+		// Multi-term regex alternations don't map to a single language-server symbol query.
+		if (!pattern || pattern.includes("|")) continue;
+		const joined = searchArgs.join(" ");
+		const python = /(?:^|\s)(?:-t\s*|--type[= ])py\b|\.py\b/.test(joined);
+		const go = /(?:^|\s)(?:-t\s*|--type[= ])go\b|\.go\b/.test(joined);
+		const word = searchArgs.some((arg) => /^-[a-zA-Z]*w/.test(arg) || arg === "--word-regexp") || /\\b\w+\\b/.test(pattern);
+		if (go ? GO_DEFINITION.test(pattern) || word : !python && GO_DEFINITION.test(pattern)) return "gopls";
+		if (python ? PYTHON_DEFINITION.test(pattern) || word : PYTHON_DEF.test(pattern)) return "lspyx";
 	}
 }
 
 export function codemodeHints(code: string): HintKind[] {
-	const writes = /tools\.write\s*\(/.test(code);
+	const writeCalls = [...code.matchAll(/tools\.write\s*\(\s*\{([^}]*)\}/g)];
+	const hasNonTempWrite = /tools\.write\s*\(/.test(code) && (writeCalls.length === 0
+		|| writeCalls.some((match) => !/\bpath\s*:\s*["'`]\/(?:private\/)?tmp\//.test(match[1])));
 	const reads = /tools\.read\s*\(|tools\.bash\s*\(\{\s*command:\s*[`"']cat\s/.test(code);
-	return writes && reads && /\.(replace(?:All)?|slice|splice|indexOf)\s*\(/.test(code) ? ["edit"] : [];
+	return hasNonTempWrite && reads && /\.(replace(?:All)?|splice)\s*\(/.test(code) ? ["edit"] : [];
 }
 
 function hintText(hints: Iterable<HintKind>): string {
@@ -179,8 +213,10 @@ export default function (pi: ExtensionAPI) {
 		if (!event.parentToolCallId) turnCalls.set(event.toolCallId, event.toolName);
 		if (event.toolName === "codemode" && typeof event.input.code === "string" && codemodeHints(event.input.code).includes("edit")) scriptedPatches.add(event.toolCallId);
 		if (event.toolName === "write" && event.parentToolCallId && scriptedPatches.has(event.parentToolCallId)
-			&& typeof event.input.path === "string" && existsSync(resolvePath(ctx.cwd, event.input.path.replace(/^@/, "")))
-			&& pi.getActiveTools().includes("edit")) return { block: true, reason: HINTS.edit };
+			&& typeof event.input.path === "string") {
+			const raw = event.input.path.replace(/^@/, "");
+			if (!TEMP_DIR.test(raw) && existsSync(resolvePath(ctx.cwd, raw)) && pi.getActiveTools().includes("edit")) return { block: true, reason: HINTS.edit };
+		}
 		if (event.toolName === "bash" && typeof event.input.command === "string") {
 			const command = event.input.command;
 			if (pi.getActiveTools().includes("edit") && (shellEdits(command) || rewritesFile(localPart(command)))) return { block: true, reason: HINTS.edit };
@@ -227,7 +263,8 @@ export default function (pi: ExtensionAPI) {
 		if (event.isError && /\bgh\s/.test(localPart(command))
 			&& /HTTP (?:401|403|404)\b|Could not resolve to a Repository|Resource not accessible|Bad credentials|authentication failed|repository[^\n]*not found/i.test(output)) hints.add("github");
 		if ((isBashToolResult(event) && event.details?.truncation)
-			|| (event.toolName === "codemode" && output.startsWith("Warning: truncated output (original token count:"))) hints.add("output");
+			|| (event.toolName === "codemode" && (Boolean((event.details as { fullOutputPath?: string } | undefined)?.fullOutputPath)
+				|| event.content.some((part) => part.type === "text" && part.text.startsWith("Warning: truncated output (original token count:"))))) hints.add("output");
 		if (command && usesVenvInUvProject(command, ctx.cwd)) hints.add("uv");
 		const siblings = [...turnCalls].filter(([id, name]) => id !== event.toolCallId && name !== "read");
 		if (event.toolName === "read" && !event.parentToolCallId && event.isError && siblings.length > 0 && output.includes("ENOENT")) {

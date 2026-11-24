@@ -20,7 +20,7 @@ const TOOL_ROUTING = `Minimize tool turns and returned output.
 - JSON: \`jq\` for files and command output, \`JSON.parse\` for tool results.
 - Patch existing files with \`edit\`, not shell/Python patches or read-transform-write scripts.
 - Use \`write\` for new files or deliberate complete rewrites, not patches or heredocs.
-- Inline scripts only for logic needing a language or library: codemode JS for tool results, otherwise \`bun -e\` or \`uv run python -\`.
+- One-off scripts only when a language or library is needed: codemode JS for tool results, \`bun\` by default, \`uv run\` Python (\`--no-project --with <pkg>\` standalone, \`--no-sync\` in Python repos) for Python libs/imports. Keep inline scripts under ~10 lines; write longer ones to \`/tmp/*.{ts,py}\` and run.
 - Checks: log each check to a file and save \`$?\` before filtering. Commit or push only after checks pass. In codemode, check Bash \`exit_code\`, not just \`output\`.
 - Waiting: keep short prerequisite waits bounded in one command. Don't sleep across turns. Codemode has no timers.`;
 
@@ -36,6 +36,9 @@ export default function (pi: ExtensionAPI) {
 		// The list covers these built-in rules.
 		options.toolGuidelines.read = (options.toolGuidelines.read ?? []).filter(
 			(rule) => !rule.startsWith("Use read to examine files"),
+		);
+		options.toolGuidelines.write = (options.toolGuidelines.write ?? []).filter(
+			(rule) => !rule.startsWith("Use write only for"),
 		);
 		options.toolGuidelines.codemode = (options.toolGuidelines.codemode ?? []).filter(
 			(rule) => !rule.startsWith("Use codemode to batch"),

@@ -50,12 +50,20 @@ test("guards shell edits, inline patch scripts, and commits that a failed check 
 			["printf old | sd old new > /tmp/out", false],
 			["sd -n 1 -F old new file", true],
 			["python3 - <<'EOF'\np = 'a.rs'\ns = open(p).read()\nopen(p, 'w').write(s.replace('a', 'b'))\nEOF", true],
+			["bun -e 'Bun.write(\"/tmp/out.txt\", (await Bun.file(\"a.rs\").text()).replace(\"a\", \"b\"))'", false],
 			["cat > /tmp/notes.sh <<'EOF'\nsed -i s/a/b/ file\nEOF", false],
 			["cargo clippy 2>&1 | tail -2 && cargo test && git commit -qm fix", true],
 			["set -o pipefail; cargo test 2>&1 | rg 'test result'; git commit -qm fix && git push", true],
 			["set -o pipefail; set +o pipefail; uv run pytest | head && git -C repo push", true],
 			["cargo test && gh pr merge 1", false],
 			["cargo test > t.log 2>&1; s=$?; tail t.log; [ \"$s\" -eq 0 ] && git commit -qm fix", false],
+			["prek run --files a.ts > /tmp/p.log 2>&1; s=$?; [ \"$s\" -eq 0 ] || exit \"$s\"; git commit -qm fix", false],
+			["prek run --files a.ts > /tmp/p.log 2>&1; s=$?; if [ \"$s\" -ne 0 ]; then tail /tmp/p.log; exit \"$s\"; fi; git commit -qm fix", false],
+			["prek run --files a.ts > /tmp/p.log 2>&1; s=$?; if [ \"$s\" -eq 0 ]; then git commit -qm fix; fi", false],
+			["prek run --files a.ts > /tmp/p.log 2>&1; s=$?; if [ \"$s\" -ne 0 ]; then echo failed; fi; git commit -qm fix", true],
+			["uv run --no-sync ty check 2>&1 | head && git commit -qm fix", true],
+			["bun --bun run typecheck 2>&1 | tail -3 && git commit -qm fix", true],
+			["go test ./... 2>&1 | tail -5 && git commit -qm fix", true],
 			["cargo test > t.log 2>&1; s=$?; tail t.log; [ \"$s\" -eq 0 ] && echo ok; git push", true],
 			["cargo test || exit 1; git commit -qm fix", false],
 			["cargo test | tail || exit 1; git commit -qm fix", true],
@@ -84,6 +92,7 @@ test("hints at foreground waits, hidden check status, file reads, and truncated 
 	const cases: [ToolResultEvent, HintKind, boolean][] = [
 		bash("sleep 60; wc -c out.txt", "sleep", true),
 		bash("gh run watch 1 --exit-status", "sleep", true),
+		bash("gh run watch --help | rg interval", "sleep", false),
 		bash("(cargo test > t.log 2>&1; echo done) </dev/null >/dev/null 2>&1 & sleep 55; cat t.log", "sleep", true),
 		bash("make dev > dev.log 2>&1; sleep 3; pgrep fettle", "sleep", false),
 		bash("timeout 600 sh -c 'until [ -s out.txt ]; do sleep 10; done'", "sleep", false),
@@ -94,8 +103,10 @@ test("hints at foreground waits, hidden check status, file reads, and truncated 
 		bash("sed -n 1,40p src/main.rs", "read", true),
 		bash("cat docs/design.md | wc -l", "read", false),
 		bash("tail -5 target/dev.log", "read", false),
+		bash("cat /tmp/t.code", "read", false),
+		bash("head -1 $(readlink -f ~/.bun/bin/pi)", "read", false),
 		[{ type: "tool_result", toolName: "bash", toolCallId: "call", input: { command: "cargo build" }, content: [], isError: false, details: { truncation } }, "output", true],
-		[{ type: "tool_result", toolName: "codemode", toolCallId: "call", input: { code: "" }, content: [{ type: "text", text: "Warning: truncated output (original token count: 9000)\n…" }], isError: false, details: undefined }, "output", true],
+		[{ type: "tool_result", toolName: "codemode", toolCallId: "call", input: { code: "" }, content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }, { type: "text", text: "Warning: truncated output (original token count: 9000)\n…" }], isError: false, details: { fullOutputPath: "/tmp/out.txt" } }, "output", true],
 		[{ type: "tool_result", toolName: "read", toolCallId: "call", input: { path: "hints.ts" }, content: [{ type: "text", text: "Warning: truncated output" }], isError: false, details: undefined }, "output", false],
 	];
 	for (const [event, kind, expected] of cases) {
@@ -138,6 +149,8 @@ test("points symbol searches to the connected language server", async () => {
 		["rg -n 'class Settings' src", "lspyx", false],
 		["cat dump | rg 'def load'", "lspyx", false],
 		["rg -n 'def load' /tmp/site-packages.txt", "lspyx", false],
+		["cd /tmp && rg -n 'def load' repo/a.py", "lspyx", false],
+		["rg -n 'foo|def bar|baz' tests/fake.py", "lspyx", false],
 		["rg -n 'func New' internal", "gopls", false],
 	];
 	for (const [command, kind, expected] of cases) {
@@ -181,5 +194,10 @@ test("blocks scripted patches, aggregates recovery hints, and preserves structur
 		expect(result?.structuredContent).toEqual({ ok: true });
 		expect(JSON.stringify(result?.content)).toContain("Hint [recovery]");
 		expect(JSON.stringify(result?.content)).toContain("Hint [edit]");
+		const scratch = "const text = await tools.read({path: 'file'}); await tools.write({path: '/tmp/scratch.ts', content: text.replace('old', 'new')});";
+		await runner.emitToolCall({ type: "tool_call", toolName: "codemode", toolCallId: "scratch", input: { code: scratch } });
+		const scratchRes = await runner.emitToolResult({ type: "tool_result", toolName: "codemode", toolCallId: "scratch",
+			input: { code: scratch }, content: [], isError: false, details: undefined });
+		expect(JSON.stringify(scratchRes?.content ?? [])).not.toContain("Hint [edit]");
 	});
 });
