@@ -22,6 +22,8 @@ pub struct Prefs {
     pub release_checked: Option<DateTime<Utc>>,
     /// The release whose notice was closed, so it isn't offered again.
     pub dismissed_release: Option<String>,
+    /// The last version launched, so an update can be announced when Ludolph re-opens.
+    pub last_version: Option<String>,
     #[cfg(windows)]
     pub managed_wsl: Option<String>,
 }
@@ -46,6 +48,7 @@ impl Default for Prefs {
             text_size: TextSize::default(),
             release_checked: None,
             dismissed_release: None,
+            last_version: None,
             #[cfg(windows)]
             managed_wsl: None,
         }
@@ -148,13 +151,36 @@ impl From<Option<String>> for ProjectPick {
 }
 
 impl Prefs {
-    pub fn load(path: &Path) -> Self {
-        ludolph_json_file::load::<Prefs>(path)
-            .unwrap_or_else(|e| {
+    pub fn load(path: &Path) -> (Self, bool) {
+        match ludolph_json_file::load::<Prefs>(path) {
+            Ok(Some(prefs)) => (prefs, true),
+            Ok(None) => (Self::default(), false),
+            Err(e) => {
                 eprintln!("{e:#}");
-                None
-            })
-            .unwrap_or_default()
+                (Self::default(), false)
+            }
+        }
+    }
+
+    /// Updates `last_version` on first launch or upgrade and reports whether this launch
+    /// updated from an earlier installed version.
+    pub fn note_launch_version(&mut self, current: &str, existed: bool) -> bool {
+        match self.last_version.as_deref() {
+            Some(previous) => {
+                if crate::update::newer(current, previous).unwrap_or(false) {
+                    self.last_version = Some(current.to_owned());
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                self.last_version = Some(current.to_owned());
+                // Existing prefs from before `last_version` existed: treat a release build
+                // newer than the workspace version as an update.
+                existed && crate::update::newer(current, env!("CARGO_PKG_VERSION")).unwrap_or(false)
+            }
+        }
     }
 
     #[must_use]
@@ -188,5 +214,26 @@ impl Prefs {
         if !self.collapsed.remove(key) {
             self.collapsed.insert(key.to_owned());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Prefs;
+
+    #[test]
+    fn note_launch_version_announces_only_upgrades() {
+        let mut fresh = Prefs::default();
+        assert!(!fresh.note_launch_version("0.2.19", false));
+        assert_eq!(fresh.last_version.as_deref(), Some("0.2.19"));
+        assert!(!fresh.note_launch_version("0.2.19", true));
+        assert!(fresh.note_launch_version("0.2.20", true));
+        assert_eq!(fresh.last_version.as_deref(), Some("0.2.20"));
+        assert!(!fresh.note_launch_version("0.2.0", true));
+        assert_eq!(fresh.last_version.as_deref(), Some("0.2.20"));
+
+        let mut legacy = Prefs::default();
+        assert!(legacy.note_launch_version("0.2.19", true));
+        assert_eq!(legacy.last_version.as_deref(), Some("0.2.19"));
     }
 }

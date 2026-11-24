@@ -18,10 +18,10 @@ mod sidebar;
 mod theme;
 mod widgets;
 
-use rune::{Cx, Edge, El, Key, KeyEvent, SystemMaterial, Transition, Tx, col};
-use rune_kit::Toast;
-
-use rune_kit::Kit;
+use rune::{
+    Cx, Edge, El, Key, KeyEvent, SystemMaterial, TextStyle, Transition, Tx, col, row, text,
+};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Toast};
 
 use super::app::{ChatPage, Overlay, Page, State, ToastKind, Window};
 use super::prefs::TextSize;
@@ -73,12 +73,79 @@ fn quick(s: &State) -> El {
     rune_kit::root(body, layer)
 }
 
+fn notice_toast(
+    key: &'static str,
+    title: String,
+    action: &'static str,
+    on_action: impl Fn(&mut State, &mut Tx) + 'static,
+    on_close: impl Fn(&mut State) + 'static,
+    k: &Kit,
+) -> El {
+    let root = row()
+        .key(key)
+        .role("status")
+        .label(title.clone())
+        .max_w(420.0)
+        .pl(14.0)
+        .pr(10.0)
+        .py(8.0)
+        .gap(10.0)
+        .center_y()
+        .radius(18.0)
+        .fill(k.c.layer_01)
+        .child(
+            text(title)
+                .key("title")
+                .font(TextStyle {
+                    line_height: 20.0,
+                    ..k.ty.ui_medium
+                })
+                .color(k.c.text_base)
+                .min_w(0.0)
+                .shrink()
+                .truncate()
+                .a11y_hidden(),
+        )
+        .child(
+            Button::new(action)
+                .variant(ButtonVariant::Neutral)
+                .control_size(ControlSize::Regular)
+                .on_press_tx(on_action)
+                .build(k),
+        )
+        .child(
+            IconButton::new(k.glyph.close)
+                .variant(IconButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .label("Close")
+                .on_press(on_close)
+                .build(k),
+        );
+    k.elevate(root, &k.elevation.floating)
+        .transition(Transition::move_edge(Edge::Top))
+        .motion(rune::Spring::new(0.28, 0.0))
+}
+
 fn toast(s: &State, k: &Kit) -> Option<El> {
+    let updated = s.updated_notice.as_ref().map(|version| {
+        notice_toast(
+            "updated",
+            format!("Ludolph updated to {version}"),
+            "Release notes",
+            State::open_updated_release_notes,
+            State::dismiss_updated,
+            k,
+        )
+    });
     let release = s.release_notice.as_ref().map(|version| {
-        Toast::new("release", format!("Ludolph {version} is out"))
-            .description("Updating restarts Ludolph and stops running chats.")
-            .action(k, "Update", true, |s: &mut State, tx| s.install_release(tx))
-            .on_close(State::dismiss_release)
+        notice_toast(
+            "release",
+            format!("Ludolph {version} is out"),
+            "Update",
+            State::install_release,
+            State::dismiss_release,
+            k,
+        )
     });
     let note = s.toast.as_ref().map(|t| {
         let mut toast = Toast::new("toast", t.title.clone());
@@ -88,9 +155,15 @@ fn toast(s: &State, k: &Kit) -> Option<El> {
         if t.kind == ToastKind::Failure {
             toast = toast.icon(k, &icons::ALERT);
         }
-        toast.on_close(|s: &mut State| s.toast = None)
+        toast
+            .on_close(|s: &mut State| s.toast = None)
+            .build(k)
+            .w_full()
+            .max_w(320.0)
+            .radius(18.0)
+            .transition(Transition::move_edge(Edge::Top))
     });
-    if release.is_none() && note.is_none() {
+    if updated.is_none() && release.is_none() && note.is_none() {
         return None;
     }
     Some(
@@ -101,14 +174,7 @@ fn toast(s: &State, k: &Kit) -> Option<El> {
             .pin(Some(16.0), Some(16.0), Some(16.0), None)
             .items_center()
             .gap(8.0)
-            .children(release.into_iter().chain(note).map(|toast| {
-                toast
-                    .build(k)
-                    .w_full()
-                    .max_w(320.0)
-                    .radius(18.0)
-                    .transition(Transition::move_edge(Edge::Top))
-            })),
+            .children(updated.into_iter().chain(release).chain(note)),
     )
 }
 

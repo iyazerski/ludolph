@@ -124,6 +124,9 @@ pub struct State {
     pub toast: Option<Toast>,
     /// A newer release to offer; it stays until updated or closed.
     pub release_notice: Option<String>,
+    /// The version Ludolph just updated to; stays until release notes are opened or closed.
+    pub updated_notice: Option<String>,
+    release_check_scheduled: bool,
     pub chat_dialog: Option<ChatDialog>,
     /// Edits aimed at the rename field once its dialog is gone land here.
     scratch_title: TextEdit,
@@ -236,6 +239,8 @@ impl State {
             list: ListState::default(),
             toast: None,
             release_notice: None,
+            updated_notice: None,
+            release_check_scheduled: false,
             chat_dialog: None,
             scratch_title: TextEdit::default(),
             scratch_search: TextEdit::default(),
