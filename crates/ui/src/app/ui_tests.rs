@@ -1390,3 +1390,263 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
             .any(|e| e.key.as_deref() == Some("resource-extensions-Built-in"))
     );
 }
+
+fn drag_and_copy(ui: &mut rune::Runtime<State>, from: (f32, f32), to: (f32, f32)) {
+    ui.pointer_move(from.0, from.1);
+    ui.pointer_down(from.0, from.1);
+    settle(ui);
+    ui.pointer_move(to.0, to.1);
+    settle(ui);
+    ui.pointer_up(to.0, to.1);
+    settle(ui);
+    ui.key(rune::KeyEvent {
+        key: rune::Key::Command('c'),
+        mods: rune::Mods {
+            cmd: true,
+            ..Default::default()
+        },
+    });
+    settle(ui);
+}
+
+fn single_message_ui(role: Role, source: &str) -> (tokio::runtime::Runtime, rune::Runtime<State>) {
+    let (rt, mut ui) = runtime(1120.0, Window::Main);
+    let mut chat = Existing::new("test".into(), None);
+    chat.page = Some(vec![Message {
+        id: "message".into(),
+        role,
+        created_at: 1_700_000_000_000,
+        ended_at: 1_700_000_000_000,
+        status: MessageStatus::Complete,
+        parts: vec![Part::Text {
+            text: source.into(),
+        }],
+    }]);
+    ui.state.page = Page::Chat(Box::new(ChatPage::new(
+        0,
+        Target::Existing(chat),
+        TextEdit::default(),
+    )));
+    settle(&mut ui);
+    (rt, ui)
+}
+
+#[test]
+fn multiline_user_messages_preserve_line_breaks_and_list_exits() {
+    let (_rt, mut ui) = single_message_ui(Role::User, "First line\nSecond line");
+    let elements = ui.elements();
+    let message = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("m-message"))
+        .unwrap();
+    let para = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.key.as_deref() == Some("b0"))
+        .expect("paragraph element");
+    assert_eq!(para.text.as_deref(), Some("First line\nSecond line"));
+
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
+    let copy_btn = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.label.as_deref() == Some("Copy"))
+        .expect("copy button");
+    click(&mut ui, copy_btn);
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some("First line\nSecond line")
+    );
+
+    ui.update(|s, tx| {
+        s.chat_mut().unwrap().composer.focused = false;
+        tx.select_all_text("m-message");
+    });
+    settle(&mut ui);
+    ui.key(rune::KeyEvent {
+        key: rune::Key::Command('c'),
+        mods: rune::Mods {
+            cmd: true,
+            ..Default::default()
+        },
+    });
+    settle(&mut ui);
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some("First line\nSecond line")
+    );
+
+    let source = "1. First\n2. Second\nAfter list";
+    let (_rt2, mut ui) = single_message_ui(Role::User, source);
+    let elements = ui.elements();
+    let message = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("m-message"))
+        .unwrap();
+    let items: Vec<_> = elements
+        .iter()
+        .filter(|e| {
+            e.path.starts_with(&message.path) && e.path.contains("/i") && e.path.ends_with("/b0")
+        })
+        .collect();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].text.as_deref(), Some("First"));
+    assert_eq!(items[1].text.as_deref(), Some("Second"));
+    let after = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.key.as_deref() == Some("b1"))
+        .expect("trailing line renders as a separate paragraph");
+    assert_eq!(after.text.as_deref(), Some("After list"));
+
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
+    let r1 = items[1].rect;
+    let ra = after.rect;
+    drag_and_copy(
+        &mut ui,
+        (r1[0] + 1.0, r1[1] + r1[3] / 2.0),
+        (ra[0] + ra[2] - 1.0, ra[1] + ra[3] / 2.0),
+    );
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some("2. Second\nAfter list")
+    );
+}
+
+#[test]
+fn copying_lists_preserves_markers_for_button_and_selection() {
+    let path = "/Users/me/projects/ludolph/crates/ui/src/view/chat.rs";
+    let source = format!("Use $review on `{path}`:\n\n1. **First** item\n2. `Second` item");
+    let (_rt, mut ui) = single_message_ui(Role::Assistant, &source);
+    let elements = ui.elements();
+    let message = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("m-message"))
+        .unwrap();
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
+
+    let copy_btn = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.label.as_deref() == Some("Copy"))
+        .expect("copy button");
+    click(&mut ui, copy_btn);
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some(source.as_str())
+    );
+
+    ui.update(|s, tx| {
+        s.chat_mut().unwrap().composer.focused = false;
+        tx.select_all_text("m-message");
+    });
+    settle(&mut ui);
+    ui.key(rune::KeyEvent {
+        key: rune::Key::Command('c'),
+        mods: rune::Mods {
+            cmd: true,
+            ..Default::default()
+        },
+    });
+    settle(&mut ui);
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some(source.as_str())
+    );
+
+    let items: Vec<_> = elements
+        .iter()
+        .filter(|e| {
+            e.path.starts_with(&message.path) && e.path.contains("/i") && e.path.ends_with("/b0")
+        })
+        .collect();
+    assert_eq!(items.len(), 2);
+
+    let r0 = items[0].rect;
+    let r1 = items[1].rect;
+    // Single whole list item keeps its marker and Markdown formatting.
+    drag_and_copy(
+        &mut ui,
+        (r0[0] + 1.0, r0[1] + r0[3] / 2.0),
+        (r0[0] + r0[2] - 1.0, r0[1] + r0[3] / 2.0),
+    );
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some("1. **First** item")
+    );
+
+    // Selecting just a single word inside an item does not prepend a marker.
+    drag_and_copy(
+        &mut ui,
+        (r0[0] + 1.0, r0[1] + r0[3] / 2.0),
+        (r0[0] + 30.0, r0[1] + r0[3] / 2.0),
+    );
+    let copied = clipboard.text();
+    let copied = copied.as_deref().map(String::as_str).unwrap_or("");
+    assert!(
+        !copied.is_empty() && !copied.starts_with("1. "),
+        "copied={copied:?}"
+    );
+
+    // Both items copy with markers and Markdown formatting.
+    drag_and_copy(
+        &mut ui,
+        (r0[0] + 1.0, r0[1] + r0[3] / 2.0),
+        (r1[0] + r1[2] - 1.0, r1[1] + r1[3] / 2.0),
+    );
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some("1. **First** item\n2. `Second` item")
+    );
+
+    // Bullet lists and nested items keep markers too.
+    let (_rt2, mut ui) = single_message_ui(
+        Role::User,
+        "1. Outer\n   - Inner A\n   - Inner B\n2. Second",
+    );
+    let elements = ui.elements();
+    let message = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("m-message"))
+        .unwrap();
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
+    let inner_a = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("Inner A"))
+        .expect("Inner A");
+    let inner_b = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("Inner B"))
+        .expect("Inner B");
+    drag_and_copy(
+        &mut ui,
+        (
+            inner_a.rect[0] + 1.0,
+            inner_a.rect[1] + inner_a.rect[3] / 2.0,
+        ),
+        (
+            inner_a.rect[0] + inner_a.rect[2] - 1.0,
+            inner_a.rect[1] + inner_a.rect[3] / 2.0,
+        ),
+    );
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some("- Inner A")
+    );
+
+    drag_and_copy(
+        &mut ui,
+        (
+            inner_a.rect[0] + 1.0,
+            inner_a.rect[1] + inner_a.rect[3] / 2.0,
+        ),
+        (
+            inner_b.rect[0] + inner_b.rect[2] - 1.0,
+            inner_b.rect[1] + inner_b.rect[3] / 2.0,
+        ),
+    );
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some("- Inner A\n- Inner B")
+    );
+}

@@ -711,22 +711,20 @@ fn prose(
     text: &str,
     streaming: bool,
 ) -> El {
-    let skills = crate::markup::skill_links(text);
-    let source = skills.as_deref().unwrap_or(text);
-    let soft = breaks::breakable(source);
-    let shown = soft.as_deref().unwrap_or(source);
+    let shown = breaks::prepare(text);
     let links = page
         .chat
         .as_ref()
         .map(|c| code::file_links(&c.cwd, &page.file_links));
     let link = |code: &str| links.as_ref().and_then(|f| f(code));
-    let mut md = Markdown::new(shown.to_owned())
+    let mut md = Markdown::new(shown.as_ref().to_owned())
         .style(style.clone())
-        .highlights(code::inline_code_marks(k, shown, link))
+        .highlights(code::inline_code_marks(k, &shown, link))
         .streaming(streaming)
         .selectable(true)
-        // Display-only break points and skill links must not reach the clipboard.
-        .copy_source(soft.is_none() && skills.is_none())
+        // Copy from the original Markdown via `breaks::copy_selection` so display-only
+        // breaks and skill links never leak and whole list items keep their markers.
+        .copy_source(false)
         .link_style({
             let color = k.c.text_accent;
             move |url| {
@@ -744,14 +742,10 @@ fn prose(
     if let Some(links) = links {
         md = md.code_link(k.c.text_accent, links);
     }
-    let md = code::frames(md, page, k, key).build(k);
-    match soft {
-        Some(_) => col()
-            .w_full()
-            .child(md)
-            .selection_copy(|sel| Some(sel.text().replace(breaks::ZWSP, ""))),
-        None => md,
-    }
+    let original = text.to_owned();
+    code::frames(md, page, k, key)
+        .build(k)
+        .selection_copy(move |sel| breaks::copy_selection(&original, sel))
 }
 
 fn worked(k: &Kit, key: &str, millis: i64, open: bool) -> El {
