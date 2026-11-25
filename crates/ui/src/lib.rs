@@ -21,7 +21,9 @@ use std::rc::Rc;
 #[cfg(not(windows))]
 use anyhow::bail;
 use anyhow::{Context, Result};
-use rune::{App, AppSpec, Chrome, MacWindowOptions, RunOptions, WindowOptions, WindowSpec};
+use rune::{
+    App, AppSpec, Chrome, ColorScheme, MacWindowOptions, RunOptions, WindowOptions, WindowSpec,
+};
 
 use self::api::{Api, Shared};
 use self::app::{State, Window};
@@ -44,24 +46,6 @@ fn bottom_right(displays: &[rune::Display]) -> Option<(i32, i32)> {
     let right = display.position.0 + i32::try_from(display.size.0).ok()?;
     let bottom = display.position.1 + i32::try_from(display.size.1).ok()?;
     Some((right - px(SIZE.0), bottom - px(SIZE.1)))
-}
-
-/// Ludolph has only a dark look. Setting it on NSApp also makes native surfaces, such as the
-/// quick window's popover material, and Rune's `system_dark` dark under a light system.
-#[cfg(target_os = "macos")]
-fn use_dark_appearance() {
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-    use objc2_foundation::ns_string;
-
-    // SAFETY: called on the main thread once winit has made NSApp. `appearanceNamed:` returns
-    // an autoreleased NSAppearance, which `setAppearance:` retains.
-    unsafe {
-        let name = ns_string!("NSAppearanceNameDarkAqua");
-        let appearance: *mut AnyObject = msg_send![class!(NSAppearance), appearanceNamed: name];
-        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
-        let _: () = msg_send![app, setAppearance: appearance];
-    }
 }
 
 fn saved_frame(prefs: &Prefs, displays: &[rune::Display]) -> Option<Frame> {
@@ -181,9 +165,18 @@ pub fn run(opts: Opts) -> Result<()> {
             view,
         )
     };
-    let quick = App::new(spec(SIZE, MIN_SIZE)).windowless();
-    let main = App::new(spec(MAIN_SIZE, MAIN_MIN_SIZE)).windowless();
+    let quick = App::new(spec(SIZE, MIN_SIZE))
+        .windowless()
+        .color_scheme(ColorScheme::Dark)
+        // Keeps it out of screenshots and screen sharing, so it can stay open during a call.
+        .exclude_from_capture(true);
+    let main = App::new(spec(MAIN_SIZE, MAIN_MIN_SIZE))
+        .windowless()
+        .color_scheme(ColorScheme::Dark);
     let (quick_handle, main_handle) = (quick.handle(), main.handle());
+    // Ludolph has only a dark look; setting it app-wide also themes native surfaces, menus,
+    // dialogs, and Windows/Linux chrome under a light system.
+    main_handle.set_color_scheme(ColorScheme::Dark);
     let _job_notices = shared.job_notices(&main_handle);
     let dock = main_handle.clone();
     quick_handle.update(|s, _| s.register_saved_shortcut());
@@ -239,8 +232,6 @@ pub fn run(opts: Opts) -> Result<()> {
         })
     };
     rune::run_windows_with_args(RunOptions { accessory: true }, [], move |displays| {
-        #[cfg(target_os = "macos")]
-        use_dark_appearance();
         let options = WindowOptions {
             transparent: true,
             borderless: true,
@@ -252,14 +243,12 @@ pub fn run(opts: Opts) -> Result<()> {
             ..Default::default()
         }
         .macos(
-            // Not a nonactivating panel: Rune moves a panel's content into an NSPanel that
-            // `.window_drag()` regions can't move.
+            // Keep a normal floating window (not a nonactivating panel) so clicking the quick
+            // composer activates and accepts keyboard input cleanly.
             MacWindowOptions::default()
                 .level(FLOATING)
                 .collection_behavior(ALL_SPACES | FULL_SCREEN_AUXILIARY)
-                .corner_radius(CORNER)
-                // Keeps it out of screenshots and screen sharing, so it can stay open during a call.
-                .exclude_from_capture(true),
+                .corner_radius(CORNER),
         );
         let mut saved = saved_frame(&prefs.borrow(), displays);
         let main_options = WindowOptions {

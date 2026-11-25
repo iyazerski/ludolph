@@ -1207,11 +1207,21 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         .iter()
         .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic"))
         .expect("provider with more than 5 models gets a scrollable list");
+    let anthropic_bar = elements
+        .iter()
+        .find(|e| {
+            e.path
+                .ends_with("/chat-models-scroll-anthropic-scroll-area/scroll-bar")
+        })
+        .expect("scrollable provider list has a scrollbar track");
+    assert_eq!(anthropic_bar.opacity, 1.0);
     let anthropic_thumb = elements
         .iter()
-        .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic-thumb"))
+        .find(|e| {
+            e.path
+                .ends_with("/chat-models-scroll-anthropic-scroll-area/scroll-bar/thumb-slot/thumb")
+        })
         .expect("scrollable provider list has a visible scrollbar thumb");
-    assert_eq!(anthropic_thumb.opacity, 1.0);
     assert!(
         anthropic_thumb.rect[2] > 0.0 && anthropic_thumb.rect[3] >= 24.0,
         "scrollbar thumb is sized visibly at rest: {:?}",
@@ -1226,7 +1236,7 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
     assert!(
         elements
             .iter()
-            .all(|e| e.key.as_deref() != Some("chat-models-scroll-openai-scrollbar")),
+            .all(|e| e.key.as_deref() != Some("chat-models-scroll-openai-scroll-area")),
         "short provider list has no scrollbar"
     );
     assert!(
@@ -1287,7 +1297,10 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         .unwrap();
     let thumb_before = elements
         .iter()
-        .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic-thumb"))
+        .find(|e| {
+            e.path
+                .ends_with("/chat-models-scroll-anthropic-scroll-area/scroll-bar/thumb-slot/thumb")
+        })
         .unwrap()
         .rect[1];
     let seventh_before = elements
@@ -1306,7 +1319,10 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         .rect[1];
     let thumb_after = after
         .iter()
-        .find(|e| e.key.as_deref() == Some("chat-models-scroll-anthropic-thumb"))
+        .find(|e| {
+            e.path
+                .ends_with("/chat-models-scroll-anthropic-scroll-area/scroll-bar/thumb-slot/thumb")
+        })
         .unwrap()
         .rect[1];
     assert!(

@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::rc::Rc;
+
 use rune::{El, Key, KeyEvent, TextEdit, Tx, col, icon, row, text};
 use rune_kit::{Kit, Placement, Popover, TextInput};
 
@@ -53,52 +56,10 @@ pub fn picker(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
     if !draft.project_menu.open {
         return popover.build(k, layer);
     }
-    let projects = matching(draft);
-    let active = draft.project_menu.active.min(projects.len() + 1);
-    let rows = projects.iter().enumerate().map(|(i, p)| {
-        let id = p.id.clone();
-        k.interactive(
-            row()
-                .w_full()
-                .h(30.0)
-                .px(8.0)
-                .gap(8.0)
-                .center_y()
-                .radius(6.0)
-                .fill(if active == i {
-                    k.c.hover
-                } else {
-                    rune::Color::TRANSPARENT
-                })
-                .child(icon(&icons::FOLDER, 16.0).color(k.c.icon_muted))
-                .child(
-                    text(&p.name)
-                        .font(k.ty.ui)
-                        .color(k.c.text_base)
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .truncate(),
-                )
-                .child(icon(&icons::CHECK, 13.0).color(k.c.icon_base).opacity(
-                    if Some(&p.id) == draft.project.as_ref() {
-                        1.0
-                    } else {
-                        0.0
-                    },
-                )),
-        )
-        .key(format!("project-options-option-{}", p.id))
-        .role("option")
-        .label(&p.name)
-        .focus_selected(active == i)
-        .position_in_set(i + 1, projects.len())
-        .on_hover(move |s: &mut State| {
-            if let Some(draft) = s.chat_mut().and_then(|p| p.draft_mut()) {
-                draft.project_menu.active = i;
-            }
-        })
-        .on_press(move |s: &mut State| s.pick_project(Some(id.clone())))
-    });
+    let projects: Rc<Vec<Project>> = Rc::new(matching(draft).into_iter().cloned().collect());
+    let count = projects.len();
+    let active = draft.project_menu.active.min(count + 1);
+    let current_project = draft.project.clone();
     let search = TextInput::new(&draft.project_menu.search)
         .plain()
         .leading_icon(k.glyph.search)
@@ -115,31 +76,83 @@ pub fn picker(page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
         .on_key(keys)
         .build(k)
         .key("project-search");
-    let list = if projects.is_empty() {
+    let list = if count == 0 {
         col().w_full().px(8.0).py(10.0).child(
             text("No matching projects")
                 .font(k.ty.ui)
                 .color(k.c.text_muted),
         )
     } else {
+        let projects_key = projects.clone();
+        let projects_row = projects.clone();
+        let kit = k.clone();
         col()
             .key("project-viewport")
             .w_full()
-            .h((projects.len() as f32 * 30.0).min(224.0))
+            .h((count as f32 * 30.0).min(224.0))
             .min_h(30.0)
             .shrink()
             .role("listbox")
             .label("Projects")
-            .scroll(rune::ScrollSpec {
-                stick_bottom: false,
-            })
+            .scroll(rune::ScrollSpec::default())
             .child(
                 col()
                     .w_full()
                     .growth(rune::GrowthSpec::default())
-                    .virtualize(30.0)
-                    .reveal_selected(true)
-                    .children(rows),
+                    .virtual_rows::<State>(
+                        count,
+                        30.0,
+                        move |_, i| {
+                            Cow::Owned(format!("project-options-option-{}", projects_key[i].id))
+                        },
+                        move |_, i| {
+                            let p = &projects_row[i];
+                            let id = p.id.clone();
+                            kit.interactive(
+                                row()
+                                    .w_full()
+                                    .h(30.0)
+                                    .px(8.0)
+                                    .gap(8.0)
+                                    .center_y()
+                                    .radius(6.0)
+                                    .fill(if active == i {
+                                        kit.c.hover
+                                    } else {
+                                        rune::Color::TRANSPARENT
+                                    })
+                                    .child(icon(&icons::FOLDER, 16.0).color(kit.c.icon_muted))
+                                    .child(
+                                        text(&p.name)
+                                            .font(kit.ty.ui)
+                                            .color(kit.c.text_base)
+                                            .grow(1.0)
+                                            .min_w(0.0)
+                                            .truncate(),
+                                    )
+                                    .child(
+                                        icon(&icons::CHECK, 13.0).color(kit.c.icon_base).opacity(
+                                            if Some(&p.id) == current_project.as_ref() {
+                                                1.0
+                                            } else {
+                                                0.0
+                                            },
+                                        ),
+                                    ),
+                            )
+                            .key(format!("project-options-option-{}", p.id))
+                            .role("option")
+                            .label(&p.name)
+                            .focus_selected(active == i)
+                            .position_in_set(i + 1, count)
+                            .on_hover(move |s: &mut State| {
+                                if let Some(draft) = s.chat_mut().and_then(|p| p.draft_mut()) {
+                                    draft.project_menu.active = i;
+                                }
+                            })
+                            .on_press(move |s: &mut State| s.pick_project(Some(id.clone())))
+                        },
+                    ),
             )
     }
     .preserve_focus_on_press(true);
