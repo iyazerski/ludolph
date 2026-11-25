@@ -21,7 +21,9 @@ mod widgets;
 use rune::{
     Cx, Edge, El, Key, KeyEvent, SystemMaterial, TextStyle, Transition, Tx, col, row, text,
 };
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Toast};
+use rune_kit::{
+    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Menu, Toast,
+};
 
 use super::app::{ChatPage, Overlay, Page, State, ToastKind, Window};
 use super::prefs::TextSize;
@@ -54,6 +56,7 @@ fn quick(s: &State) -> El {
         Page::Chat(page) => chat::view(s, page, k, &mut layer),
     };
     dialogs::chat_dialog(s, k, &mut layer);
+    popup_menu(s, k, &mut layer);
     layer.extend(toast(s, k));
     // Rune drops the fill of an element that hosts a native material, so the tint goes on a child.
     let body = col()
@@ -71,6 +74,20 @@ fn quick(s: &State) -> El {
                 .child(page),
         );
     rune_kit::root(body, layer)
+}
+
+pub(super) fn popup_menu(s: &State, k: &Kit, layer: &mut Vec<El>) {
+    if let Some(req) = &s.popup_menu {
+        let _ = Menu::from_popup_menu(
+            "popup-fallback",
+            req,
+            |s: &mut State, picked, tx: &mut Tx| {
+                s.popup_menu = None;
+                tx.resolve_popup_menu(picked);
+            },
+        )
+        .build(k, layer);
+    }
 }
 
 fn notice_toast(

@@ -714,19 +714,20 @@ fn prose(
     hard_breaks: bool,
 ) -> El {
     let shown = breaks::prepare(text, hard_breaks);
+    let modified = matches!(shown, std::borrow::Cow::Owned(_));
     let links = page
         .chat
         .as_ref()
         .map(|c| code::file_links(&c.cwd, &page.file_links));
-    let link = |code: &str| links.as_ref().and_then(|f| f(code));
     let mut md = Markdown::new(shown.as_ref().to_owned())
         .style(style.clone())
-        .highlights(code::inline_code_marks(k, &shown, link))
         .streaming(streaming)
+        .wrap_anywhere(true)
+        .hard_breaks(hard_breaks)
         .selectable(true)
-        // Copy from the original Markdown via `breaks::copy_selection` so display-only
-        // breaks and skill links never leak and whole list items keep their markers.
-        .copy_source(false)
+        // Use Rune's source copy when unmodified; otherwise map selections back to the original
+        // Markdown so display-only list exits and skill links never leak to the clipboard.
+        .copy_source(!modified)
         .link_style({
             let color = k.c.text_accent;
             move |url| {
@@ -744,10 +745,12 @@ fn prose(
     if let Some(links) = links {
         md = md.code_link(k.c.text_accent, links);
     }
+    let built = code::frames(md, page, k, key).build(k);
+    if !modified {
+        return built;
+    }
     let original: std::rc::Rc<str> = std::rc::Rc::from(text);
-    code::frames(md, page, k, key)
-        .build(k)
-        .selection_copy(move |sel| breaks::copy_selection(&original, hard_breaks, sel))
+    built.selection_copy(move |sel| breaks::copy_selection(&original, hard_breaks, sel))
 }
 
 fn worked(k: &Kit, key: &str, millis: i64, open: bool) -> El {
@@ -1264,7 +1267,7 @@ fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
         .role("link")
         .label(format!("Open {name}"))
         .help(path)
-        .on_press(move |s: &mut State| s.open_chat_file(&open))
+        .on_press_tx(move |s: &mut State, tx| s.open_chat_file(&open, tx))
         .child(
             rune::el()
                 .size(20.0, 20.0)

@@ -1,27 +1,17 @@
-//! Display-only Markdown transforms (soft line breaks, list exits, zero-width word breaks)
+//! Display-only Markdown transforms (user-message list exits, skill links)
 //! and source-preserving selection copy so synthetic display syntax never leaks to the clipboard.
 
 use std::borrow::Cow;
 use std::ops::Range;
 
-use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use rune::{SelectedText, TextSelection};
 
 use super::code::MARKDOWN;
 
-pub const ZWSP: char = '\u{200B}';
-const LONG: usize = 40;
-const RUN: usize = 24;
-const BREAK_AFTER: &[char] = &['/', '.', '?', '=', '-', '#', ':', ',', '+', '@', '%'];
-/// Markdown's markup characters: a break point next to one could change how
-/// the text parses (`__init__`, `\|`, `&amp;`), so none goes there.
-const MARKUP: &[char] = &[
-    '\\', '`', '*', '_', '~', '[', ']', '(', ')', '<', '>', '|', '&', ';', '!',
-];
-
 pub fn prepare(src: &str, hard_breaks: bool) -> Cow<'_, str> {
     let mut out = if hard_breaks {
-        match line_breaks(src) {
+        match list_exits(src) {
             Some(s) => Cow::Owned(s),
             None => Cow::Borrowed(src),
         }
@@ -31,18 +21,11 @@ pub fn prepare(src: &str, hard_breaks: bool) -> Cow<'_, str> {
     if let Some(s) = crate::markup::skill_links(&out) {
         out = Cow::Owned(s);
     }
-    if let Some(s) = breakable(&out) {
-        out = Cow::Owned(s);
-    }
     out
 }
 
-pub fn line_breaks(src: &str) -> Option<String> {
-    apply_edits_only(src, &line_break_edits(src))
-}
-
-pub fn breakable(src: &str) -> Option<String> {
-    apply_edits_only(src, &breakable_edits(src))
+pub fn list_exits(src: &str) -> Option<String> {
+    apply_edits_only(src, &list_exit_edits(src))
 }
 
 pub fn copy_selection(original: &str, hard_breaks: bool, sel: &TextSelection) -> Option<String> {
@@ -53,27 +36,25 @@ pub fn copy_selection(original: &str, hard_breaks: bool, sel: &TextSelection) ->
         return Some(original.to_owned());
     }
     let (shown, map) = prepare_mapped(original, hard_breaks);
-    if let Some(nodes) = parse_nodes(&shown) {
-        let parsed: Vec<ParsedText<'_>> = sel
-            .texts()
-            .iter()
-            .map(|text| ParsedText {
-                steps: parse_path(text.path()),
-                text,
-            })
-            .collect();
-        let refs: Vec<&ParsedText<'_>> = parsed.iter().collect();
-        if let Some(shown_range) = resolve_nodes(&nodes, &refs, 0) {
-            let orig_range = map.map_range(shown_range);
-            if orig_range.start <= orig_range.end
-                && original.is_char_boundary(orig_range.start)
-                && original.is_char_boundary(orig_range.end)
-            {
-                return Some(dedent_slice(original, orig_range));
-            }
-        }
+    let nodes = parse_nodes(&shown)?;
+    let parsed: Vec<ParsedText<'_>> = sel
+        .texts()
+        .iter()
+        .map(|text| ParsedText {
+            steps: parse_path(text.path()),
+            text,
+        })
+        .collect();
+    let refs: Vec<&ParsedText<'_>> = parsed.iter().collect();
+    let shown_range = resolve_nodes(&nodes, &refs, 0)?;
+    let orig_range = map.map_range(shown_range);
+    if orig_range.start <= orig_range.end
+        && original.is_char_boundary(orig_range.start)
+        && original.is_char_boundary(orig_range.end)
+    {
+        return Some(dedent_slice(original, orig_range));
     }
-    Some(sel.text().replace(ZWSP, ""))
+    None
 }
 
 struct ListScope {
@@ -82,7 +63,7 @@ struct ListScope {
     exited: bool,
 }
 
-fn line_break_edits(src: &str) -> Vec<(Range<usize>, String)> {
+fn list_exit_edits(src: &str) -> Vec<(Range<usize>, String)> {
     if !src.contains('\n') {
         return Vec::new();
     }
@@ -90,7 +71,6 @@ fn line_break_edits(src: &str) -> Vec<(Range<usize>, String)> {
     let mut lists: Vec<ListScope> = Vec::new();
     let mut quote_depth = 0usize;
     let mut inline_depth = 0usize;
-    let mut just_ended_image = false;
 
     for (event, range) in Parser::new_ext(src, MARKDOWN).into_offset_iter() {
         match &event {
@@ -134,8 +114,6 @@ fn line_break_edits(src: &str) -> Vec<(Range<usize>, String)> {
                     exit_lists(src, range.end, &mut lists, quote_depth, inline_depth)
                 {
                     edits.push((range.start..range.start, blank));
-                } else if !just_ended_image {
-                    edits.push((range.start..range.start, "  ".to_owned()));
                 }
             }
             Event::HardBreak => {
@@ -151,7 +129,6 @@ fn line_break_edits(src: &str) -> Vec<(Range<usize>, String)> {
             }
             _ => {}
         }
-        just_ended_image = matches!(event, Event::End(TagEnd::Image));
     }
     edits
 }
@@ -256,73 +233,6 @@ fn strip_quotes_and_indent(line: &str, max_quotes: usize) -> (usize, usize, usiz
     (quotes, col, i)
 }
 
-fn breakable_edits(src: &str) -> Vec<(Range<usize>, String)> {
-    if !src.split_whitespace().any(|w| w.len() > LONG) {
-        return Vec::new();
-    }
-    let mut kept: Vec<Range<usize>> = Vec::new();
-    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
-    let mut label: Option<Vec<Range<usize>>> = None;
-    let mut image = 0usize;
-    for (event, range) in Parser::new_ext(src, MARKDOWN).into_offset_iter() {
-        match event {
-            Event::Start(Tag::Link {
-                link_type: LinkType::Autolink,
-                dest_url,
-                ..
-            }) if dest_url.len() > LONG => {
-                edits.push((range.clone(), link(&dest_url, &dest_url)));
-                kept.push(range);
-            }
-            // Its text is its address, which must stay whole.
-            Event::Start(Tag::Link {
-                link_type: LinkType::Autolink | LinkType::Email,
-                ..
-            }) => kept.push(range),
-            Event::Start(Tag::Link { .. }) => {
-                kept.push(range);
-                label = Some(Vec::new());
-            }
-            Event::End(TagEnd::Link) => {
-                for text in merged(label.take().unwrap_or_default()) {
-                    soften_tokens(src, text, &mut edits);
-                }
-            }
-            Event::Start(Tag::Image { .. }) => {
-                kept.push(range);
-                image += 1;
-            }
-            Event::End(TagEnd::Image) => image = image.saturating_sub(1),
-            Event::Text(_) if image == 0 => {
-                if let Some(label) = label.as_mut() {
-                    label.push(range);
-                }
-            }
-            Event::Code(_) if image == 0 => {
-                soften_tokens(src, range.clone(), &mut edits);
-                kept.push(range);
-            }
-            Event::Start(Tag::CodeBlock(_) | Tag::HtmlBlock | Tag::MetadataBlock(_))
-            | Event::Html(_)
-            | Event::InlineHtml(_)
-            | Event::Rule => kept.push(range),
-            _ => {}
-        }
-    }
-    let mut at = 0;
-    for span in merged(kept) {
-        if at < span.start {
-            prose(src, at..span.start, &mut edits);
-        }
-        at = at.max(span.end);
-    }
-    if at < src.len() {
-        prose(src, at..src.len(), &mut edits);
-    }
-    edits.sort_by_key(|(r, _)| r.start);
-    edits
-}
-
 struct EditStage {
     spans: Vec<(Range<usize>, Range<usize>)>,
 }
@@ -406,7 +316,7 @@ fn apply_edits_mapped(src: &str, edits: &[(Range<usize>, String)]) -> Option<(St
 fn prepare_mapped(src: &str, hard_breaks: bool) -> (Cow<'_, str>, EditMap) {
     let mut stages = Vec::new();
     let mut out = if hard_breaks {
-        match apply_edits_mapped(src, &line_break_edits(src)) {
+        match apply_edits_mapped(src, &list_exit_edits(src)) {
             Some((s, stage)) => {
                 stages.push(stage);
                 Cow::Owned(s)
@@ -417,10 +327,6 @@ fn prepare_mapped(src: &str, hard_breaks: bool) -> (Cow<'_, str>, EditMap) {
         Cow::Borrowed(src)
     };
     if let Some((s, stage)) = apply_edits_mapped(&out, &crate::markup::skill_link_edits(&out)) {
-        stages.push(stage);
-        out = Cow::Owned(s);
-    }
-    if let Some((s, stage)) = apply_edits_mapped(&out, &breakable_edits(&out)) {
         stages.push(stage);
         out = Cow::Owned(s);
     }
@@ -760,186 +666,29 @@ fn dedent_slice(original: &str, range: Range<usize>) -> String {
     out
 }
 
-fn prose(src: &str, range: Range<usize>, edits: &mut Vec<(Range<usize>, String)>) {
-    for token in tokens(src, range) {
-        let word = &src[token.clone()];
-        let line = src[..token.start].rsplit('\n').next().unwrap_or_default();
-        // A reference definition (`[x]: https://…`) keeps its address whole.
-        if line.trim_start().starts_with('[') && line.contains("]:") {
-            continue;
-        }
-        match bare_url(word) {
-            Some(url) => {
-                let shown = &word[url.clone()];
-                let dest = if shown.starts_with("www.") {
-                    format!("http://{shown}")
-                } else {
-                    shown.to_owned()
-                };
-                let at = token.start + url.start..token.start + url.end;
-                edits.push((at, link(shown, &dest)));
-            }
-            None => soften_tokens(src, token, edits),
-        }
-    }
-}
-
-fn bare_url(word: &str) -> Option<Range<usize>> {
-    let start = ["https://", "http://", "www."]
-        .iter()
-        .filter_map(|p| word.find(p))
-        .min()?;
-    if !word[..start].chars().all(|c| "*_~([".contains(c)) {
-        return None;
-    }
-    let mut end = word.len();
-    loop {
-        let url = &word[start..end];
-        let opened = url.matches('(').count() >= url.matches(')').count();
-        match url.chars().next_back() {
-            Some('?' | '!' | '.' | ',' | ':' | '*' | '_' | '~' | '\'' | '"') => end -= 1,
-            Some(')') if !opened => end -= 1,
-            _ => break,
-        }
-    }
-    (end - start > LONG / 2).then_some(start..end)
-}
-
-fn link(shown: &str, dest: &str) -> String {
-    let mut text = String::with_capacity(shown.len() + 16);
-    for c in soften(shown).chars() {
-        if MARKUP.contains(&c) {
-            text.push('\\');
-        }
-        text.push(c);
-    }
-    format!("[{text}](<{dest}>)")
-}
-
-fn soften_tokens(src: &str, range: Range<usize>, edits: &mut Vec<(Range<usize>, String)>) {
-    for token in tokens(src, range) {
-        let soft = soften(&src[token.clone()]);
-        if soft.len() > token.len() {
-            edits.push((token, soft));
-        }
-    }
-}
-
-fn tokens(src: &str, range: Range<usize>) -> impl Iterator<Item = Range<usize>> + '_ {
-    let base = range.start;
-    let text = &src[range];
-    let mut start = None;
-    text.char_indices()
-        .map(Some)
-        .chain([None])
-        .filter_map(move |next| match (next, start) {
-            (Some((i, c)), None) if !c.is_whitespace() => {
-                start = Some(i);
-                None
-            }
-            (Some((i, c)), Some(from)) if c.is_whitespace() => {
-                start = None;
-                Some(base + from..base + i)
-            }
-            (None, Some(from)) => Some(base + from..base + text.len()),
-            _ => None,
-        })
-        .filter(|r| r.len() > LONG)
-        // A rule or underline of markup has nothing to break.
-        .filter(move |r| src[r.clone()].chars().any(char::is_alphanumeric))
-}
-
-fn soften(token: &str) -> String {
-    let mut out = String::with_capacity(token.len() + token.len() / 8);
-    let mut run = 0;
-    let mut chars = token.chars().peekable();
-    while let Some(c) = chars.next() {
-        out.push(c);
-        run += 1;
-        let Some(&next) = chars.peek() else { break };
-        if MARKUP.contains(&c) || MARKUP.contains(&next) {
-            continue;
-        }
-        if BREAK_AFTER.contains(&c) || run >= RUN {
-            out.push(ZWSP);
-            run = 0;
-        }
-    }
-    out
-}
-
-fn merged(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
-    ranges.sort_by_key(|r| r.start);
-    let mut out: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
-    for r in ranges {
-        match out.last_mut() {
-            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
-            _ => out.push(r),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const URL: &str = "https://github.com/anomalyco/rune/pull/1234/files#diff-0a1b2c3d";
-
     #[test]
-    fn breaks_long_tokens_only() {
-        let path = "/Users/me/projects/ludolph/crates/ui/src/view/chat.rs";
-        let cases: &[(String, Option<String>)] = &[
-            ("short words only".into(), None),
-            (
-                format!("see {URL}."),
-                Some(format!("see {}.", link(URL, URL))),
-            ),
-            (
-                format!("**{URL}**"),
-                Some(format!("**{}**", link(URL, URL))),
-            ),
-            (format!("<{URL}>"), Some(link(URL, URL))),
-            (
-                format!("[{URL}]({URL})"),
-                Some(format!("[{}]({URL})", soften(URL))),
-            ),
-            (
-                format!("open `{path}`"),
-                Some(format!("open `{}`", soften(path))),
-            ),
-            (format!("```\n{path}\n```\n"), None),
-            (format!("[x]: {URL}\n"), None),
-        ];
-        for (src, want) in cases {
-            assert_eq!(&breakable(src), want, "source {src:?}");
-        }
-    }
-
-    #[test]
-    fn preserves_soft_breaks_and_exits_lists() {
+    fn exits_lists_only_on_under_indented_lines() {
         let cases: &[(&str, Option<&str>)] = &[
             ("single line", None),
             ("para one\n\npara two", None),
+            ("First line\nSecond line", None),
+            ("First line\r\nSecond line", None),
             ("1. First\n2. Second", None),
+            ("1. First\n   continued\n2. Second", None),
+            ("1. **bold\ncontinued**", None),
             ("```\nline 1\nline 2\n```", None),
             ("| a | b |\n| - | - |\n| 1 | 2 |", None),
-            ("First line\nSecond line", Some("First line  \nSecond line")),
-            (
-                "First line\r\nSecond line",
-                Some("First line  \r\nSecond line"),
-            ),
             (
                 "1. First\n2. Second\nAfter list",
                 Some("1. First\n2. Second\n\nAfter list"),
             ),
             (
                 "1. First\n2. Second\nAfter 1\nAfter 2",
-                Some("1. First\n2. Second\n\nAfter 1  \nAfter 2"),
-            ),
-            (
-                "1. First\n   continued\n2. Second",
-                Some("1. First  \n   continued\n2. Second"),
+                Some("1. First\n2. Second\n\nAfter 1\nAfter 2"),
             ),
             (
                 "1. Outer\n   - Inner\n   Outer line 2\nAfter all",
@@ -949,12 +698,11 @@ mod tests {
                 "> 1. First\n> 2. Second\n> After list",
                 Some("> 1. First\n> 2. Second\n>\n> After list"),
             ),
-            ("1. **bold\ncontinued**", Some("1. **bold  \ncontinued**")),
             ("1. a\nb\n2. c\nd", Some("1. a\n\nb\n2. c\n\nd")),
             ("1. First\n  After list", Some("1. First\n\n  After list")),
             (
                 "- > Quote\n  Still in item\nOutside",
-                Some("- > Quote  \n  Still in item\n\nOutside"),
+                Some("- > Quote\n  Still in item\n\nOutside"),
             ),
             (
                 "1. First\n2. Second\\\nAfter list",
@@ -962,7 +710,7 @@ mod tests {
             ),
         ];
         for &(src, want) in cases {
-            assert_eq!(line_breaks(src).as_deref(), want, "source {src:?}");
+            assert_eq!(list_exits(src).as_deref(), want, "source {src:?}");
         }
     }
 

@@ -637,11 +637,10 @@ impl State {
     }
 
     pub fn open_link(&mut self, url: &str, tx: &mut Tx) {
-        // Code links and pasted images are paths; Rune opens web links only.
         if let Some(name) = url.strip_prefix("skill:") {
             self.open_skill(name);
         } else if url.starts_with('/') {
-            self.open_path(url.to_owned());
+            self.open_path(url, tx);
         } else {
             drop(tx.open_url(url));
         }
@@ -655,19 +654,19 @@ impl State {
         self.api.call(
             "list_skills",
             json!({"chat": chat.id}),
-            move |s, result: Result<Skills, String>, _| match result.and_then(|got| {
+            move |s, result: Result<Skills, String>, tx| match result.and_then(|got| {
                 got.skills
                     .into_iter()
                     .find(|skill| skill.name == name)
                     .ok_or_else(|| format!("Skill ${name} isn't available in this chat"))
             }) {
-                Ok(skill) => s.open_path(skill.path),
+                Ok(skill) => s.open_path(&skill.path, tx),
                 Err(error) => s.fail("Couldn't open the skill", error),
             },
         );
     }
 
-    pub fn open_chat_file(&mut self, path: &str) {
+    pub fn open_chat_file(&mut self, path: &str, tx: &mut Tx) {
         let Some(chat) = self
             .chat()
             .and_then(ChatPage::existing)
@@ -676,18 +675,21 @@ impl State {
             return;
         };
         let path = crate::paths::expand_home(&chat.cwd).join(crate::paths::expand_home(path));
-        self.open_path(path.to_string_lossy().into_owned());
+        self.open_path(&path.to_string_lossy(), tx);
     }
 
-    pub fn open_path(&mut self, path: String) {
-        self.api.run(
-            move |_| async move { crate::paths::open(&path).await },
-            |s, opened, _| {
-                if let Err(e) = opened {
-                    s.fail("Couldn't open the file", e);
-                }
-            },
-        );
+    pub fn open_path(&mut self, path: &str, tx: &mut Tx) {
+        #[cfg(windows)]
+        if path.starts_with('/') {
+            self.fail(
+                "Couldn't open the file",
+                "Ludolph can't open files inside WSL yet",
+            );
+            return;
+        }
+        if let Err(e) = tx.open_path(path) {
+            self.fail("Couldn't open the file", e.to_string());
+        }
     }
 
     pub fn load_skills(&mut self) {

@@ -1666,6 +1666,19 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
         .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("Inner B"))
         .expect("Inner B");
 
+    let outer_li = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.path.ends_with("/b0/i0"))
+        .expect("outer list item");
+    let outer = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("Outer"))
+        .expect("Outer");
+    let second = elements
+        .iter()
+        .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("Second"))
+        .expect("Second");
+
     let clipboard = rune::clipboard::memory();
     ui.use_clipboard(&clipboard);
     drag_and_copy(
@@ -1681,7 +1694,7 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
     );
     assert_eq!(
         clipboard.text().as_deref().map(String::as_str),
-        Some("- Inner A")
+        Some("   - Inner A")
     );
 
     let clipboard = rune::clipboard::memory();
@@ -1699,6 +1712,24 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
     );
     assert_eq!(
         clipboard.text().as_deref().map(String::as_str),
-        Some("- Inner A\n- Inner B")
+        Some("   - Inner A\n   - Inner B")
+    );
+
+    // Dragging from a list marker anchors selection at the item's start.
+    let marker_x = outer_li.rect[0] + (outer.rect[0] - outer_li.rect[0]) * 0.5;
+    assert!(marker_x < outer.rect[0] - 1.0);
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
+    drag_and_copy(
+        &mut ui,
+        (marker_x, outer.rect[1] + outer.rect[3] / 2.0),
+        (
+            second.rect[0] + second.rect[2] - 1.0,
+            second.rect[1] + second.rect[3] / 2.0,
+        ),
+    );
+    assert_eq!(
+        clipboard.text().as_deref().map(String::as_str),
+        Some("1. Outer\n   - Inner A\n   - Inner B\n2. Second")
     );
 }

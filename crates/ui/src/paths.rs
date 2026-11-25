@@ -55,41 +55,6 @@ fn distribution_of(path: &str) -> Option<&str> {
     path[prefix.len()..].split('\\').next()
 }
 
-#[cfg(not(windows))]
-pub async fn open(path: &str) -> Result<(), String> {
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    let out = tokio::process::Command::new(opener)
-        .arg(path)
-        .output()
-        .await
-        .map_err(|e| format!("running {opener}: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
-    }
-}
-
-/// Opens a file in its default app. Paths from the engine are inside WSL, which this doesn't
-/// reach; files the app saved itself, such as images, are on Windows.
-#[cfg(windows)]
-pub async fn open(path: &str) -> Result<(), String> {
-    if path.starts_with('/') {
-        return Err("Ludolph can't open files inside WSL yet".to_owned());
-    }
-    // Explorer exits with 1 even when it opened the file, so only a failed start counts.
-    tokio::process::Command::new("explorer.exe")
-        .arg(path)
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map(drop)
-        .map_err(|e| format!("running explorer.exe: {e}"))
-}
-
 #[cfg(all(test, windows))]
 mod tests {
     use super::distribution_of;

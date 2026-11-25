@@ -232,8 +232,8 @@ impl State {
                     .map_err(|e| format!("writing {}: {e}", path.display()))?;
                 Ok(path.to_string_lossy().into_owned())
             },
-            |s, path: Result<String, String>, _| match path {
-                Ok(path) => s.open_path(path),
+            |s, path: Result<String, String>, tx| match path {
+                Ok(path) => s.open_path(&path, tx),
                 Err(e) => s.fail("Couldn't open the image", e),
             },
         );

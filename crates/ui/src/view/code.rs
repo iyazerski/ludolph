@@ -1,15 +1,13 @@
-use std::ops::Range;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use pulldown_cmark::{Event, Options, Parser};
+use pulldown_cmark::Options;
 use rune::color::hex;
 use rune::{Color, Direction, El, TextStyle, Tx, col, icon, row, text};
-use rune_kit::markdown::{Highlight, MarkdownStyle, Syntax};
+use rune_kit::markdown::{MarkdownStyle, Syntax};
 use rune_kit::syntax::{self, SyntaxTheme};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, Markdown};
 
-use super::breaks::ZWSP;
 use super::icons;
 use crate::app::{Existing, FileLinks, State};
 use crate::paths::expand_home;
@@ -40,6 +38,7 @@ static COLORS: LazyLock<[(Syntax, Color); 10]> = LazyLock::new(|| {
 pub fn markdown_style(k: &Kit) -> MarkdownStyle {
     let style = MarkdownStyle::from_kit(k)
         .inline_code_bg(Color::TRANSPARENT)
+        .inline_code_text(super::theme::inline_code(k))
         .inline_code_pad(1.0);
     COLORS
         .iter()
@@ -175,19 +174,6 @@ fn language_label(language: Option<&str>) -> &str {
     }
 }
 
-pub fn inline_code_marks(
-    k: &Kit,
-    src: &str,
-    link: impl Fn(&str) -> Option<String>,
-) -> Vec<(Range<usize>, Highlight)> {
-    let color = super::theme::inline_code(k);
-    inline_code(src)
-        .into_iter()
-        .filter(|r| link(src[r.clone()].trim_matches('`').trim()).is_none())
-        .map(|r| (r, Highlight::new().bg(Color::TRANSPARENT).fg(color)))
-        .collect()
-}
-
 pub fn file_links(
     cwd: &str,
     found: &FileLinks,
@@ -204,8 +190,7 @@ pub fn file_links(
 }
 
 fn file_link(code: &str, cwd: &Path) -> Option<String> {
-    let code = code.replace(ZWSP, "");
-    let mut path = code.as_str();
+    let mut path = code;
     for _ in 0..2 {
         if let Some((head, n)) = path.rsplit_once(':')
             && !n.is_empty()
@@ -224,14 +209,4 @@ fn file_link(code: &str, cwd: &Path) -> Option<String> {
     }
     let full = cwd.join(expand_home(path));
     full.exists().then(|| full.to_string_lossy().into_owned())
-}
-
-fn inline_code(src: &str) -> Vec<Range<usize>> {
-    if !src.contains('`') {
-        return Vec::new();
-    }
-    Parser::new_ext(src, MARKDOWN)
-        .into_offset_iter()
-        .filter_map(|(event, range)| matches!(event, Event::Code(_)).then_some(range))
-        .collect()
 }
