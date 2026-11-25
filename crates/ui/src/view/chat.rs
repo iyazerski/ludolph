@@ -1,4 +1,6 @@
-use rune::{Color, El, ScrollSpec, TextStyle, Transition, Tx, col, el, icon, row, text};
+use rune::{
+    Color, El, ScrollSpec, SpringPair, TextStyle, Transition, Tx, col, el, icon, row, text,
+};
 use rune_kit::markdown::MarkdownStyle;
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Markdown, Menu,
@@ -102,12 +104,17 @@ fn chat_body(s: &State, page: &ChatPage, k: &Kit, layer: &mut Vec<El>) -> El {
             body.children(transcript(chat, k, expanded, page.transcript_height))
         }
     };
+    // Hold off bottom-pinning on the send commit so `scroll_to_bottom` glides smoothly up to
+    // the new turn instead of snapping straight to the new max.
+    let stick_bottom = page
+        .existing()
+        .is_none_or(|chat| chat.top.as_ref().is_none_or(|top| top.shown));
     let mut scroll = col()
         .key("transcript")
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .scroll(ScrollSpec { stick_bottom: true })
+        .scroll(ScrollSpec { stick_bottom })
         .scroll_anchor()
         .on_layout_tx(|s: &mut State, [_, _, _, height], tx| {
             if let Some(page) = s.chat_mut() {
@@ -354,8 +361,8 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
         match m.role {
             Role::User => {
                 let held = page.top.as_ref().filter(|t| t.at == m.created_at);
-                if held.is_some() {
-                    top = Some(out.len());
+                if let Some(held) = held {
+                    top = Some((out.len(), held.sent));
                 }
                 let images = m
                     .images()
@@ -384,8 +391,8 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
     }
     for (i, p) in page.pending.iter().enumerate() {
         let held = page.top.as_ref().filter(|t| t.at == p.at);
-        if held.is_some() {
-            top = Some(out.len());
+        if let Some(held) = held {
+            top = Some((out.len(), held.sent));
         }
         let images = p.images.iter().map(|t| (t.as_ref(), None)).collect();
         let key = format!("pending-{i}");
@@ -434,15 +441,16 @@ fn transcript(page: &Existing, k: &Kit, expanded: bool, height: f32) -> Vec<El> 
                 .is_some_and(|q| !std::mem::replace(&mut q.shown, true))
         }));
     }
-    if let Some(top) = top {
-        let turn = out.split_off(top);
+    if let Some((index, sent)) = top {
+        let turn = out.split_off(index);
         // Leave enough room below a new prompt to align it with the viewport's top.
         out.push(
             col()
-                .key("sent-turn")
+                .key(format!("sent-turn-{sent}"))
                 .w_full()
                 .gap(32.0)
                 .min_h((height - 20.0).max(0.0))
+                .transition(Transition::none())
                 .children(turn),
         );
     }
@@ -538,7 +546,7 @@ fn user_bubble(
             .py(8.0)
             .radius(14.0)
             .fill(super::theme::message_bg(k))
-            .child(prose(page, k, style, key, &shown, false));
+            .child(prose(page, k, style, key, &shown, false, true));
         out = out.child(row().w_full().justify_end().child(body.opacity(opacity)));
     }
     if shade == Shade::Queued {
@@ -659,6 +667,7 @@ fn assistant(
                     &format!("{}#{i}", m.id),
                     text,
                     streaming && i == last,
+                    false,
                 )
                 .key(format!("{}#{i}", m.id)),
             ],
@@ -702,23 +711,22 @@ fn prose(
     key: &str,
     text: &str,
     streaming: bool,
+    hard_breaks: bool,
 ) -> El {
-    let skills = crate::markup::skill_links(text);
-    let source = skills.as_deref().unwrap_or(text);
-    let soft = breaks::breakable(source);
-    let shown = soft.as_deref().unwrap_or(source);
+    let shown = breaks::prepare(text, hard_breaks);
     let links = page
         .chat
         .as_ref()
         .map(|c| code::file_links(&c.cwd, &page.file_links));
     let link = |code: &str| links.as_ref().and_then(|f| f(code));
-    let mut md = Markdown::new(shown.to_owned())
+    let mut md = Markdown::new(shown.as_ref().to_owned())
         .style(style.clone())
-        .highlights(code::inline_code_marks(k, shown, link))
+        .highlights(code::inline_code_marks(k, &shown, link))
         .streaming(streaming)
         .selectable(true)
-        // Display-only break points and skill links must not reach the clipboard.
-        .copy_source(soft.is_none() && skills.is_none())
+        // Copy from the original Markdown via `breaks::copy_selection` so display-only
+        // breaks and skill links never leak and whole list items keep their markers.
+        .copy_source(false)
         .link_style({
             let color = k.c.text_accent;
             move |url| {
@@ -736,14 +744,10 @@ fn prose(
     if let Some(links) = links {
         md = md.code_link(k.c.text_accent, links);
     }
-    let md = code::frames(md, page, k, key).build(k);
-    match soft {
-        Some(_) => col()
-            .w_full()
-            .child(md)
-            .selection_copy(|sel| Some(sel.text().replace(breaks::ZWSP, ""))),
-        None => md,
-    }
+    let original: std::rc::Rc<str> = std::rc::Rc::from(text);
+    code::frames(md, page, k, key)
+        .build(k)
+        .selection_copy(move |sel| breaks::copy_selection(&original, hard_breaks, sel))
 }
 
 fn worked(k: &Kit, key: &str, millis: i64, open: bool) -> El {
@@ -784,6 +788,7 @@ fn is_open(page: &Existing, key: &str, default: bool) -> bool {
 fn thinking(page: &Existing, k: &Kit, key: &str, text_in: &str, live: bool) -> El {
     let open = is_open(page, key, false);
     let toggle = key.to_owned();
+    let anchor = format!("thinking-{key}");
     let mut head = row()
         .h(TOOL_HEADER_HEIGHT)
         .gap(RAIL_X)
@@ -803,30 +808,46 @@ fn thinking(page: &Existing, k: &Kit, key: &str, text_in: &str, live: bool) -> E
         head = head.child(busy(11.0, k));
     }
     let head = head
+        .key("head")
         .radius(6.0)
         .shrink()
         .hover_group()
-        .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            tx.keep_on_screen(anchor.clone());
+            toggle_group(s, &toggle, open);
+        });
     let mut out = col()
         .key(format!("thinking-{key}"))
         .w_full()
-        .child(row().w_full().child(head));
+        .clip_soft(0.0)
+        .motion(k.motion.disclosure)
+        .child(row().key("head-row").w_full().child(head));
     if open {
         out = out.child(
-            text(text_in.trim().to_owned())
-                .font(TextStyle {
-                    size: TOOL_TEXT,
-                    line_height: 18.0,
-                    ..k.ty.ui
-                })
-                .color(k.c.text_faint)
-                .wrap()
-                .selectable(true)
-                .ml(RAIL_X * 3.0)
-                .mt(4.0),
+            col()
+                .key("body")
+                .w_full()
+                .pl(RAIL_X * 3.0)
+                .pt(4.0)
+                .transition(disclosure_fade(k))
+                .child(
+                    text(text_in.trim().to_owned())
+                        .font(TextStyle {
+                            size: TOOL_TEXT,
+                            line_height: 18.0,
+                            ..k.ty.ui
+                        })
+                        .color(k.c.text_faint)
+                        .wrap()
+                        .selectable(true),
+                ),
         );
     }
     out
+}
+
+fn disclosure_fade(k: &Kit) -> Transition {
+    Transition::opacity().springs(SpringPair::new(k.motion.disclosure, k.motion.disclosure))
 }
 
 fn chevron(k: &Kit, open: bool) -> El {
@@ -1138,6 +1159,7 @@ fn thought_row(k: &Kit, key: &str, text_in: &str, live: bool, open: bool, last: 
         .min_w(0.0);
     let verb = if live { "Thinking" } else { "Thought" };
     let toggle = key.to_owned();
+    let anchor = format!("thought-{key}");
     let line = rail_row(
         k,
         last && !open,
@@ -1147,25 +1169,37 @@ fn thought_row(k: &Kit, key: &str, text_in: &str, live: bool, open: bool, last: 
         Some(k.c.text_base),
         subject,
     )
+    .key("head")
     .hover_group()
-    .on_press(move |s: &mut State| toggle_group(s, &toggle, open));
-    if !open {
-        return line;
-    }
-    let trunk = if last { 0.0 } else { 1.0 };
-    let body = col()
+    .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+        tx.keep_on_screen(anchor.clone());
+        toggle_group(s, &toggle, open);
+    });
+    let mut out = col()
+        .key(format!("thought-{key}"))
         .w_full()
-        .pl(RAIL_TEXT_X)
-        .pb(6.0)
-        .border_sides([0.0, 0.0, 0.0, trunk], k.c.border_muted)
-        .child(
-            text(text_in.trim().to_owned())
-                .font(rail_text(k))
-                .color(k.c.text_faint)
-                .wrap()
-                .selectable(true),
-        );
-    col().w_full().child(line).child(body)
+        .clip_soft(0.0)
+        .motion(k.motion.disclosure)
+        .child(line);
+    if open {
+        let trunk = if last { 0.0 } else { 1.0 };
+        let body = col()
+            .key("body")
+            .w_full()
+            .pl(RAIL_TEXT_X)
+            .pb(6.0)
+            .border_sides([0.0, 0.0, 0.0, trunk], k.c.border_muted)
+            .transition(disclosure_fade(k))
+            .child(
+                text(text_in.trim().to_owned())
+                    .font(rail_text(k))
+                    .color(k.c.text_faint)
+                    .wrap()
+                    .selectable(true),
+            );
+        out = out.child(body);
+    }
+    out
 }
 
 const RAIL_TEXT_X: f32 = 12.0 + 4.0 + 14.0 + 8.0;

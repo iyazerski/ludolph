@@ -1,15 +1,12 @@
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ops::Range;
-use std::rc::Rc;
 use std::sync::LazyLock;
 
 use rune::color::hex;
 use rune::{
-    Color, Cycle, Drag, El, Live, Phase, ScrollPos, ScrollSpec, Span, Spring, SpringPair,
-    TextStyle, Transition, Tx, col, el, icon, row, text, tok,
+    Color, Cycle, El, ScrollSpec, Span, Spring, SpringPair, TextStyle, Transition, col, el, icon,
+    row, text, tok,
 };
-use rune_kit::{IconButton, IconButtonVariant, Kit};
+use rune_kit::{IconButton, IconButtonVariant, Kit, ScrollBar, ScrollBarStyle};
 
 use super::icons;
 use crate::app::State;
@@ -227,173 +224,23 @@ const SCROLL_TRACK_W: f32 = 12.0;
 const SCROLL_THUMB_W: f32 = 5.0;
 const SCROLL_INSET: f32 = 4.0;
 const SCROLL_MIN_THUMB: f32 = 24.0;
-const KEPT_SCROLL_BARS: usize = 64;
 
-struct VisibleBar {
-    pos: Cell<ScrollPos>,
-    hover: Cell<bool>,
-    dragging: Cell<bool>,
-    rest: Cell<Color>,
-    active: Cell<Color>,
-    thumb: Live<[f32; 4]>,
-    fill: Live<Color>,
-}
-
-impl VisibleBar {
-    fn new(rest: Color, active: Color) -> Self {
-        Self {
-            pos: Cell::new(ScrollPos::default()),
-            hover: Cell::new(false),
-            dragging: Cell::new(false),
-            rest: Cell::new(rest),
-            active: Cell::new(active),
-            thumb: Live::new([0.0; 4]),
-            fill: Live::new(rest),
-        }
-    }
-
-    fn restyle(&self, rest: Color, active: Color) {
-        self.rest.set(rest);
-        self.active.set(active);
-        self.update_fill();
-    }
-
-    fn update_fill(&self) {
-        let color = if self.hover.get() || self.dragging.get() {
-            self.active.get()
-        } else {
-            self.rest.get()
-        };
-        self.fill.set(color);
-    }
-
-    fn thumb_metrics(at: ScrollPos) -> Option<(f32, f32, f32)> {
-        let shown = at.drawn[1];
-        let max = at.max[1];
-        let track_len = shown - 2.0 * SCROLL_INSET;
-        if max <= 0.5 || track_len < SCROLL_MIN_THUMB {
-            return None;
-        }
-        let len = (track_len * shown / (shown + max)).clamp(SCROLL_MIN_THUMB, track_len);
-        let travel = (track_len - len).max(0.0);
-        let top = SCROLL_INSET + travel * (at.offset[1] / max).clamp(0.0, 1.0);
-        Some((top, len, travel))
-    }
-
-    fn follow(&self, at: ScrollPos) {
-        self.pos.set(at);
-        let rect = match Self::thumb_metrics(at) {
-            Some((top, len, _)) => [
-                (SCROLL_TRACK_W - SCROLL_THUMB_W) / 2.0,
-                top,
-                SCROLL_THUMB_W,
-                len,
-            ],
-            None => [0.0; 4],
-        };
-        self.thumb.snap(rect);
-    }
-
-    fn set_hover(&self, inside: bool) {
-        if self.hover.replace(inside) != inside {
-            self.update_fill();
-        }
-    }
-
-    fn drag(&self, target: &str, d: &mut Drag, tx: &mut Tx) {
-        let at = self.pos.get();
-        let Some((top, len, travel)) = Self::thumb_metrics(at) else {
-            return;
-        };
-        match d.phase {
-            Phase::Down => {
-                self.dragging.set(true);
-                self.update_fill();
-                let on_thumb = (top..=top + len).contains(&d.y);
-                if on_thumb {
-                    d.data = d.y - top;
-                } else {
-                    d.data = len / 2.0;
-                    if travel > 0.0 {
-                        let y =
-                            ((d.y - d.data - SCROLL_INSET) / travel).clamp(0.0, 1.0) * at.max[1];
-                        tx.scroll_to_instant(target, 0.0, y);
-                    }
-                }
-            }
-            Phase::Move => {
-                if travel > 0.0 {
-                    let y = ((d.y - d.data - SCROLL_INSET) / travel).clamp(0.0, 1.0) * at.max[1];
-                    tx.scroll_to_instant(target, 0.0, y);
-                }
-            }
-            Phase::Up => {
-                self.dragging.set(false);
-                self.update_fill();
-            }
-        }
-    }
-}
-
-thread_local! {
-    static VISIBLE_BARS: RefCell<HashMap<(u64, String), Rc<VisibleBar>>> =
-        RefCell::new(HashMap::new());
-}
-
-fn kept_visible_bar(key: &str, rest: Color, active: Color) -> Rc<VisibleBar> {
-    let id = (rune::current_runtime_id(), key.to_owned());
-    VISIBLE_BARS.with(|bars| {
-        let mut bars = bars.borrow_mut();
-        if bars.len() >= KEPT_SCROLL_BARS && !bars.contains_key(&id) {
-            bars.clear();
-        }
-        let bar = bars
-            .entry(id)
-            .or_insert_with(|| Rc::new(VisibleBar::new(rest, active)))
-            .clone();
-        bar.restyle(rest, active);
-        bar
-    })
-}
-
-/// Vertical scroll container with an always-visible scrollbar in a right gutter, driven through
-/// live values so scrolling does not rebuild the view.
+/// Vertical scroll container with an always-visible scrollbar in a right gutter.
 pub fn visible_scroll_bar(k: &Kit, scroll_key: String, max_h: f32, content: El) -> El {
-    let bar = kept_visible_bar(&scroll_key, k.c.border_strong, k.c.text_muted);
-    let follow = bar.clone();
-    let hover = bar.clone();
-    let drag = bar.clone();
-    let target = scroll_key.clone();
-    let viewport = content
-        .key(scroll_key.clone())
-        .grow(1.0)
-        .min_w(0.0)
+    let style = ScrollBarStyle::native(k.c.border_strong, k.c.text_muted)
+        .webkit_parts(
+            SCROLL_TRACK_W,
+            (SCROLL_TRACK_W - SCROLL_THUMB_W) / 2.0,
+            SCROLL_INSET,
+        )
+        .inside()
+        .always_visible()
+        .min_thumb(SCROLL_MIN_THUMB);
+    content
+        .key(scroll_key)
+        .w_full()
+        .pr(style.strip())
         .max_h(max_h)
-        .scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .chain_scroll_offset(move |at| follow.follow(at));
-    let track = el()
-        .key(format!("{scroll_key}-scrollbar"))
-        .w(SCROLL_TRACK_W)
-        .h(max_h)
-        .wheel_scrolls(scroll_key.clone())
-        .a11y_hidden()
-        .on_hover_change_any(move |inside, tx| {
-            tx.live_only();
-            hover.set_hover(inside);
-        })
-        .on_drag_any(move |d, tx| {
-            tx.live_only();
-            drag.drag(&target, d, tx);
-        })
-        .child(
-            el().key(format!("{scroll_key}-thumb"))
-                .absolute(0.0, 0.0)
-                .live_rect(&bar.thumb)
-                .radius(SCROLL_THUMB_W / 2.0)
-                .live_fill(&bar.fill)
-                .a11y_hidden(),
-        );
-    row().w_full().child(viewport).child(track)
+        .scroll(ScrollSpec::default())
+        .scroll_bar_styled(style)
 }

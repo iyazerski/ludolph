@@ -667,83 +667,107 @@ impl<'a> ModelSelector<'a> {
                     .wrap(),
             )
         } else {
-            let rows = choices.iter().enumerate().map(|(pos, &orig)| {
-                let option = &options[orig];
-                let is_active = active_orig == Some(orig);
-                let is_selected = self.current_model == Some(option.id.as_str());
-                let id_hover = option.id.clone();
-                let id_press = option.id.clone();
-                let option_has_reasoning = option.has_reasoning;
-                let access_hover = self.access.clone();
-                let access_press = self.access.clone();
-                let choose_press = self.on_choose_model.clone();
+            let count = choices.len();
+            let choices = Rc::new(choices);
+            let options_key = options.clone();
+            let choices_key = choices.clone();
+            let key_for_id = self.key.clone();
 
-                let mut line = row()
-                    .w_full()
-                    .h(ROW_H)
-                    .px(8.0)
-                    .gap(8.0)
-                    .center_y()
-                    .radius(6.0)
-                    .fill(if is_active {
-                        k.c.hover
-                    } else {
-                        Color::TRANSPARENT
-                    });
-                if let Some(ref mark_id) = option.mark_id {
-                    line = line.child(icon(icons::mark(mark_id), 13.0).color(k.c.icon_muted));
-                }
-                let mut labels = row().grow(1.0).min_w(0.0).gap(6.0).center_y().child(
-                    text(&option.label)
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_base)
-                        .truncate(),
-                );
-                if !option.detail.is_empty() {
-                    labels = labels.child(
-                        text(&option.detail)
-                            .font(k.ty.text_xsmall)
-                            .color(k.c.text_faint)
-                            .truncate(),
-                    );
-                }
-                line = line.child(labels).child(
-                    icon(k.glyph.check_small, 12.0)
-                        .color(k.c.icon_base)
-                        .opacity(if is_selected { 1.0 } else { 0.0 }),
-                );
-                k.interactive(line)
-                    .key(format!("{}-option-{}", self.key, option.id))
-                    .role("option")
-                    .label(&option.label)
-                    .focus_selected(is_active)
-                    .position_in_set(pos + 1, choices.len())
-                    .on_hover(move |s: &mut State| {
-                        if let Some(st) = access_hover(s) {
-                            st.highlight = Some(id_hover.clone());
-                        }
-                    })
-                    .on_press_tx(move |s: &mut State, tx: &mut Tx| {
-                        choose_model_option(
-                            s,
-                            &access_press,
-                            choose_press.as_ref(),
-                            &id_press,
-                            reasoning_enabled && option_has_reasoning,
-                            tx,
-                        );
-                    })
-            });
+            let options_row = options;
+            let choices_row = choices;
+            let key_prefix = self.key.clone();
+            let current_model = self.current_model.map(str::to_owned);
+            let access_row = self.access.clone();
+            let choose_row = self.on_choose_model.clone();
+            let kit = k.clone();
 
             popover::fit_scroll(
                 col()
                     .w_full()
                     .growth(rune::GrowthSpec::default())
-                    .virtualize(ROW_H)
-                    .reveal_selected(true)
-                    .children(rows),
+                    .virtual_rows::<State>(
+                        count,
+                        ROW_H,
+                        move |_, pos| {
+                            let orig = choices_key[pos];
+                            std::borrow::Cow::Owned(format!(
+                                "{key_for_id}-option-{}",
+                                options_key[orig].id
+                            ))
+                        },
+                        move |_, pos| {
+                            let orig = choices_row[pos];
+                            let option = &options_row[orig];
+                            let is_active = active_orig == Some(orig);
+                            let is_selected = current_model.as_deref() == Some(option.id.as_str());
+                            let id_hover = option.id.clone();
+                            let id_press = option.id.clone();
+                            let option_has_reasoning = option.has_reasoning;
+                            let access_hover = access_row.clone();
+                            let access_press = access_row.clone();
+                            let choose_press = choose_row.clone();
+
+                            let mut line = row()
+                                .w_full()
+                                .h(ROW_H)
+                                .px(8.0)
+                                .gap(8.0)
+                                .center_y()
+                                .radius(6.0)
+                                .fill(if is_active {
+                                    kit.c.hover
+                                } else {
+                                    Color::TRANSPARENT
+                                });
+                            if let Some(ref mark_id) = option.mark_id {
+                                line = line.child(
+                                    icon(icons::mark(mark_id), 13.0).color(kit.c.icon_muted),
+                                );
+                            }
+                            let mut labels = row().grow(1.0).min_w(0.0).gap(6.0).center_y().child(
+                                text(&option.label)
+                                    .font(kit.ty.text_xsmall)
+                                    .color(kit.c.text_base)
+                                    .truncate(),
+                            );
+                            if !option.detail.is_empty() {
+                                labels = labels.child(
+                                    text(&option.detail)
+                                        .font(kit.ty.text_xsmall)
+                                        .color(kit.c.text_faint)
+                                        .truncate(),
+                                );
+                            }
+                            line = line.child(labels).child(
+                                icon(kit.glyph.check_small, 12.0)
+                                    .color(kit.c.icon_base)
+                                    .opacity(if is_selected { 1.0 } else { 0.0 }),
+                            );
+                            kit.interactive(line)
+                                .key(format!("{key_prefix}-option-{}", option.id))
+                                .role("option")
+                                .label(&option.label)
+                                .focus_selected(is_active)
+                                .position_in_set(pos + 1, count)
+                                .on_hover(move |s: &mut State| {
+                                    if let Some(st) = access_hover(s) {
+                                        st.highlight = Some(id_hover.clone());
+                                    }
+                                })
+                                .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+                                    choose_model_option(
+                                        s,
+                                        &access_press,
+                                        choose_press.as_ref(),
+                                        &id_press,
+                                        reasoning_enabled && option_has_reasoning,
+                                        tx,
+                                    );
+                                })
+                        },
+                    ),
             )
-            .h((choices.len() as f32 * ROW_H).min(LIST_MAX_H))
+            .h((count as f32 * ROW_H).min(LIST_MAX_H))
             .min_h(ROW_H)
             .role("listbox")
             .label(self.label.clone())

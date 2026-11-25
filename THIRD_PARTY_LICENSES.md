@@ -1835,8 +1835,8 @@ Used by:
 ## Apache License 2.0
 
 Used by:
-- zerocopy-derive 0.8.64
-- zerocopy 0.8.64
+- zerocopy-derive 0.8.65
+- zerocopy 0.8.65
 
 ```text
                                  Apache License
@@ -2682,13 +2682,13 @@ Used by:
 ## Apache License 2.0
 
 Used by:
-- clap 4.6.9
-- clap_builder 4.6.7
+- clap 4.6.10
+- clap_builder 4.6.10
 - clap_derive 4.6.9
 - clap_lex 1.1.2
 - toml_datetime 1.1.3+spec-1.1.0
-- toml_edit 0.25.20+spec-1.1.0
-- toml_parser 1.1.6+spec-1.1.0
+- toml_edit 0.25.21+spec-1.1.0
+- toml_parser 1.1.7+spec-1.1.0
 
 ```text
                                  Apache License
@@ -2905,7 +2905,7 @@ Used by:
 - anstyle-wincon 3.0.11
 - anstyle 1.0.14
 - colorchoice 1.0.5
-- crc32fast 1.5.5
+- crc32fast 1.5.6
 - foreign-types-macros 0.2.4
 - foreign-types-shared 0.3.1
 - foreign-types 0.5.0
@@ -6471,7 +6471,7 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- ahash 0.8.12
+- ahash 0.8.14
 - arrayvec 0.7.8
 - asn1-rs-derive 0.6.0
 - asn1-rs 0.7.2
@@ -7498,7 +7498,7 @@ Used by:
 - sha1 0.10.7
 - sha1 0.11.0
 - sha2 0.10.9
-- sha2 0.11.1
+- sha2 0.11.2
 - signature 2.2.0
 - signature 3.0.0
 - spki 0.7.3
@@ -10189,12 +10189,13 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
+- accesskit_atspi_common 0.21.1
 - accesskit_macos 0.27.2
 - accesskit_windows 0.35.2
+- naga 30.0.1
 - parley_engine 0.12.0
 - wgpu-hal 30.0.1
 - accesskit 0.25.2
-- accesskit_atspi_common 0.21.1
 - accesskit_consumer 0.39.2
 - accesskit_unix 0.24.1
 - allocator-api2 0.2.21
@@ -10216,12 +10217,11 @@ Used by:
 - kbkdf 0.1.0-rc.1
 - libc 0.2.191
 - linebender_resource_handle 0.1.1
-- litrs 1.0.1
+- litrs 1.1.0
 - md5 0.8.1
 - miniz_oxide 0.8.9
 - miniz_oxide 0.9.1
 - naga-types 30.0.2
-- naga 30.0.2
 - num-conv 0.2.2
 - objc2-app-kit 0.3.2
 - objc2-av-foundation 0.3.2
@@ -11942,7 +11942,7 @@ THE SOFTWARE.
 ## MIT License
 
 Used by:
-- hyper 1.12.0
+- hyper 1.13.0
 
 ```text
 Copyright (c) 2014-2026 Sean McArthur

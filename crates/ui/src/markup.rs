@@ -107,27 +107,36 @@ pub fn analyze(text: &str) -> Markup {
 }
 
 pub fn skill_links(text: &str) -> Option<String> {
-    if !text.contains('$') {
-        return None;
-    }
-    let mentions: Vec<_> = analyze(text)
-        .shades
-        .into_iter()
-        .filter_map(|(range, shade)| (shade == Shade::Skill).then_some(range))
-        .collect();
-    if mentions.is_empty() {
+    let edits = skill_link_edits(text);
+    if edits.is_empty() {
         return None;
     }
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
-    for range in mentions {
+    for (range, with) in edits {
         out.push_str(&text[at..range.start]);
-        let mention = &text[range.clone()];
-        out.push_str(&link(mention, &format!("skill:{}", &mention[1..])));
+        out.push_str(&with);
         at = range.end;
     }
     out.push_str(&text[at..]);
     Some(out)
+}
+
+pub(crate) fn skill_link_edits(text: &str) -> Vec<(Range<usize>, String)> {
+    if !text.contains('$') {
+        return Vec::new();
+    }
+    analyze(text)
+        .shades
+        .into_iter()
+        .filter_map(|(range, shade)| {
+            if shade != Shade::Skill {
+                return None;
+            }
+            let mention = &text[range.clone()];
+            Some((range, link(mention, &format!("skill:{}", &mention[1..]))))
+        })
+        .collect()
 }
 
 pub fn is_web_url(text: &str) -> bool {
