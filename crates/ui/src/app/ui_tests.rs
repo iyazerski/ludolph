@@ -1439,24 +1439,26 @@ fn multiline_user_messages_preserve_line_breaks_and_list_exits() {
         .iter()
         .find(|e| e.key.as_deref() == Some("m-message"))
         .unwrap();
-    let para = elements
-        .iter()
-        .find(|e| e.path.starts_with(&message.path) && e.key.as_deref() == Some("b0"))
-        .expect("paragraph element");
-    assert_eq!(para.text.as_deref(), Some("First line\nSecond line"));
+    assert!(
+        elements.iter().any(|e| e.path.starts_with(&message.path)
+            && e.text.as_deref() == Some("First line\nSecond line")),
+        "single newline in user message renders as a line break"
+    );
 
-    let clipboard = rune::clipboard::memory();
-    ui.use_clipboard(&clipboard);
+    let copy_clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&copy_clipboard);
     let copy_btn = elements
         .iter()
         .find(|e| e.path.starts_with(&message.path) && e.label.as_deref() == Some("Copy"))
         .expect("copy button");
     click(&mut ui, copy_btn);
     assert_eq!(
-        clipboard.text().as_deref().map(String::as_str),
+        copy_clipboard.text().as_deref().map(String::as_str),
         Some("First line\nSecond line")
     );
 
+    let sel_clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&sel_clipboard);
     ui.update(|s, tx| {
         s.chat_mut().unwrap().composer.focused = false;
         tx.select_all_text("m-message");
@@ -1471,44 +1473,62 @@ fn multiline_user_messages_preserve_line_breaks_and_list_exits() {
     });
     settle(&mut ui);
     assert_eq!(
-        clipboard.text().as_deref().map(String::as_str),
+        sel_clipboard.text().as_deref().map(String::as_str),
         Some("First line\nSecond line")
     );
 
-    let source = "1. First\n2. Second\nAfter list";
-    let (_rt2, mut ui) = single_message_ui(Role::User, source);
+    // Unindented and under-indented lines exit a user list instead of attaching to the last item.
+    for source in [
+        "1. First\n2. Second\nAfter list",
+        "1. First\n2. Second\n  After list",
+    ] {
+        let (_rt2, mut ui) = single_message_ui(Role::User, source);
+        let elements = ui.elements();
+        let message = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("m-message"))
+            .unwrap();
+        let second = elements
+            .iter()
+            .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("Second"))
+            .expect("second list item does not absorb trailing line");
+        let after = elements
+            .iter()
+            .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("After list"))
+            .expect("trailing line renders as its own paragraph");
+        assert!(after.rect[1] > second.rect[1]);
+
+        let clipboard = rune::clipboard::memory();
+        ui.use_clipboard(&clipboard);
+        let r1 = second.rect;
+        let ra = after.rect;
+        drag_and_copy(
+            &mut ui,
+            (r1[0] + 1.0, r1[1] + r1[3] / 2.0),
+            (ra[0] + ra[2] - 1.0, ra[1] + ra[3] / 2.0),
+        );
+        let expected = if source.contains("  After") {
+            "2. Second\n  After list"
+        } else {
+            "2. Second\nAfter list"
+        };
+        assert_eq!(
+            clipboard.text().as_deref().map(String::as_str),
+            Some(expected)
+        );
+    }
+
+    // Assistant messages preserve standard CommonMark lazy wrapping inside list items.
+    let (_rt3, ui) = single_message_ui(Role::Assistant, "1. Long item\nwrapped line");
     let elements = ui.elements();
     let message = elements
         .iter()
         .find(|e| e.key.as_deref() == Some("m-message"))
         .unwrap();
-    let items: Vec<_> = elements
-        .iter()
-        .filter(|e| {
-            e.path.starts_with(&message.path) && e.path.contains("/i") && e.path.ends_with("/b0")
-        })
-        .collect();
-    assert_eq!(items.len(), 2);
-    assert_eq!(items[0].text.as_deref(), Some("First"));
-    assert_eq!(items[1].text.as_deref(), Some("Second"));
-    let after = elements
-        .iter()
-        .find(|e| e.path.starts_with(&message.path) && e.key.as_deref() == Some("b1"))
-        .expect("trailing line renders as a separate paragraph");
-    assert_eq!(after.text.as_deref(), Some("After list"));
-
-    let clipboard = rune::clipboard::memory();
-    ui.use_clipboard(&clipboard);
-    let r1 = items[1].rect;
-    let ra = after.rect;
-    drag_and_copy(
-        &mut ui,
-        (r1[0] + 1.0, r1[1] + r1[3] / 2.0),
-        (ra[0] + ra[2] - 1.0, ra[1] + ra[3] / 2.0),
-    );
-    assert_eq!(
-        clipboard.text().as_deref().map(String::as_str),
-        Some("2. Second\nAfter list")
+    assert!(
+        elements.iter().any(|e| e.path.starts_with(&message.path)
+            && e.text.as_deref() == Some("Long item wrapped line")),
+        "assistant list item keeps standard CommonMark line wrapping"
     );
 }
 
@@ -1522,19 +1542,21 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
         .iter()
         .find(|e| e.key.as_deref() == Some("m-message"))
         .unwrap();
-    let clipboard = rune::clipboard::memory();
-    ui.use_clipboard(&clipboard);
 
+    let copy_clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&copy_clipboard);
     let copy_btn = elements
         .iter()
         .find(|e| e.path.starts_with(&message.path) && e.label.as_deref() == Some("Copy"))
         .expect("copy button");
     click(&mut ui, copy_btn);
     assert_eq!(
-        clipboard.text().as_deref().map(String::as_str),
+        copy_clipboard.text().as_deref().map(String::as_str),
         Some(source.as_str())
     );
 
+    let sel_clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&sel_clipboard);
     ui.update(|s, tx| {
         s.chat_mut().unwrap().composer.focused = false;
         tx.select_all_text("m-message");
@@ -1549,21 +1571,29 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
     });
     settle(&mut ui);
     assert_eq!(
-        clipboard.text().as_deref().map(String::as_str),
+        sel_clipboard.text().as_deref().map(String::as_str),
         Some(source.as_str())
     );
 
-    let items: Vec<_> = elements
+    let first = elements
         .iter()
-        .filter(|e| {
-            e.path.starts_with(&message.path) && e.path.contains("/i") && e.path.ends_with("/b0")
+        .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("First item"))
+        .expect("first list item");
+    let second = elements
+        .iter()
+        .find(|e| {
+            e.path.starts_with(&message.path)
+                && e.text
+                    .as_deref()
+                    .is_some_and(|t| t.contains("Second") && t.contains("item"))
         })
-        .collect();
-    assert_eq!(items.len(), 2);
+        .expect("second list item");
+    let r0 = first.rect;
+    let r1 = second.rect;
 
-    let r0 = items[0].rect;
-    let r1 = items[1].rect;
     // Single whole list item keeps its marker and Markdown formatting.
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
     drag_and_copy(
         &mut ui,
         (r0[0] + 1.0, r0[1] + r0[3] / 2.0),
@@ -1575,10 +1605,12 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
     );
 
     // Selecting just a single word inside an item does not prepend a marker.
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
     drag_and_copy(
         &mut ui,
         (r0[0] + 1.0, r0[1] + r0[3] / 2.0),
-        (r0[0] + 30.0, r0[1] + r0[3] / 2.0),
+        (r0[0] + 24.0, r0[1] + r0[3] / 2.0),
     );
     let copied = clipboard.text();
     let copied = copied.as_deref().map(String::as_str).unwrap_or("");
@@ -1587,7 +1619,24 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
         "copied={copied:?}"
     );
 
-    // Both items copy with markers and Markdown formatting.
+    // Dragging from start of item 1 into the middle of item 2 keeps list markers.
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
+    drag_and_copy(
+        &mut ui,
+        (r0[0] + 1.0, r0[1] + r0[3] / 2.0),
+        (r1[0] + 24.0, r1[1] + r1[3] / 2.0),
+    );
+    let partial = clipboard.text();
+    let partial = partial.as_deref().map(String::as_str).unwrap_or("");
+    assert!(
+        partial.starts_with("1. First item\n2. "),
+        "partial multi-item selection keeps list markers: {partial:?}"
+    );
+
+    // Both whole items copy with markers and Markdown formatting.
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
     drag_and_copy(
         &mut ui,
         (r0[0] + 1.0, r0[1] + r0[3] / 2.0),
@@ -1608,8 +1657,6 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
         .iter()
         .find(|e| e.key.as_deref() == Some("m-message"))
         .unwrap();
-    let clipboard = rune::clipboard::memory();
-    ui.use_clipboard(&clipboard);
     let inner_a = elements
         .iter()
         .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("Inner A"))
@@ -1618,6 +1665,9 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
         .iter()
         .find(|e| e.path.starts_with(&message.path) && e.text.as_deref() == Some("Inner B"))
         .expect("Inner B");
+
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
     drag_and_copy(
         &mut ui,
         (
@@ -1634,6 +1684,8 @@ fn copying_lists_preserves_markers_for_button_and_selection() {
         Some("- Inner A")
     );
 
+    let clipboard = rune::clipboard::memory();
+    ui.use_clipboard(&clipboard);
     drag_and_copy(
         &mut ui,
         (

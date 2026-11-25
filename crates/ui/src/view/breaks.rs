@@ -19,10 +19,14 @@ const MARKUP: &[char] = &[
     '\\', '`', '*', '_', '~', '[', ']', '(', ')', '<', '>', '|', '&', ';', '!',
 ];
 
-pub fn prepare(src: &str) -> Cow<'_, str> {
-    let mut out = match line_breaks(src) {
-        Some(s) => Cow::Owned(s),
-        None => Cow::Borrowed(src),
+pub fn prepare(src: &str, hard_breaks: bool) -> Cow<'_, str> {
+    let mut out = if hard_breaks {
+        match line_breaks(src) {
+            Some(s) => Cow::Owned(s),
+            None => Cow::Borrowed(src),
+        }
+    } else {
+        Cow::Borrowed(src)
     };
     if let Some(s) = crate::markup::skill_links(&out) {
         out = Cow::Owned(s);
@@ -34,21 +38,21 @@ pub fn prepare(src: &str) -> Cow<'_, str> {
 }
 
 pub fn line_breaks(src: &str) -> Option<String> {
-    apply_edits(src, &line_break_edits(src)).map(|(out, _)| out)
+    apply_edits_only(src, &line_break_edits(src))
 }
 
 pub fn breakable(src: &str) -> Option<String> {
-    apply_edits(src, &breakable_edits(src)).map(|(out, _)| out)
+    apply_edits_only(src, &breakable_edits(src))
 }
 
-pub fn copy_selection(original: &str, sel: &TextSelection) -> Option<String> {
+pub fn copy_selection(original: &str, hard_breaks: bool, sel: &TextSelection) -> Option<String> {
     if !sel.texts().iter().any(SelectedText::is_selected) {
         return None;
     }
     if sel.texts().iter().all(|t| t.is_whole() || t.is_empty()) {
         return Some(original.to_owned());
     }
-    let (shown, map) = prepare_mapped(original);
+    let (shown, map) = prepare_mapped(original, hard_breaks);
     if let Some(nodes) = parse_nodes(&shown) {
         let parsed: Vec<ParsedText<'_>> = sel
             .texts()
@@ -73,7 +77,8 @@ pub fn copy_selection(original: &str, sel: &TextSelection) -> Option<String> {
 }
 
 struct ListScope {
-    indent: usize,
+    content_col: usize,
+    quote_depth: usize,
     exited: bool,
 }
 
@@ -91,11 +96,19 @@ fn line_break_edits(src: &str) -> Vec<(Range<usize>, String)> {
         match &event {
             Event::Start(Tag::List(_)) => {
                 let line_start = src[..range.start].rfind('\n').map_or(0, |i| i + 1);
-                let (_, indent) = strip_quotes_and_indent(&src[line_start..], quote_depth);
+                let content_col = item_content_col(&src[line_start..], quote_depth);
                 lists.push(ListScope {
-                    indent,
+                    content_col,
+                    quote_depth,
                     exited: false,
                 });
+            }
+            Event::Start(Tag::Item) => {
+                if let Some(list) = lists.last_mut() {
+                    let line_start = src[..range.start].rfind('\n').map_or(0, |i| i + 1);
+                    list.content_col = item_content_col(&src[line_start..], list.quote_depth);
+                    list.exited = false;
+                }
             }
             Event::End(TagEnd::List(_)) => {
                 lists.pop();
@@ -116,20 +129,24 @@ fn line_break_edits(src: &str) -> Vec<(Range<usize>, String)> {
                 | TagEnd::Link
                 | TagEnd::Image,
             ) => inline_depth = inline_depth.saturating_sub(1),
-            Event::SoftBreak if !just_ended_image => {
+            Event::SoftBreak => {
                 if let Some(blank) =
                     exit_lists(src, range.end, &mut lists, quote_depth, inline_depth)
                 {
                     edits.push((range.start..range.start, blank));
-                } else {
+                } else if !just_ended_image {
                     edits.push((range.start..range.start, "  ".to_owned()));
                 }
             }
-            Event::HardBreak if !src[range.clone()].starts_with('\\') => {
+            Event::HardBreak => {
                 if let Some(blank) =
                     exit_lists(src, range.end, &mut lists, quote_depth, inline_depth)
                 {
-                    edits.push((range.start..range.start, blank));
+                    if src[range.clone()].starts_with('\\') {
+                        edits.push((range.start..range.start + 1, blank));
+                    } else {
+                        edits.push((range.start..range.start, blank));
+                    }
                 }
             }
             _ => {}
@@ -151,11 +168,14 @@ fn exit_lists(
     if inline_depth > 0 || !lists.iter().any(|l| !l.exited) {
         return None;
     }
-    let (next_quotes, next_indent) = strip_quotes_and_indent(&src[next_line_start..], quote_depth);
-    let dropped_quote = next_quotes < quote_depth;
+    let (next_quotes, next_indent, _) =
+        strip_quotes_and_indent(&src[next_line_start..], quote_depth);
     let mut exited_any = false;
     for list in lists.iter_mut() {
-        if !list.exited && (dropped_quote || next_indent <= list.indent) {
+        if !list.exited
+            && (next_quotes < list.quote_depth
+                || (next_quotes == list.quote_depth && next_indent < list.content_col))
+        {
             list.exited = true;
             exited_any = true;
         }
@@ -171,7 +191,39 @@ fn exit_lists(
     Some(blank)
 }
 
-fn strip_quotes_and_indent(line: &str, max_quotes: usize) -> (usize, usize) {
+fn item_content_col(line: &str, max_quotes: usize) -> usize {
+    let (_, mut col, rest_idx) = strip_quotes_and_indent(line, max_quotes);
+    let bytes = &line.as_bytes()[rest_idx..];
+    let marker_bytes = match bytes.first() {
+        Some(b'-' | b'*' | b'+') => 1,
+        Some(b) if b.is_ascii_digit() => {
+            let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+            if matches!(bytes.get(digits), Some(b'.' | b')')) {
+                digits + 1
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    };
+    col += marker_bytes;
+    let mut space_cols = 0usize;
+    for &b in &bytes[marker_bytes..] {
+        match b {
+            b' ' => space_cols += 1,
+            b'\t' => space_cols += 4 - ((col + space_cols) % 4),
+            _ => break,
+        }
+    }
+    // CommonMark: a marker followed by EOL or >=5 spaces has content column `marker + 1`.
+    col + if space_cols == 0 || space_cols > 4 {
+        1
+    } else {
+        space_cols
+    }
+}
+
+fn strip_quotes_and_indent(line: &str, max_quotes: usize) -> (usize, usize, usize) {
     let bytes = line.as_bytes();
     let mut i = 0;
     let mut quotes = 0;
@@ -201,7 +253,7 @@ fn strip_quotes_and_indent(line: &str, max_quotes: usize) -> (usize, usize) {
         }
         i += 1;
     }
-    (quotes, col)
+    (quotes, col, i)
 }
 
 fn breakable_edits(src: &str) -> Vec<(Range<usize>, String)> {
@@ -317,7 +369,22 @@ impl EditMap {
     }
 }
 
-fn apply_edits(src: &str, edits: &[(Range<usize>, String)]) -> Option<(String, EditStage)> {
+fn apply_edits_only(src: &str, edits: &[(Range<usize>, String)]) -> Option<String> {
+    if edits.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(src.len() + src.len() / 8);
+    let mut at = 0;
+    for (range, with) in edits {
+        out.push_str(&src[at..range.start]);
+        out.push_str(with);
+        at = range.end;
+    }
+    out.push_str(&src[at..]);
+    Some(out)
+}
+
+fn apply_edits_mapped(src: &str, edits: &[(Range<usize>, String)]) -> Option<(String, EditStage)> {
     if edits.is_empty() {
         return None;
     }
@@ -336,20 +403,24 @@ fn apply_edits(src: &str, edits: &[(Range<usize>, String)]) -> Option<(String, E
     Some((out, EditStage { spans }))
 }
 
-fn prepare_mapped(src: &str) -> (Cow<'_, str>, EditMap) {
+fn prepare_mapped(src: &str, hard_breaks: bool) -> (Cow<'_, str>, EditMap) {
     let mut stages = Vec::new();
-    let mut out = match apply_edits(src, &line_break_edits(src)) {
-        Some((s, stage)) => {
-            stages.push(stage);
-            Cow::Owned(s)
+    let mut out = if hard_breaks {
+        match apply_edits_mapped(src, &line_break_edits(src)) {
+            Some((s, stage)) => {
+                stages.push(stage);
+                Cow::Owned(s)
+            }
+            None => Cow::Borrowed(src),
         }
-        None => Cow::Borrowed(src),
+    } else {
+        Cow::Borrowed(src)
     };
-    if let Some((s, stage)) = apply_edits(&out, &crate::markup::skill_link_edits(&out)) {
+    if let Some((s, stage)) = apply_edits_mapped(&out, &crate::markup::skill_link_edits(&out)) {
         stages.push(stage);
         out = Cow::Owned(s);
     }
-    if let Some((s, stage)) = apply_edits(&out, &breakable_edits(&out)) {
+    if let Some((s, stage)) = apply_edits_mapped(&out, &breakable_edits(&out)) {
         stages.push(stage);
         out = Cow::Owned(s);
     }
@@ -482,7 +553,7 @@ fn parse_nodes(shown: &str) -> Option<Vec<Node>> {
             Event::SoftBreak | Event::HardBreak => {
                 if matches!(
                     stack.last().map(|f| &f.kind),
-                    Some(FrameKind::Leaf { para: true })
+                    Some(FrameKind::Leaf { para: true } | FrameKind::Item { .. })
                 ) && starts_ordered_marker(&shown[range.end..])
                 {
                     return None;
@@ -491,6 +562,7 @@ fn parse_nodes(shown: &str) -> Option<Vec<Node>> {
             }
             Event::Text(_)
             | Event::Code(_)
+            | Event::InlineHtml(_)
             | Event::TaskListMarker(_)
             | Event::Start(Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Link { .. }) => {
                 extend_item_inline(stack.last_mut(), &range)
@@ -661,7 +733,7 @@ fn node_edge(node: &Node, texts: &[&ParsedText<'_>], depth: usize, is_end: bool)
 }
 
 fn dedent_slice(original: &str, range: Range<usize>) -> String {
-    let slice = original[range.clone()].trim_end();
+    let slice = original[range.clone()].trim_end_matches(['\n', '\r']);
     let line_start = original[..range.start].rfind('\n').map_or(0, |i| i + 1);
     let prefix = &original[line_start..range.start];
     if prefix.is_empty()
@@ -670,12 +742,16 @@ fn dedent_slice(original: &str, range: Range<usize>) -> String {
     {
         return slice.to_owned();
     }
+    let trimmed_prefix = prefix.trim_end();
     let mut out = String::with_capacity(slice.len());
     for (i, line) in slice.split('\n').enumerate() {
         if i > 0 {
             out.push('\n');
             if let Some(rest) = line.strip_prefix(prefix) {
                 out.push_str(rest);
+                continue;
+            }
+            if !trimmed_prefix.is_empty() && line.trim_end() == trimmed_prefix {
                 continue;
             }
         }
@@ -874,9 +950,25 @@ mod tests {
                 Some("> 1. First\n> 2. Second\n>\n> After list"),
             ),
             ("1. **bold\ncontinued**", Some("1. **bold  \ncontinued**")),
+            ("1. a\nb\n2. c\nd", Some("1. a\n\nb\n2. c\n\nd")),
+            ("1. First\n  After list", Some("1. First\n\n  After list")),
+            (
+                "- > Quote\n  Still in item\nOutside",
+                Some("- > Quote  \n  Still in item\n\nOutside"),
+            ),
+            (
+                "1. First\n2. Second\\\nAfter list",
+                Some("1. First\n2. Second\n\nAfter list"),
+            ),
         ];
         for &(src, want) in cases {
             assert_eq!(line_breaks(src).as_deref(), want, "source {src:?}");
         }
+    }
+
+    #[test]
+    fn dedent_strips_bare_quote_lines_and_keeps_trailing_nbsp() {
+        let quote = "> p1\n>\n> p2\u{00A0}\n";
+        assert_eq!(dedent_slice(quote, 2..quote.len()), "p1\n\np2\u{00A0}");
     }
 }

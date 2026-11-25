@@ -546,7 +546,7 @@ fn user_bubble(
             .py(8.0)
             .radius(14.0)
             .fill(super::theme::message_bg(k))
-            .child(prose(page, k, style, key, &shown, false));
+            .child(prose(page, k, style, key, &shown, false, true));
         out = out.child(row().w_full().justify_end().child(body.opacity(opacity)));
     }
     if shade == Shade::Queued {
@@ -667,6 +667,7 @@ fn assistant(
                     &format!("{}#{i}", m.id),
                     text,
                     streaming && i == last,
+                    false,
                 )
                 .key(format!("{}#{i}", m.id)),
             ],
@@ -710,8 +711,9 @@ fn prose(
     key: &str,
     text: &str,
     streaming: bool,
+    hard_breaks: bool,
 ) -> El {
-    let shown = breaks::prepare(text);
+    let shown = breaks::prepare(text, hard_breaks);
     let links = page
         .chat
         .as_ref()
@@ -742,10 +744,10 @@ fn prose(
     if let Some(links) = links {
         md = md.code_link(k.c.text_accent, links);
     }
-    let original = text.to_owned();
+    let original: std::rc::Rc<str> = std::rc::Rc::from(text);
     code::frames(md, page, k, key)
         .build(k)
-        .selection_copy(move |sel| breaks::copy_selection(&original, sel))
+        .selection_copy(move |sel| breaks::copy_selection(&original, hard_breaks, sel))
 }
 
 fn worked(k: &Kit, key: &str, millis: i64, open: bool) -> El {
