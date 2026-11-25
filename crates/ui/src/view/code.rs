@@ -9,7 +9,6 @@ use rune_kit::markdown::{Highlight, MarkdownStyle, Syntax};
 use rune_kit::syntax::{self, SyntaxTheme};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, Markdown};
 
-use super::breaks::ZWSP;
 use super::icons;
 use crate::app::{Existing, FileLinks, State};
 use crate::paths::expand_home;
@@ -204,8 +203,7 @@ pub fn file_links(
 }
 
 fn file_link(code: &str, cwd: &Path) -> Option<String> {
-    let code = code.replace(ZWSP, "");
-    let mut path = code.as_str();
+    let mut path = code;
     for _ in 0..2 {
         if let Some((head, n)) = path.rsplit_once(':')
             && !n.is_empty()
