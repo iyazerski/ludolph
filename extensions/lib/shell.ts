@@ -68,10 +68,26 @@ export function shellCommands(command: string): ShellCommand[] {
 	return commands;
 }
 
+const TIMEOUT_VALUE_FLAGS = new Set(["-k", "--kill-after", "-s", "--signal"]);
+
 export function executable(words: string[]): string[] {
 	const start = words.findIndex((word) => !/^\w+=/.test(word) && !["if", "elif", "do", "then", "else", "!"].includes(word));
 	if (start < 0) return [];
-	return [basename(words[start]), ...words.slice(start + 1)];
+	const name = basename(words[start]);
+	const args = words.slice(start + 1);
+	if (name === "timeout") {
+		let index = 0;
+		while (index < args.length) {
+			const arg = args[index];
+			if (arg === "--") { index++; break; }
+			if (TIMEOUT_VALUE_FLAGS.has(arg)) { index += 2; continue; }
+			if (arg.startsWith("-")) { index++; continue; }
+			break;
+		}
+		const wrapped = args.slice(index + 1);
+		if (wrapped.length) return executable(wrapped);
+	}
+	return [name, ...args];
 }
 
 export function producesFile(command: string, file: string, cwd: string): boolean {
@@ -82,10 +98,13 @@ export function producesFile(command: string, file: string, cwd: string): boolea
 			cwd = absolute(args[0]);
 			continue;
 		}
-		if (["ssh", "docker", "kubectl", "adb"].includes(name)) break;
-		for (const flag of [">", ">>", "--out"]) {
-			const index = args.indexOf(flag);
-			if (index >= 0 && args[index + 1] && absolute(args[index + 1]) === file) return true;
+		// Shell redirections happen locally even when the command itself is remote (e.g. adb exec-out > file).
+		for (let index = 0; index < args.length - 1; index++) {
+			if ((args[index] === ">" || args[index] === ">>") && absolute(args[index + 1]) === file) return true;
+		}
+		if (["ssh", "docker", "kubectl", "adb"].includes(name)) continue;
+		for (let index = 0; index < args.length - 1; index++) {
+			if (args[index] === "--out" && absolute(args[index + 1]) === file) return true;
 		}
 		if (["mv", "cp"].includes(name) && args.length >= 2) {
 			const destination = args[args.length - 1];
@@ -239,13 +258,24 @@ export function checkRisk(command: string): "publish" | "hidden" | undefined {
 
 const SECONDS: Record<string, number> = { "": 1, s: 1, m: 60, h: 3600, d: 86400 };
 
+export function watchesCi(command: string): boolean {
+	for (const { words, background } of shellCommands(command)) {
+		if (background) continue;
+		const [name, ...args] = executable(words);
+		if (["ssh", "docker", "kubectl", "adb"].includes(name)) continue;
+		if (name === "gh" && !args.includes("-h") && !args.includes("--help")
+			&& ((args[0] === "run" && args[1] === "watch") || (args[0] === "pr" && args[1] === "checks" && args.includes("--watch")))) {
+			return true;
+		}
+	}
+	return false;
+}
+
 export function waitsInForeground(command: string): boolean {
+	if (watchesCi(command)) return true;
 	return shellCommands(command).some(({ words, background, loop }) => {
 		if (background || loop) return false;
 		const [name, ...args] = executable(words);
-		if (name === "gh" && !args.includes("-h") && !args.includes("--help")) {
-			return (args[0] === "run" && args[1] === "watch") || (args[0] === "pr" && args[1] === "checks" && args.includes("--watch"));
-		}
 		const duration = name === "sleep" ? /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(args[0] ?? "") : null;
 		return duration !== null && Number(duration[1]) * SECONDS[duration[2]] >= 10;
 	});

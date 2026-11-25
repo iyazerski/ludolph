@@ -18,7 +18,7 @@ export async function toolStats(files: string[]) {
 			if (call.failed) failures++;
 			if (call.incompleteNested) incompleteNested++;
 			if (call.argumentsMissing) missingArguments++;
-			if (/^Warning: truncated output \(original token count:|\[Showing (?:lines|last) [^\]]*Full output: [^\]]+\]$/.test(call.output ?? "")) truncations++;
+			if (/^Warning: truncated output \(original token count:|\[Showing (?:lines|last) [^\]]*Full output: [^\]]+\]$/m.test(call.output ?? "")) truncations++;
 			if (call.name === "bash" && (call.durationMs ?? 0) > 60_000) longBash++;
 			const kinds = call.name === "bash" && typeof call.arguments.command === "string"
 				? [...commandHints(call.arguments.command), symbolLookup(call.arguments.command) ?? []].flat()
