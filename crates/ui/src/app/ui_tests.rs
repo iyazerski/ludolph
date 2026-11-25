@@ -5,7 +5,7 @@ use rune::{App, AppSpec, ElementInfo, Env, Runtime, TextEdit};
 
 use super::*;
 use crate::api::{Api, Shared};
-use crate::data::{Message, MessageStatus, Part, Role};
+use crate::data::{Message, MessageStatus, Part, Role, ToolState};
 
 fn runtime(width: f32, window: Window) -> (tokio::runtime::Runtime, Runtime<State>) {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -780,22 +780,283 @@ fn sent_prompts_rise_into_place_and_keep_their_bubble_once_written() {
         ],
         "queued":[], "turnChanges":[], "olderRemaining":0
     }), tx));
-    ui.frame(1.0 / 120.0);
-    path.push(prompt(&ui));
+    for _ in 0..30 {
+        ui.frame(1.0 / 120.0);
+        path.push(prompt(&ui));
+    }
     settle(&mut ui);
     let (top, opacity) = prompt(&ui);
     assert_eq!(opacity, 1.0);
     assert!(
         path.windows(2)
             .all(|w| w[1].0 <= w[0].0 && w[1].1 >= w[0].1),
-        "it rises and fades in without jumping back, pi's copy included: {path:?}"
+        "it scrolls up smoothly without jumping back, pi's copy included: {path:?}"
     );
-    let (start, faded) = path[1];
     assert!(
-        start > top + 1.0 && faded < 1.0,
-        "it starts below and faded: {path:?}"
+        path[0].0 > top + 200.0 && path[6].0 > top + 100.0,
+        "sending scrolls smoothly from the bottom instead of jumping straight to the top: top={top}, path={:?}",
+        &path[..8]
     );
-    assert!(path[6].1 < 1.0, "pi's copy carries on the rise: {path:?}");
+    assert!(
+        path[35].0 < top + 40.0,
+        "the scroll glide finishes promptly, not slowly: top={top}, at_300ms={}",
+        path[35].0
+    );
+
+    // A second send with a prior sent-turn also glides smoothly up from below.
+    ui.update(|s, tx| {
+        s.chat_mut().unwrap().composer = TextEdit::new("Follow-up question");
+        s.send(tx);
+    });
+    let mut second = Vec::new();
+    for _ in 0..12 {
+        ui.frame(1.0 / 120.0);
+        second.push(prompt(&ui).0);
+    }
+    settle(&mut ui);
+    let second_top = prompt(&ui).0;
+    assert!(
+        second.windows(2).all(|w| w[1] <= w[0]),
+        "second send glides up smoothly without jumping back: {second:?}"
+    );
+    assert!(
+        second[0] > second_top + 40.0 && second[11] < second[0] - 20.0,
+        "second send visibly scrolls up: top={second_top}, path={second:?}"
+    );
+}
+
+#[test]
+fn reasoning_rows_expand_and_collapse_smoothly_without_jumping_the_icon() {
+    let thought_text = (1..=10)
+        .map(|i| format!("Reasoning line {i} explaining the step in detail."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_rt, mut ui) = runtime(1120.0, Window::Main);
+    ui.state.engine_up = true;
+    let mut chat = Existing::new("test".into(), None);
+    chat.open_groups.insert("reply#worked".into(), true);
+    chat.open_groups.insert("reply#0".into(), true);
+    chat.open_groups.insert("solo#worked".into(), true);
+    chat.page = Some(vec![
+        Message {
+            id: "earlier".into(),
+            role: Role::Assistant,
+            created_at: 0,
+            ended_at: 0,
+            status: MessageStatus::Complete,
+            parts: vec![Part::Text {
+                text: "Earlier context.\n\n".repeat(30),
+            }],
+        },
+        Message {
+            id: "reply".into(),
+            role: Role::Assistant,
+            created_at: 1,
+            ended_at: 2,
+            status: MessageStatus::Complete,
+            parts: vec![
+                Part::Tool {
+                    id: "t1".into(),
+                    name: "read".into(),
+                    subject: Some("a.rs".into()),
+                    state: ToolState::Done,
+                    calls: Vec::new(),
+                },
+                Part::Thinking {
+                    text: thought_text.clone(),
+                },
+                Part::Tool {
+                    id: "t2".into(),
+                    name: "edit".into(),
+                    subject: Some("b.rs".into()),
+                    state: ToolState::Done,
+                    calls: Vec::new(),
+                },
+                Part::Text {
+                    text: "Done updating the files.".into(),
+                },
+            ],
+        },
+        Message {
+            id: "solo".into(),
+            role: Role::Assistant,
+            created_at: 3,
+            ended_at: 4,
+            status: MessageStatus::Complete,
+            parts: vec![
+                Part::Thinking { text: thought_text },
+                Part::Text {
+                    text: "Standalone answer.".into(),
+                },
+            ],
+        },
+    ]);
+    ui.state.page = Page::Chat(Box::new(ChatPage::new(
+        0,
+        Target::Existing(chat),
+        TextEdit::default(),
+    )));
+    settle(&mut ui);
+
+    // 1. Reasoning row inside a tool group (with icons::THOUGHT).
+    let find_key = |ui: &Runtime<State>, key: &str| {
+        ui.elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(key))
+            .unwrap_or_else(|| panic!("missing element {key}"))
+    };
+    let thought = find_key(&ui, "thought-reply#0:1");
+    let closed_h = thought.rect[3];
+    let head_y = thought.rect[1];
+    let head = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.path.starts_with(&thought.path) && e.key.as_deref() == Some("head"))
+        .unwrap();
+    let head_path = format!("{}/head", thought.path);
+    let head_sizes: Vec<(String, f32, f32)> = ui
+        .elements()
+        .into_iter()
+        .filter(|e| e.path.starts_with(&head_path))
+        .map(|e| (e.path, e.rect[2], e.rect[3]))
+        .collect();
+    assert!(
+        head_sizes
+            .iter()
+            .any(|(_, w, h)| (*w - 14.0).abs() < 0.5 && (*h - 14.0).abs() < 0.5),
+        "thought icon present in head: {head_sizes:?}"
+    );
+    let click_at = |ui: &mut Runtime<State>, rect: [f32; 4]| {
+        let (x, y) = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+        ui.pointer_down(x, y);
+        ui.pointer_up(x, y);
+    };
+    let sample = |ui: &mut Runtime<State>,
+                  key: &str,
+                  expected_head: Option<&[(String, f32, f32)]>| {
+        let mut frames = Vec::new();
+        for _ in 0..36 {
+            ui.frame(1.0 / 120.0);
+            let els = ui.elements();
+            let row = els.iter().find(|e| e.key.as_deref() == Some(key)).unwrap();
+            let body_opacity = els
+                .iter()
+                .find(|e| e.path.starts_with(&row.path) && e.key.as_deref() == Some("body"))
+                .map(|e| e.opacity);
+            if let Some(expected) = expected_head {
+                for (path, w, h) in expected {
+                    let el = els
+                        .iter()
+                        .find(|e| e.path == *path && !e.exiting)
+                        .unwrap_or_else(|| panic!("missing head element {path}"));
+                    assert!(
+                        (el.rect[2] - *w).abs() < 0.5 && (el.rect[3] - *h).abs() < 0.5,
+                        "head element {path} resized unexpectedly: expected ({w}, {h}), got {:?}",
+                        el.rect
+                    );
+                }
+            }
+            frames.push((row.rect[1], row.rect[3], body_opacity));
+        }
+        frames
+    };
+
+    click_at(&mut ui, head.rect);
+    let expand = sample(&mut ui, "thought-reply#0:1", Some(&head_sizes));
+    settle(&mut ui);
+    let open_h = find_key(&ui, "thought-reply#0:1").rect[3];
+    assert!(
+        open_h > closed_h + 100.0,
+        "thought expanded: {closed_h} -> {open_h}"
+    );
+    assert!(
+        expand[0].1 < closed_h + (open_h - closed_h) * 0.25,
+        "expand animates smoothly instead of jumping open: closed={closed_h}, open={open_h}, frames={:?}",
+        &expand[..5]
+    );
+    assert!(
+        expand.windows(2).all(|w| w[1].1 >= w[0].1 - 0.1),
+        "expand height increases monotonically: {expand:?}"
+    );
+    assert!(
+        expand[35].1 > closed_h + (open_h - closed_h) * 0.85,
+        "expand completes promptly: closed={closed_h}, open={open_h}, at_300ms={}",
+        expand[35].1
+    );
+    assert!(
+        expand.iter().all(|f| (f.0 - head_y).abs() < 1.5),
+        "header stays under the cursor while expanding: head_y={head_y}, frames={expand:?}"
+    );
+
+    // Click again to collapse: icon stays 14x14 and height/opacity reverse expand.
+    let head = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.path.starts_with(&thought.path) && e.key.as_deref() == Some("head"))
+        .unwrap();
+    click_at(&mut ui, head.rect);
+    let collapse = sample(&mut ui, "thought-reply#0:1", Some(&head_sizes));
+    settle(&mut ui);
+    assert!(
+        (find_key(&ui, "thought-reply#0:1").rect[3] - closed_h).abs() < 0.5,
+        "thought returned to closed height"
+    );
+    assert!(
+        collapse[0].1 > open_h - (open_h - closed_h) * 0.25,
+        "collapse animates smoothly instead of jumping shut: closed={closed_h}, open={open_h}, frames={:?}",
+        &collapse[..5]
+    );
+    assert!(
+        collapse.windows(2).all(|w| w[1].1 <= w[0].1 + 0.1),
+        "collapse height decreases monotonically: {collapse:?}"
+    );
+    for (i, (e, c)) in expand.iter().zip(&collapse).enumerate() {
+        let mirror_h = closed_h + open_h - e.1;
+        assert!(
+            (c.1 - mirror_h).abs() < 2.0,
+            "frame {i}: collapse height {} should mirror expand {} (expected {mirror_h})",
+            c.1,
+            e.1
+        );
+        if let (Some(eo), Some(co)) = (e.2, c.2) {
+            assert!(
+                (eo + co - 1.0).abs() < 0.06,
+                "frame {i}: collapse opacity {co} should mirror expand opacity {eo}"
+            );
+        }
+    }
+
+    // 2. Standalone thinking row also expands and collapses symmetrically.
+    let solo = find_key(&ui, "thinking-solo#0");
+    let solo_closed = solo.rect[3];
+    let solo_head = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.path.starts_with(&solo.path) && e.key.as_deref() == Some("head"))
+        .unwrap();
+    click_at(&mut ui, solo_head.rect);
+    let solo_expand = sample(&mut ui, "thinking-solo#0", None);
+    settle(&mut ui);
+    let solo_open = find_key(&ui, "thinking-solo#0").rect[3];
+    assert!(solo_open > solo_closed + 100.0);
+    let solo_head = ui
+        .elements()
+        .into_iter()
+        .find(|e| e.path.starts_with(&solo.path) && e.key.as_deref() == Some("head"))
+        .unwrap();
+    click_at(&mut ui, solo_head.rect);
+    let solo_collapse = sample(&mut ui, "thinking-solo#0", None);
+    settle(&mut ui);
+    assert!((find_key(&ui, "thinking-solo#0").rect[3] - solo_closed).abs() < 0.5);
+    for (i, (e, c)) in solo_expand.iter().zip(&solo_collapse).enumerate() {
+        let mirror_h = solo_closed + solo_open - e.1;
+        assert!(
+            (c.1 - mirror_h).abs() < 2.0,
+            "solo frame {i}: collapse height {} should mirror expand {} (expected {mirror_h})",
+            c.1,
+            e.1
+        );
+    }
 }
 
 #[test]

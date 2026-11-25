@@ -391,7 +391,7 @@ impl State {
         }
         page.composer.clear();
         let attached = std::mem::take(&mut page.attached);
-        tx.scroll_key_to("sent-turn", 10.0);
+        tx.scroll_to_bottom("transcript");
         let mut args = json!({ "chat": id, "text": typed });
         if !payloads.is_empty() {
             args["images"] = json!(payloads);

@@ -160,8 +160,8 @@ pub struct Top {
     pub at: i64,
     /// The send time. It keys the prompt's bubble, so pi's copy takes the pending one's place.
     pub sent: i64,
-    /// Whether the bubble has risen into view. It mounts hidden and rises after its first
-    /// layout: Rune lands entrances out of sight before the send's scroll jump brings them in.
+    /// Whether the bubble has laid out and started rising into view. While false, the
+    /// transcript holds off bottom-pinning so the send glides smoothly to the new turn.
     pub shown: bool,
 }
 
