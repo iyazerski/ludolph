@@ -22,6 +22,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         Page::List => (el(), Toolbar::new()),
     };
     dialogs::chat_dialog(s, k, &mut layer);
+    super::popup_menu(s, k, &mut layer);
     layer.extend(toast(s, k));
     let menu = match s.settings_page() {
         Some(page) => widgets::page(settings::sidebar(page, panels), "settings-menu"),

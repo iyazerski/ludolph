@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use rune::{ImageCache, ShortcutId, TextEdit, Tx, WindowHandle};
+use rune::{ImageCache, PopupMenuRequest, ShortcutId, TextEdit, Tx, WindowHandle};
 use rune_kit::diff::DiffState;
 use rune_kit::shell::PaneState;
 use serde_json::{Value, json};
@@ -128,6 +128,8 @@ pub struct State {
     pub updated_notice: Option<String>,
     release_check_scheduled: bool,
     pub chat_dialog: Option<ChatDialog>,
+    /// In-window fallback for Rune pop-up menus on Linux (`App::on_popup_menu`).
+    pub popup_menu: Option<PopupMenuRequest>,
     /// Edits aimed at the rename field once its dialog is gone land here.
     scratch_title: TextEdit,
     /// Edits aimed at a model selector search field once its page is gone land here.
@@ -242,6 +244,7 @@ impl State {
             updated_notice: None,
             release_check_scheduled: false,
             chat_dialog: None,
+            popup_menu: None,
             scratch_title: TextEdit::default(),
             scratch_search: TextEdit::default(),
             catalog: Catalog::default(),
@@ -357,6 +360,9 @@ impl State {
 
     pub fn visibility_changed(&mut self, shown: bool) {
         self.shown = shown;
+        if !shown {
+            self.popup_menu = None;
+        }
         if let Some(toast) = &mut self.toast {
             let now = Instant::now();
             toast.time = match toast.time {

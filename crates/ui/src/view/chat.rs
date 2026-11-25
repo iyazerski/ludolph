@@ -719,10 +719,8 @@ fn prose(
         .chat
         .as_ref()
         .map(|c| code::file_links(&c.cwd, &page.file_links));
-    let link = |code: &str| links.as_ref().and_then(|f| f(code));
     let mut md = Markdown::new(shown.as_ref().to_owned())
         .style(style.clone())
-        .highlights(code::inline_code_marks(k, &shown, link))
         .streaming(streaming)
         .wrap_anywhere(true)
         .hard_breaks(hard_breaks)
@@ -1269,7 +1267,7 @@ fn file_badge(k: &Kit, path: &str, failed: bool) -> El {
         .role("link")
         .label(format!("Open {name}"))
         .help(path)
-        .on_press(move |s: &mut State| s.open_chat_file(&open))
+        .on_press_tx(move |s: &mut State, tx| s.open_chat_file(&open, tx))
         .child(
             rune::el()
                 .size(20.0, 20.0)

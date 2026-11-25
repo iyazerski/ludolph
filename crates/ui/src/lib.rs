@@ -203,6 +203,12 @@ pub fn run(opts: Opts) -> Result<()> {
                 state
             })
             .on_visibility(|s, shown, _| s.visibility_changed(shown))
+            .on_focus(|s, focused, _| {
+                if !focused {
+                    s.popup_menu = None;
+                }
+            })
+            .on_popup_menu(|s, req, _| s.popup_menu = Some(req))
     };
     let main = {
         let (peer, handle, prefs) = (quick.handle(), main_window.clone(), prefs.clone());
@@ -230,6 +236,12 @@ pub fn run(opts: Opts) -> Result<()> {
             s.open();
             true
         })
+        .on_focus(|s, focused, _| {
+            if !focused {
+                s.popup_menu = None;
+            }
+        })
+        .on_popup_menu(|s, req, _| s.popup_menu = Some(req))
     };
     rune::run_windows_with_args(RunOptions { accessory: true }, [], move |displays| {
         let options = WindowOptions {
