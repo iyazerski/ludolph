@@ -14,11 +14,12 @@ import { checkRisk, executable, producesFile, shellCommands, shellEdits, waitsIn
  * not the model, receives the nested result.
  */
 
-export type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "background" | "batch" | "parallel" | "uv" | "checks" | "recovery" | "output" | "github" | "lspyx" | "gopls";
+export type HintKind = "edit" | "unchanged" | "write" | "read" | "jq" | "sleep" | "background" | "batch" | "parallel" | "uv" | "checks" | "recovery" | "output" | "github" | "lspyx" | "gopls";
 
 const HINTS: Record<HintKind, string> = {
 	github: "This may be the wrong GitHub account. You may run `gh auth switch` and retry without asking.",
 	edit: "Patch existing files with `edit` (`tools.edit` in codemode), not shell editors or read-transform-write scripts, which fail silently when the text doesn't match.",
+	unchanged: "This edit repeated unchanged lines in `oldText` and `newText`. Use one small `edits[]` entry per changed spot, with just enough context to be unique.",
 	write: "Create files with the `write` tool, not heredocs.",
 	read: "Read files with the `read` tool (offset/limit), or parallel `tools.read` calls in codemode.",
 	jq: "Use `jq` to read JSON, not a Python script.",
@@ -63,6 +64,9 @@ const PYTHON_DEFINITION = new RegExp(String.raw`\b(?:def|class)${SPACE}`);
 const GO_DEFINITION = new RegExp(String.raw`\bfunc${SPACE}|\btype${SPACE}+\w+${SPACE}+(?:struct|interface)\b`);
 const LOOKUP_GIT = /^git\s+(-C\s+\S+\s+)?(status|log|diff|show|blame|grep|ls-files|rev-parse|branch|remote)\b/;
 const BATCH_AFTER_TURNS = 2;
+// Edit turns take time in proportion to the text they stream. In past sessions, Gemini repeated at least
+// this many unchanged lines in 45% of its edits and took 2.5x longer per edit than Opus, which did it in 4%.
+const MAX_UNCHANGED_LINES = 12;
 // Direct tool results to wait before repeating a hint: repeating it on every call adds noise, not habits.
 const HINT_COOLDOWN = 10;
 
@@ -205,6 +209,23 @@ export function codemodeHints(code: string): HintKind[] {
 	return hasNonTempWrite && reads && /\.(replace(?:All)?|splice)\s*\(/.test(code) ? ["edit"] : [];
 }
 
+export function editHints(args: Record<string, unknown>): HintKind[] {
+	const edits = Array.isArray(args.edits) ? args.edits as { oldText?: unknown; newText?: unknown }[] : [];
+	return edits.some(({ oldText, newText }) => {
+		if (typeof oldText !== "string" || typeof newText !== "string") return false;
+		const added = new Map<string, number>();
+		for (const line of newText.split("\n")) if (line.trim()) added.set(line, (added.get(line) ?? 0) + 1);
+		let unchanged = 0;
+		for (const line of oldText.split("\n")) {
+			const count = added.get(line) ?? 0;
+			if (count === 0) continue;
+			added.set(line, count - 1);
+			if (++unchanged >= MAX_UNCHANGED_LINES) return true;
+		}
+		return false;
+	}) ? ["unchanged"] : [];
+}
+
 function hintText(hints: Iterable<HintKind>): string {
 	return [...hints].map((kind) => `Hint [${kind}]: ${HINTS[kind]}`).join("\n");
 }
@@ -278,7 +299,10 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName === "codemode" && typeof event.input.code === "string") {
 			for (const kind of codemodeHints(event.input.code)) hints.add(kind);
 		}
-		if (event.toolName === "edit" && event.isError) hints.add("recovery");
+		if (event.toolName === "edit") {
+			if (event.isError) hints.add("recovery");
+			for (const kind of editHints(event.input)) hints.add(kind);
+		}
 		const output = event.content.map((part) => part.type === "text" ? part.text : "").join("\n");
 		if (event.isError && /\bgh\s/.test(localPart(command))
 			&& !/\bevent[- ]subscriptions\b/i.test(output)

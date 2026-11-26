@@ -90,7 +90,12 @@ test("hints at foreground waits, hidden check status, file reads, and truncated 
 		outputBytes: 1, lastLinePartial: false, firstLineExceedsLimit: false, maxLines: 2000, maxBytes: 51200 } as const;
 	const bash = (command: string, kind: HintKind, expected: boolean): [ToolResultEvent, HintKind, boolean] =>
 		[{ type: "tool_result", toolName: "bash", toolCallId: "call", input: { command }, content: [], isError: false, details: undefined }, kind, expected];
+	const body = Array.from({ length: 12 }, (_, index) => "\tstep" + index + "();").join("\n");
+	const edit = (oldText: string, newText: string, expected: boolean): [ToolResultEvent, HintKind, boolean] =>
+		[{ type: "tool_result", toolName: "edit", toolCallId: "call", input: { path: "a.ts", edits: [{ oldText, newText }] }, content: [], isError: false, details: undefined }, "unchanged", expected];
 	const cases: [ToolResultEvent, HintKind, boolean][] = [
+		edit("fn a() {\n" + body + "\n}", "fn b() {\n" + body + "\n}", true),
+		edit("fn a() {\n" + body + "\n}", "fn b() {\n" + body.replace("step0", "first").replace("step1", "second") + "\n}", false),
 		bash("sleep 60; wc -c out.txt", "sleep", true),
 		bash("gh run watch 1 --exit-status", "sleep", true),
 		bash("gh run watch --help | rg interval", "sleep", false),

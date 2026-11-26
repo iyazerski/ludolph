@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { codemodeHints, commandHints, symbolLookup } from "../lib/tool-hints.ts";
+import { codemodeHints, commandHints, editHints, symbolLookup } from "../lib/tool-hints.ts";
 import { recordedCalls, sessionFiles } from "../lib/session-calls.ts";
 
 export async function toolStats(files: string[]) {
@@ -22,7 +22,8 @@ export async function toolStats(files: string[]) {
 			if (call.name === "bash" && (call.durationMs ?? 0) > 60_000) longBash++;
 			const kinds = call.name === "bash" && typeof call.arguments.command === "string"
 				? [...commandHints(call.arguments.command), symbolLookup(call.arguments.command) ?? []].flat()
-				: call.name === "codemode" && typeof call.arguments.code === "string" ? codemodeHints(call.arguments.code) : [];
+				: call.name === "codemode" && typeof call.arguments.code === "string" ? codemodeHints(call.arguments.code)
+				: call.name === "edit" ? editHints(call.arguments) : [];
 			if (call.name === "codemode" && kinds.includes("edit")) scriptedPatches++;
 			for (const kind of kinds) {
 				violations[kind] = (violations[kind] ?? 0) + 1;
