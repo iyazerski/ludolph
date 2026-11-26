@@ -14,7 +14,7 @@ import { checkRisk, executable, producesFile, shellCommands, shellEdits, waitsIn
  * not the model, receives the nested result.
  */
 
-export type HintKind = "edit" | "unchanged" | "write" | "read" | "jq" | "sleep" | "background" | "batch" | "parallel" | "uv" | "checks" | "recovery" | "output" | "github" | "lspyx" | "gopls";
+export type HintKind = "edit" | "unchanged" | "write" | "read" | "jq" | "sleep" | "background" | "batch" | "parallel" | "uv" | "checks" | "recovery" | "output" | "truncated" | "github" | "lspyx" | "gopls";
 
 const HINTS: Record<HintKind, string> = {
 	github: "This may be the wrong GitHub account. You may run `gh auth switch` and retry without asking.",
@@ -30,6 +30,7 @@ const HINTS: Record<HintKind, string> = {
 	checks: "A pipe filter hides the check's exit code. Log the check to a file, save `$?`, then filter the log.",
 	recovery: "Reread the failed region. Retry `edit` with exact, unique, non-overlapping `oldText`; don't rewrite the whole file.",
 	output: "Bound output in the command or script (filters, `head`, `rg -m`, or `read` `offset`/`limit`) before returning it.",
+	truncated: "The middle of this output was cut. Read what you need from the full output file, not by rerunning. Return fewer whole files per script.",
 	uv: "Use `uv run <tool>`, not venv activation or `.venv/bin/`. Each bash call starts fresh.",
 	lspyx: "For Python symbols, call `tools.mcp__lspyx__explore` in codemode: `query` + `workspace` finds definitions, `file` outlines a file, and `file` + `line` + `column` lists usages. Keep `rg` for plain text.",
 	gopls: "For Go symbols, use gopls in codemode: `tools.mcp__gopls__go_search` finds definitions, `go_symbol_references` lists usages, and `go_package_api` shows a package's API. Keep `rg` for plain text.",
@@ -135,18 +136,14 @@ export function commandHints(command: string): HintKind[] {
 	else if (HEREDOC_WRITE.test(local)
 		&& shellCommands(local).some(({ words, loop }) => !loop && ["cat", "tee"].includes(executable(words)[0]))) hints.push("write");
 	if (script && !writes && PARSES_JSON.test(local) && !DOES_MORE.test(local)) hints.push("jq");
-	if (!CONTROL_FLOW.test(local)) {
+	// A read batched with other lookups in one call already saves turns, and agents kept batching after the hint.
+	const parts = segments(local, false);
+	if (!CONTROL_FLOW.test(local) && parts.filter((part) => !/^cd\s/.test(part)).length === 1) {
 		let inTemp = false;
-		for (const part of segments(local, false)) {
+		for (const part of parts) {
 			const cd = /^cd\s+([^\s;&|]+)/.exec(part);
-			if (cd) {
-				inTemp = TEMP_DIR.test(cd[1].replace(/^["']|["']$/g, ""));
-				continue;
-			}
-			if (readsIntoContext(part, inTemp)) {
-				hints.push("read");
-				break;
-			}
+			if (cd) inTemp = TEMP_DIR.test(cd[1].replace(/^["']|["']$/g, ""));
+			else if (readsIntoContext(part, inTemp)) hints.push("read");
 		}
 	}
 	return hints;
@@ -307,9 +304,9 @@ export default function (pi: ExtensionAPI) {
 		if (event.isError && /\bgh\s/.test(localPart(command))
 			&& !/\bevent[- ]subscriptions\b/i.test(output)
 			&& /HTTP (?:401|403|404)\b|Could not resolve to a Repository|Resource not accessible|Bad credentials|authentication failed|repository[^\n]*not found/i.test(output)) hints.add("github");
-		if ((isBashToolResult(event) && event.details?.truncation)
-			|| (event.toolName === "codemode" && (Boolean((event.details as { fullOutputPath?: string } | undefined)?.fullOutputPath)
-				|| event.content.some((part) => part.type === "text" && /^Warning: truncated output \(original token count:/m.test(part.text))))) hints.add("output");
+		if (isBashToolResult(event) && event.details?.truncation) hints.add("output");
+		if (event.toolName === "codemode" && (Boolean((event.details as { fullOutputPath?: string } | undefined)?.fullOutputPath)
+			|| event.content.some((part) => part.type === "text" && /^Warning: truncated output \(original token count:/m.test(part.text)))) hints.add("truncated");
 		if (command && usesVenvInUvProject(command, ctx.cwd)) hints.add("uv");
 		const siblings = [...turnCalls].filter(([id, name]) => id !== event.toolCallId && name !== "read");
 		if ((event.toolName === "read" || event.toolName === "codemode") && !event.parentToolCallId && event.isError && siblings.length > 0 && output.includes("ENOENT")) {
@@ -341,7 +338,7 @@ export default function (pi: ExtensionAPI) {
 		for (const kind of hints) {
 			const last = shown.get(kind);
 			const cooldown = HINT_COOLDOWN * 2 ** Math.min((last?.count ?? 1) - 1, 3);
-			if (last && results - last.result < cooldown && kind !== "recovery") hints.delete(kind);
+			if (last && results - last.result < cooldown && kind !== "recovery" && kind !== "truncated") hints.delete(kind);
 			else shown.set(kind, { result: results, count: (last?.count ?? 0) + 1 });
 		}
 		if (hints.size === 0) return;
