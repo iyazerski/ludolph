@@ -8,10 +8,10 @@ use rune_kit::{
 use super::model_selector::{ModelOption, ModelSelector, model_options};
 use super::widgets::{self, busy, dot};
 use super::{icons, theme};
-use crate::app::{Outcome, QR_SIZE, Section, SettingsPage, State, Update};
+use crate::app::{ModelSelectorState, Outcome, QR_SIZE, Section, SettingsPage, State, Update};
 use crate::data::{
     Account, GuiTool, LinkStatus, Notify, Pairing, PromptKind, RelayLink, ResourceKind,
-    ReviewModel, SendBehavior, Settings, SignInPrompt, ToolStatus, levels_of,
+    ReviewModel, SendBehavior, SignInPrompt, ToolStatus, levels_of,
 };
 use crate::prefs::{Accent, TextSize};
 
@@ -48,13 +48,7 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                         .collect(),
                 ))
                 .child(caption(k, "Second opinion"))
-                .child(group(
-                    k,
-                    [ReviewFamily::Claude, ReviewFamily::Gpt]
-                        .into_iter()
-                        .map(|family| review_model(s, page, k, layer, family))
-                        .collect(),
-                ))
+                .child(group(k, reviewers(s, page, k, layer)))
                 .child(caption(k, "Chat model picker"))
                 .children(chat_models(s, page, k))
         }),
@@ -804,62 +798,54 @@ fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El
     wide(k, "Browser and computer use", picker)
 }
 
-#[derive(Clone, Copy)]
-enum ReviewFamily {
-    Claude,
-    Gpt,
+/// The saved reviewers, then a row that adds one.
+fn reviewers(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
+    let saved = page
+        .settings
+        .as_ref()
+        .map_or(&[][..], |v| v.second_opinion_reviewers.as_slice());
+    let mut rows: Vec<El> = (0..=saved.len())
+        .map(|index| reviewer(s, page, k, layer, saved, index))
+        .collect();
+    let add = rows.pop().expect("the add row is always there");
+    rows.push(with_hint(
+        add,
+        k,
+        "A chat asks the first reviewer from another model family, such as GPT for a Claude chat.",
+    ));
+    rows
 }
 
-impl ReviewFamily {
-    fn matches(self, id: &str) -> bool {
-        let prefix = match self {
-            Self::Claude => "claude-",
-            Self::Gpt => "gpt-",
-        };
-        id.rsplit_once('/')
-            .is_some_and(|(_, model)| model.starts_with(prefix))
-    }
-
-    fn choice(self, settings: &Settings) -> &Option<ReviewModel> {
-        match self {
-            Self::Claude => &settings.second_opinion_claude,
-            Self::Gpt => &settings.second_opinion_gpt,
-        }
-    }
-
-    fn choice_mut(self, settings: &mut Settings) -> &mut Option<ReviewModel> {
-        match self {
-            Self::Claude => &mut settings.second_opinion_claude,
-            Self::Gpt => &mut settings.second_opinion_gpt,
-        }
-    }
-}
-
-fn review_model(
+fn reviewer(
     s: &State,
     page: &SettingsPage,
     k: &Kit,
     layer: &mut Vec<El>,
-    family: ReviewFamily,
+    saved: &[ReviewModel],
+    index: usize,
 ) -> El {
-    let (label, key, state) = match family {
-        ReviewFamily::Claude => ("Claude reviewer", "review-claude", &page.claude_review),
-        ReviewFamily::Gpt => ("GPT reviewer", "review-gpt", &page.gpt_review),
+    let choice = saved.get(index);
+    let label = match choice {
+        Some(_) => format!("Reviewer {}", index + 1),
+        None => "Add reviewer".to_owned(),
     };
-    let state_mut: fn(&mut SettingsPage) -> &mut _ = match family {
-        ReviewFamily::Claude => |p| &mut p.claude_review,
-        ReviewFamily::Gpt => |p| &mut p.gpt_review,
-    };
-    let choice = page
-        .settings
-        .as_ref()
-        .and_then(|v| family.choice(v).as_ref());
+    let closed = ModelSelectorState::default();
+    let state = page.reviewers.get(index).unwrap_or(&closed);
     let models = s.catalog.ready().unwrap_or_default();
-    let mut options = vec![ModelOption::new(NO_REVIEWER, "Not set")];
+    let mut options = vec![ModelOption::new(
+        NO_REVIEWER,
+        if choice.is_some() {
+            "Remove"
+        } else {
+            "Not set"
+        },
+    )];
     options.extend(model_options(
-        models
-            .iter()
-            .filter(|m| family.matches(&m.id) && !m.reasoning_levels.is_empty()),
+        models.iter().filter(|m| {
+            let elsewhere =
+                saved.iter().any(|r| r.model == m.id) && choice.is_none_or(|c| c.model != m.id);
+            !m.reasoning_levels.is_empty() && !elsewhere
+        }),
         true,
     ));
     let placeholder = missing_model(s, choice.map(|peer| peer.model.as_str()));
@@ -868,10 +854,20 @@ fn review_model(
         .map(|peer| peer.thinking.as_str())
         .filter(|level| levels.iter().any(|supported| supported == level));
 
-    let picker = ModelSelector::new(key, state, &options, move |s: &mut State| {
-        s.settings_page_mut().map(state_mut)
-    })
-    .label(label)
+    let picker = ModelSelector::new(
+        format!("review-{index}"),
+        state,
+        &options,
+        move |s: &mut State| {
+            let page = s.settings_page_mut()?;
+            if page.reviewers.len() <= index {
+                page.reviewers
+                    .resize_with(index + 1, ModelSelectorState::default);
+            }
+            Some(&mut page.reviewers[index])
+        },
+    )
+    .label(label.clone())
     .current_model(Some(choice.map_or(NO_REVIEWER, |peer| peer.model.as_str())))
     .mark_model(choice.map(|peer| peer.model.as_str()))
     .placeholder(placeholder)
@@ -879,33 +875,40 @@ fn review_model(
     .placement(Placement::BottomEnd)
     .trigger_width(CONTROL)
     .on_choose_model(move |s: &mut State, id, _| {
-        let choice = if id == NO_REVIEWER {
-            None
-        } else {
-            let levels = levels_of(s.catalog.ready().unwrap_or_default(), id);
-            let Some(thinking) = levels
-                .iter()
-                .find(|level| level.as_str() == "medium")
-                .or_else(|| levels.first())
-            else {
-                return;
-            };
-            Some(ReviewModel {
-                model: id.to_owned(),
-                thinking: thinking.clone(),
-            })
+        if id == NO_REVIEWER {
+            s.change_settings(|v| {
+                if index < v.second_opinion_reviewers.len() {
+                    v.second_opinion_reviewers.remove(index);
+                }
+            });
+            return;
+        }
+        let levels = levels_of(s.catalog.ready().unwrap_or_default(), id);
+        let Some(thinking) = levels
+            .iter()
+            .find(|level| level.as_str() == "medium")
+            .or_else(|| levels.first())
+        else {
+            return;
         };
-        s.change_settings(|v| *family.choice_mut(v) = choice);
+        let picked = ReviewModel {
+            model: id.to_owned(),
+            thinking: thinking.clone(),
+        };
+        s.change_settings(|v| match v.second_opinion_reviewers.get_mut(index) {
+            Some(reviewer) => *reviewer = picked,
+            None => v.second_opinion_reviewers.push(picked),
+        });
     })
     .on_choose_reasoning(move |s: &mut State, level| {
         s.change_settings(|v| {
-            if let Some(peer) = family.choice_mut(v) {
-                peer.thinking = level.to_owned();
+            if let Some(reviewer) = v.second_opinion_reviewers.get_mut(index) {
+                reviewer.thinking = level.to_owned();
             }
         });
     })
     .build(k, layer);
-    wide(k, label, picker)
+    wide(k, &label, picker)
 }
 
 fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
@@ -924,7 +927,7 @@ fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
         compact(
             k,
             "Second opinion",
-            Some("Choose GPT and Claude reviewers in Model settings."),
+            Some("Choose reviewers in Model settings."),
             Switch::new(on(|v| v.second_opinion))
                 .hide_label()
                 .label("Second opinion")

@@ -1296,7 +1296,7 @@ async fn chats_are_titled_as_soon_as_they_start() {
     assert!(tool(&engine, "set_settings", unknown).await.is_err());
     let picked = json!({"sidecarModel": "fake/quick", "notify": "always", "openAtLogin": false, "expandTools": true, "sendBehavior": "queue",
         "toolRouting": false, "secondOpinion": true, "browserUse": true, "computerUse": false, "guiModel": "fake/quick", "guiThinking": "low",
-        "secondOpinionClaude": null, "secondOpinionGpt": {"model": "fake/gpt-reviewer", "thinking": "high"}, "chatModels": []});
+        "secondOpinionReviewers": [{"model": "fake/gpt-reviewer", "thinking": "high"}], "chatModels": []});
     let saved = tool(&engine, "set_settings", picked.clone()).await.unwrap();
     assert_eq!(saved, picked);
     let polished = tool(&engine, "polish_dictation", heard).await.unwrap();

@@ -54,8 +54,8 @@ pub struct SettingsPage {
     pub shortcut: ShortcutRecorderState,
     pub model: ModelSelectorState,
     pub gui_model: ModelSelectorState,
-    pub claude_review: ModelSelectorState,
-    pub gpt_review: ModelSelectorState,
+    /// One per reviewer row, and one for the row that adds a reviewer; grows as rows open.
+    pub reviewers: Vec<ModelSelectorState>,
     pub tools: Tools,
     /// Listing them starts a pi, so they load when their section first shows.
     pub resources: Option<Result<Vec<Resource>, String>>,
@@ -152,12 +152,10 @@ impl Phone {
 
 impl SettingsPage {
     pub fn close_open_picker(&mut self) -> bool {
-        for picker in [
-            &mut self.model,
-            &mut self.gui_model,
-            &mut self.claude_review,
-            &mut self.gpt_review,
-        ] {
+        for picker in [&mut self.model, &mut self.gui_model]
+            .into_iter()
+            .chain(&mut self.reviewers)
+        {
             if picker.is_open() {
                 picker.close();
                 return true;
@@ -218,8 +216,7 @@ impl State {
                 shortcut,
                 model: ModelSelectorState::default(),
                 gui_model: ModelSelectorState::default(),
-                claude_review: ModelSelectorState::default(),
-                gpt_review: ModelSelectorState::default(),
+                reviewers: Vec::new(),
                 tools: Tools::default(),
                 resources: None,
                 resource_saving: false,

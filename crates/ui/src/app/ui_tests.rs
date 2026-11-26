@@ -1147,8 +1147,7 @@ fn test_settings() -> crate::data::Settings {
         send_behavior: crate::data::SendBehavior::Queue,
         tool_routing: true,
         second_opinion: false,
-        second_opinion_claude: None,
-        second_opinion_gpt: None,
+        second_opinion_reviewers: vec![],
         browser_use: false,
         computer_use: false,
         gui_model: None,
@@ -1243,25 +1242,31 @@ fn model_and_resource_settings_group_items_and_scroll_long_model_lists() {
         elements.iter().all(|e| e.role != "slider"),
         "settings uses the unified model selector rather than separate inline sliders"
     );
-    let claude_trigger = elements
+    let add_reviewer = elements
         .iter()
-        .find(|e| e.key.as_deref() == Some("review-claude-trigger"))
-        .expect("Claude reviewer uses the unified model selector");
-    assert_eq!(claude_trigger.role, "combobox");
-    click(&mut ui, claude_trigger);
+        .find(|e| e.key.as_deref() == Some("review-0-trigger"))
+        .expect("adding a reviewer uses the unified model selector");
+    assert_eq!(add_reviewer.role, "combobox");
+    click(&mut ui, add_reviewer);
     let claude_opt = ui
         .elements()
         .into_iter()
-        .find(|e| e.key.as_deref() == Some("review-claude-option-anthropic/claude-1"))
+        .find(|e| e.key.as_deref() == Some("review-0-option-anthropic/claude-1"))
         .expect("clicking unset reviewer opens the searchable model list");
     click(&mut ui, &claude_opt);
     assert_eq!(
         ui.elements()
             .iter()
-            .find(|e| e.key.as_deref() == Some("review-claude-reasoning"))
+            .find(|e| e.key.as_deref() == Some("review-0-reasoning"))
             .expect("picking a reasoning reviewer opens the effort card with its pill slider")
             .role,
         "slider"
+    );
+    assert!(
+        ui.elements()
+            .iter()
+            .any(|e| e.key.as_deref() == Some("review-1-trigger")),
+        "a picked reviewer leaves a row for adding another"
     );
     ui.update(|s, _| {
         s.settings_page_mut().unwrap().close_open_picker();

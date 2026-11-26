@@ -90,7 +90,12 @@ test("hints at foreground waits, hidden check status, file reads, and truncated 
 		outputBytes: 1, lastLinePartial: false, firstLineExceedsLimit: false, maxLines: 2000, maxBytes: 51200 } as const;
 	const bash = (command: string, kind: HintKind, expected: boolean): [ToolResultEvent, HintKind, boolean] =>
 		[{ type: "tool_result", toolName: "bash", toolCallId: "call", input: { command }, content: [], isError: false, details: undefined }, kind, expected];
+	const body = Array.from({ length: 12 }, (_, index) => "\tstep" + index + "();").join("\n");
+	const edit = (oldText: string, newText: string, expected: boolean): [ToolResultEvent, HintKind, boolean] =>
+		[{ type: "tool_result", toolName: "edit", toolCallId: "call", input: { path: "a.ts", edits: [{ oldText, newText }] }, content: [], isError: false, details: undefined }, "unchanged", expected];
 	const cases: [ToolResultEvent, HintKind, boolean][] = [
+		edit("fn a() {\n" + body + "\n}", "fn b() {\n" + body + "\n}", true),
+		edit("fn a() {\n" + body + "\n}", "fn b() {\n" + body.replace("step0", "first").replace("step1", "second") + "\n}", false),
 		bash("sleep 60; wc -c out.txt", "sleep", true),
 		bash("gh run watch 1 --exit-status", "sleep", true),
 		bash("gh run watch --help | rg interval", "sleep", false),
@@ -107,13 +112,14 @@ test("hints at foreground waits, hidden check status, file reads, and truncated 
 		bash("cat /tmp/t.code", "read", false),
 		bash("cd /tmp/m3src && sed -n 1,20p Menu.kt", "read", false),
 		bash("cd /tmp/m3src && cat ~/repo/README.md", "read", true),
+		bash("cd ~/repo; sed -n 1,40p src/main.rs; rg -n foo src", "read", false),
 		bash("head -c 1000 data/s.jsonl | sed '$d' > data/out.jsonl", "read", false),
 		bash("head -1 $(readlink -f ~/.bun/bin/pi)", "read", false),
 		bash("for n in a b; do cat > $n.xml <<EOF\n<x/>\nEOF\ndone", "write", false),
 		bash("cat > script.py <<'EOF'\nfor x in [1]:\n  print(x)\nEOF", "write", true),
 		bash("timeout 1200 gh pr checks 1 --watch --interval 20", "sleep", true),
 		[{ type: "tool_result", toolName: "bash", toolCallId: "call", input: { command: "cargo build" }, content: [], isError: false, details: { truncation } }, "output", true],
-		[{ type: "tool_result", toolName: "codemode", toolCallId: "call", input: { code: "" }, content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n\nWarning: truncated output (original token count: 9000)\n…" }], isError: false, details: undefined }, "output", true],
+		[{ type: "tool_result", toolName: "codemode", toolCallId: "call", input: { code: "" }, content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n\nWarning: truncated output (original token count: 9000)\n…" }], isError: false, details: undefined }, "truncated", true],
 		[{ type: "tool_result", toolName: "read", toolCallId: "call", input: { path: "hints.ts" }, content: [{ type: "text", text: "Warning: truncated output" }], isError: false, details: undefined }, "output", false],
 	];
 	for (const [event, kind, expected] of cases) {
@@ -122,6 +128,16 @@ test("hints at foreground waits, hidden check status, file reads, and truncated 
 			expect(JSON.stringify(result?.content ?? []).includes(`Hint [${kind}]`), JSON.stringify(event.input)).toBe(expected);
 		});
 	}
+});
+
+test("hints at every cut codemode output", async () => {
+	await withTestSession([hints], async (session) => {
+		for (const id of ["a", "b"]) {
+			const result = await session.extensionRunner.emitToolResult({ type: "tool_result", toolName: "codemode", toolCallId: id, input: { code: "" },
+				content: [{ type: "text", text: "Warning: truncated output (original token count: 14000)\n…" }], isError: false, details: undefined });
+			expect(JSON.stringify(result?.content ?? []), id).toContain("Hint [truncated]");
+		}
+	});
 });
 
 test("prefers the job tool over a detached watcher or foreground CI wait", async () => {
