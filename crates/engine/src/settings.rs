@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
@@ -14,8 +15,8 @@ pub struct Settings {
     pub send_behavior: SendBehavior,
     pub tool_routing: bool,
     pub second_opinion: bool,
-    pub second_opinion_claude: Option<ReviewModel>,
-    pub second_opinion_gpt: Option<ReviewModel>,
+    /// In order of preference: a chat asks the first one from another model family.
+    pub second_opinion_reviewers: Vec<ReviewModel>,
     pub browser_use: bool,
     pub computer_use: bool,
     /// `provider/model` for browser and computer use; None uses pi's default.
@@ -35,8 +36,7 @@ impl Default for Settings {
             send_behavior: SendBehavior::default(),
             tool_routing: true,
             second_opinion: true,
-            second_opinion_claude: None,
-            second_opinion_gpt: None,
+            second_opinion_reviewers: Vec::new(),
             // They install tools and ask for macOS permissions, so only on request.
             browser_use: false,
             computer_use: false,
@@ -79,10 +79,47 @@ impl Settings {
     }
 
     pub fn load(state_dir: &Path) -> Result<Self> {
-        Ok(ludolph_json_file::load(&Self::path(state_dir))?.unwrap_or_default())
+        let path = Self::path(state_dir);
+        let Some(mut stored) = ludolph_json_file::load::<Map<String, Value>>(&path)? else {
+            return Ok(Self::default());
+        };
+        // Ludolph 0.2.22 and earlier kept one Claude and one GPT reviewer.
+        let legacy: Vec<Value> = ["secondOpinionClaude", "secondOpinionGpt"]
+            .into_iter()
+            .filter_map(|key| stored.remove(key))
+            .filter(|reviewer| !reviewer.is_null())
+            .collect();
+        if !legacy.is_empty() {
+            stored.insert("secondOpinionReviewers".to_owned(), legacy.into());
+        }
+        serde_json::from_value(stored.into()).with_context(|| format!("parsing {}", path.display()))
     }
 
     pub fn save(&self, state_dir: &Path) -> Result<()> {
         ludolph_json_file::save(&Self::path(state_dir), self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_reviewers_load_in_their_old_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = r#"{"secondOpinion": true, "secondOpinionClaude": {"model": "anthropic/claude-opus", "thinking": "medium"},
+            "secondOpinionGpt": {"model": "openai/gpt-sol", "thinking": "high"}}"#;
+        std::fs::write(Settings::path(dir.path()), legacy).unwrap();
+        let reviewer = |model: &str, thinking: &str| ReviewModel {
+            model: model.to_owned(),
+            thinking: thinking.to_owned(),
+        };
+        assert_eq!(
+            Settings::load(dir.path()).unwrap().second_opinion_reviewers,
+            [
+                reviewer("anthropic/claude-opus", "medium"),
+                reviewer("openai/gpt-sol", "high")
+            ]
+        );
     }
 }

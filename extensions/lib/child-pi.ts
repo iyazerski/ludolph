@@ -53,6 +53,8 @@ export async function runPi(options: ChildOptions): Promise<ChildResult> {
 	const exitCode = await new Promise<number>((resolve, reject) => {
 		const { signal, name } = options;
 		const child = spawn(command, args, { cwd: options.cwd, env: options.env ?? process.env, stdio: ["pipe", "pipe", "pipe"] });
+		// A child stopped or failed before reading its input closes the pipe: its exit reports that.
+		child.stdin.on("error", () => {});
 		child.stdin.end(options.input);
 		let buffer = "";
 		let timedOut = false;
