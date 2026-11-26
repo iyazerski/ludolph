@@ -28,7 +28,7 @@ To build it from source instead, run `make install`. It builds Ludolph.app, puts
 
 ### Linux and Windows
 
-Linux and Windows get a smaller app: no dictation, browser or computer use, or Open at login. On Windows, the engine and pi run in WSL.
+Linux and Windows get a smaller app: no dictation, computer use, or Open at login. On Windows, the engine and pi run in WSL.
 
 - **Linux:** run the Terminal command above. It installs `ludolph` to `~/.local/bin`. Run `ludolph` to open it. The engine logs to `~/.local/state/ludolph/engine.log`.
 - **Windows:** run [Ludolph-Setup.exe](https://github.com/iyazerski/ludolph/releases/latest/download/Ludolph-Setup.exe) and open Ludolph from the Start menu. It guides WSL setup and installs its bundled engine after you approve. Install pi in your default WSL distribution when prompted, then sign in from Settings > Accounts. Pick project folders in WSL (`\\wsl.localhost\...`) or on a drive. The installer isn't Authenticode-signed, so SmartScreen may still warn you.

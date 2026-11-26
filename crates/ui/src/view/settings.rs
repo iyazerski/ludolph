@@ -27,8 +27,8 @@ const GROUP_LIST_MAX_HEIGHT: f32 = GROUP_LIST_VISIBLE as f32 * 45.0 + 22.0;
 /// settings; a model's id has a `/`.
 const DEFAULT_MODEL: &str = "default";
 const NO_REVIEWER: &str = "unset";
-/// browse and Cua Driver set up on macOS only, and macOS runs the app and the engine together.
-const GUI_TOOLS: bool = cfg!(target_os = "macos");
+/// Cua Driver sets up on macOS only, and macOS runs the app and the engine together.
+const COMPUTER_USE: bool = cfg!(target_os = "macos");
 /// Only Ludolph.app has a login item.
 const LOGIN_ITEM: bool = cfg!(target_os = "macos");
 
@@ -43,9 +43,7 @@ pub fn view(s: &State, page: &SettingsPage, k: &'static Kit, layer: &mut Vec<El>
                 .gap(12.0)
                 .child(group(
                     k,
-                    std::iter::once(sidecar(s, page, k, layer))
-                        .chain(GUI_TOOLS.then(|| gui_model(s, page, k, layer)))
-                        .collect(),
+                    vec![sidecar(s, page, k, layer), gui_model(s, page, k, layer)],
                 ))
                 .child(caption(k, "Second opinion"))
                 .child(group(k, reviewers(s, page, k, layer)))
@@ -760,10 +758,15 @@ fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El
         .or_else(|| levels.first())
         .map(String::as_str);
 
+    let label = if COMPUTER_USE {
+        "Browser and computer use"
+    } else {
+        "Browser use"
+    };
     let picker = ModelSelector::new("gui-model", &page.gui_model, &options, |s: &mut State| {
         s.settings_page_mut().map(|p| &mut p.gui_model)
     })
-    .label("Browser and computer use model")
+    .label(format!("{label} model"))
     .current_model(Some(current.unwrap_or(DEFAULT_MODEL)))
     .mark_model(effective)
     .placeholder(missing_model(s, current))
@@ -795,7 +798,7 @@ fn gui_model(s: &State, page: &SettingsPage, k: &Kit, layer: &mut Vec<El>) -> El
         s.change_settings(|v| v.gui_thinking = Some(level));
     })
     .build(k, layer);
-    wide(k, "Browser and computer use", picker)
+    wide(k, label, picker)
 }
 
 /// The saved reviewers, then a row that adds one.
@@ -937,8 +940,8 @@ fn agent_tools(page: &SettingsPage, k: &Kit) -> Vec<El> {
                 .build(k),
         ),
     ];
-    if GUI_TOOLS {
-        rows.extend(gui_tool(page, k, GuiTool::Browser));
+    rows.extend(gui_tool(page, k, GuiTool::Browser));
+    if COMPUTER_USE {
         rows.extend(gui_tool(page, k, GuiTool::Computer));
     }
     if let Some(why) = &page.tools.failed {
@@ -952,7 +955,11 @@ fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
         GuiTool::Browser => (
             "Browser use",
             "Lets the agent use Chrome.",
-            "Install browse from opencode.ai? It then opens Chrome to add its extension.",
+            if COMPUTER_USE {
+                "Install browse from opencode.ai? It then opens Chrome to add its extension."
+            } else {
+                "Install browse from opencode.ai? You then add its Chrome extension and enter a code."
+            },
             "browse is connected to your browser.",
         ),
         GuiTool::Computer => (
@@ -964,7 +971,7 @@ fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
     };
     let tools = &page.tools;
     let on = page.settings.as_ref().is_some_and(|v| v.gui_tool(tool));
-    let status = tools.status.map(|all| all.get(tool));
+    let status = tools.status.and_then(|all| all.get(tool));
     let hint = match status {
         Some(ToolStatus::NeedsPermissions) => "Needs Accessibility and Screen Recording.",
         Some(ToolStatus::Unpaired) => "Needs its Chrome extension.",
@@ -977,7 +984,7 @@ fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
             .hide_label()
             .label(label)
             // Turning it on may install it, so wait until the status says whether it must.
-            .disabled(status.is_none() || tools.running.is_some())
+            .disabled(status.is_none() || tools.running.is_some() || tools.pairing.is_some())
             .on_toggle(move |s: &mut State| s.toggle_gui_tool(tool))
             .build(k)
     };
@@ -1004,6 +1011,34 @@ fn gui_tool(page: &SettingsPage, k: &Kit, tool: GuiTool) -> Vec<El> {
             .grow(1.0)
             .min_w(0.0);
         rows.push(status_row(question, buttons));
+    }
+    if let Some(pairing) = tools.pairing.as_ref().filter(|_| tool == GuiTool::Browser) {
+        let code = pairing.code.clone();
+        let buttons = row()
+            .gap(8.0)
+            .child(
+                Button::new("Cancel")
+                    .variant(ButtonVariant::Outline)
+                    .on_press(State::cancel_gui_setup)
+                    .build(k),
+            )
+            .child(
+                Button::new("Copy code")
+                    .variant(ButtonVariant::Neutral)
+                    .on_press_tx(move |_: &mut State, tx: &mut Tx| tx.copy(code.clone()))
+                    .build(k),
+            );
+        let code = text(format!("Code: {}", pairing.code))
+            .font(k.ty.ui)
+            .color(k.c.text_base)
+            .wrap()
+            .grow(1.0)
+            .min_w(0.0);
+        rows.push(with_hint(
+            status_row(code, buttons),
+            k,
+            "Add browse from the Chrome Web Store, then enter the code on its page. If it's already added, open its options and choose Pair with a code.",
+        ));
     }
     match &tools.outcome {
         Some((ended, Outcome::Done)) if *ended == tool => rows.push(

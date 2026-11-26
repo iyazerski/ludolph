@@ -252,11 +252,15 @@ pub async fn call(engine: &Engine, tool: Tool, args: Value) -> Result<Value> {
         Tool::SetSettings => Ok(serde_json::to_value(
             engine.set_settings(parse(args)?).await?,
         )?),
+        // Ludolph sets up Cua Driver on macOS only.
+        #[cfg(target_os = "macos")]
         Tool::AgentToolStatus => {
             let (browser, computer) =
                 tokio::join!(GuiTool::Browser.status(), GuiTool::Computer.status());
             Ok(json!({"browser": browser?, "computer": computer?}))
         }
+        #[cfg(not(target_os = "macos"))]
+        Tool::AgentToolStatus => Ok(json!({"browser": GuiTool::Browser.status().await?})),
         Tool::SetUpAgentTool => {
             let args: AgentToolArgs = parse(args)?;
             Ok(serde_json::to_value(args.tool.set_up().await)?)

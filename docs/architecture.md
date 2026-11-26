@@ -6,7 +6,7 @@ How Ludolph fits together, and the rules that hold across modules. Module detail
 
 A Mac app for pi only, and an alternative to pi's terminal UI: it aims for the same features and controls, through pi's RPC mode. Chats grouped by project, a main window, a quick window on a global shortcut, and a phone web app through a self-hosted relay. No other agents, Ludolph accounts, sync, terminals, or worktrees.
 
-Linux, and Windows with the engine in WSL, get a reduced app: what needs macOS (dictation, browser and computer use, Open at login, the Keychain, battery and idle checks for the phone) is left out rather than rebuilt. Windows runs only the app, because pi and the tools it runs belong in WSL. Linux installs updates outside the app.
+Linux, and Windows with the engine in WSL, get a reduced app: what needs macOS (dictation, computer use, Open at login, the Keychain, battery and idle checks for the phone) is left out rather than rebuilt. Windows runs only the app, because pi and the tools it runs belong in WSL. Linux installs updates outside the app.
 
 ## Processes
 
@@ -88,6 +88,7 @@ Ludolph's pi extensions live in `extensions/` and ship as one JS file each in `C
 - Ludolph's extensions stay out of pi's own setup, so a terminal pi doesn't load them. Settings that are pi's own, such as sign-in or which skills load, change pi's setup as pi's terminal UI would, so a terminal pi sees them too.
 - The sidecar and the second-opinion reviewer load no extensions. A GUI subagent loads only `gui.js` in its role mode, which adds no subagent tools. So no child can start another.
 - Browser and computer use install browse or Cua Driver only after the user confirms. Both run their MCP server inside a subagent, so a chat's pi doesn't start them until a task needs them.
+- Outside macOS, browse pairs with a code that the app shows, because in WSL the browser is on Windows, where browse can't find or open it. The extension there reaches browse's relay on `127.0.0.1:19988` inside WSL through WSL's localhost forwarding.
 
 ## Background jobs
 
