@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{TimeDelta, Utc};
 use qrcode::QrCode;
@@ -20,6 +20,9 @@ pub const QR_SIZE: f32 = 184.0;
 const RELEASE_CHECK_SECS: u64 = 60 * 60;
 const RELEASE_CHECK_EVERY: TimeDelta = TimeDelta::seconds(RELEASE_CHECK_SECS as i64);
 const RELEASE_CHECK_WAIT: Duration = Duration::from_secs(RELEASE_CHECK_SECS);
+/// browse's pairing codes work for 10 minutes.
+const PAIRING_CODE_LIFE: Duration = Duration::from_secs(10 * 60);
+const PAIRING_CHECK_EVERY: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Section {
@@ -111,8 +114,15 @@ pub struct Tools {
     /// The tool whose install waits for the user's go-ahead.
     pub confirm: Option<GuiTool>,
     pub running: Option<GuiTool>,
+    /// The code to enter in browse's extension, shown until a browser redeems it.
+    pub pairing: Option<BrowserPairing>,
     /// How the last setup ended, shown under its tool until the next toggle.
     pub outcome: Option<(GuiTool, Outcome)>,
+}
+
+pub struct BrowserPairing {
+    pub code: String,
+    until: Instant,
 }
 
 pub enum Outcome {
@@ -809,7 +819,7 @@ impl State {
             return self.change_settings(|v| v.set_gui_tool(tool, false));
         }
         page.tools.outcome = None;
-        match page.tools.status.map(|status| status.get(tool)) {
+        match page.tools.status.and_then(|status| status.get(tool)) {
             Some(ToolStatus::Ready) => self.change_settings(|v| v.set_gui_tool(tool, true)),
             Some(ToolStatus::Missing) => page.tools.confirm = Some(tool),
             Some(ToolStatus::NeedsPermissions | ToolStatus::Unpaired) => self.set_up_gui_tool(tool),
@@ -820,6 +830,7 @@ impl State {
     pub fn cancel_gui_setup(&mut self) {
         if let Some(page) = self.settings_page_mut() {
             page.tools.confirm = None;
+            page.tools.pairing = None;
         }
     }
 
@@ -832,12 +843,25 @@ impl State {
         self.api.call(
             "set_up_agent_tool",
             json!({"tool": tool}),
-            move |s, result: Result<Setup, String>, _| {
+            move |s, result: Result<Setup, String>, tx| {
                 let Some(page) = s.settings_page_mut() else {
                     return;
                 };
                 page.tools.running = None;
                 let outcome = match result {
+                    Ok(Setup::Pair { code, url }) => {
+                        page.tools.pairing = Some(BrowserPairing {
+                            code: code.clone(),
+                            until: Instant::now() + PAIRING_CODE_LIFE,
+                        });
+                        // The app opens it, since the browser is where the app is, which isn't
+                        // the engine's computer in WSL.
+                        if let Err(e) = tx.open_url(&url) {
+                            eprintln!("opening the Chrome Web Store: {e}");
+                        }
+                        s.wait_for_pairing(code);
+                        return;
+                    }
                     Ok(Setup::Done(status)) => {
                         if let Some(all) = page.tools.status.as_mut() {
                             all.set(tool, status);
@@ -868,6 +892,60 @@ impl State {
                 } else {
                     // A failed setup may still have installed the tool.
                     s.load_tools();
+                }
+            },
+        );
+    }
+
+    fn wait_for_pairing(&mut self, code: String) {
+        self.api.run(
+            |_| tokio::time::sleep(PAIRING_CHECK_EVERY),
+            move |s, (), _| s.check_pairing(code),
+        );
+    }
+
+    /// Stops once a browser redeems the code, it expires, or the user cancels.
+    fn check_pairing(&mut self, code: String) {
+        let Some(page) = self.settings_page_mut() else {
+            return;
+        };
+        let tools = &mut page.tools;
+        let Some(pairing) = tools.pairing.as_ref().filter(|p| p.code == code) else {
+            return;
+        };
+        if Instant::now() >= pairing.until {
+            tools.pairing = None;
+            tools.outcome = Some((
+                GuiTool::Browser,
+                Outcome::Failed {
+                    error: "the code expired. Turn it on again for a new one.".to_owned(),
+                    log: None,
+                },
+            ));
+            return;
+        }
+        self.api.call(
+            "agent_tool_status",
+            json!({}),
+            move |s, result: Result<ToolStatuses, String>, _| {
+                let Some(page) = s.settings_page_mut() else {
+                    return;
+                };
+                if page.tools.pairing.as_ref().is_none_or(|p| p.code != code) {
+                    return;
+                }
+                match result {
+                    Ok(status) if status.browser == ToolStatus::Ready => {
+                        page.tools.status = Some(status);
+                        page.tools.pairing = None;
+                        page.tools.outcome = Some((GuiTool::Browser, Outcome::Done));
+                        s.change_settings(|v| v.set_gui_tool(GuiTool::Browser, true));
+                    }
+                    Ok(_) => s.wait_for_pairing(code),
+                    Err(e) => {
+                        eprintln!("checking browse's pairing: {e}");
+                        s.wait_for_pairing(code);
+                    }
                 }
             },
         );

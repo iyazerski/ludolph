@@ -602,32 +602,30 @@ pub enum ToolStatus {
 #[serde(rename_all = "camelCase")]
 pub enum Setup {
     Done(ToolStatus),
+    Pair { code: String, url: String },
     Failed { error: String, log: Option<String> },
 }
 
+/// Only a macOS engine has computer use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct ToolStatuses {
     pub browser: ToolStatus,
-    pub computer: ToolStatus,
+    pub computer: Option<ToolStatus>,
 }
 
 impl ToolStatuses {
-    pub fn get(&self, tool: GuiTool) -> ToolStatus {
+    pub fn get(&self, tool: GuiTool) -> Option<ToolStatus> {
         match tool {
-            GuiTool::Browser => self.browser,
+            GuiTool::Browser => Some(self.browser),
             GuiTool::Computer => self.computer,
         }
     }
 
-    fn get_mut(&mut self, tool: GuiTool) -> &mut ToolStatus {
-        match tool {
-            GuiTool::Browser => &mut self.browser,
-            GuiTool::Computer => &mut self.computer,
-        }
-    }
-
     pub fn set(&mut self, tool: GuiTool, status: ToolStatus) {
-        *self.get_mut(tool) = status;
+        match tool {
+            GuiTool::Browser => self.browser = status,
+            GuiTool::Computer => self.computer = Some(status),
+        }
     }
 }
 

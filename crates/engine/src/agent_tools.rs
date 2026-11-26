@@ -16,6 +16,8 @@ use crate::settings::Settings;
 
 /// Cua Driver's permission guide waits for the user to flip both switches.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const BROWSE_STORE: &str =
+    "https://chromewebstore.google.com/detail/mfnicocicmmlkpjnaffgihfjhdgjkdjg";
 
 pub fn pi_options(dir: &Path, settings: &Settings) -> (Vec<PathBuf>, Vec<(String, String)>) {
     let mut extensions = vec![dir.join("background-jobs.js"), dir.join("quota.js")];
@@ -71,7 +73,16 @@ pub enum Status {
 #[serde(rename_all = "camelCase")]
 pub enum Setup {
     Done(Status),
-    Failed { error: String, log: Option<String> },
+    /// The user adds browse's extension from `url` and enters `code` there, which stays good for
+    /// 10 minutes.
+    Pair {
+        code: String,
+        url: String,
+    },
+    Failed {
+        error: String,
+        log: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -149,7 +160,7 @@ impl GuiTool {
 
     pub async fn set_up(self) -> Setup {
         match self.try_set_up().await {
-            Ok(status) => Setup::Done(status),
+            Ok(setup) => setup,
             Err(e) => match e.downcast_ref::<CommandFailed>() {
                 // The log has the command's own words, so only the step that failed is shown.
                 Some(failed) => Setup::Failed {
@@ -164,14 +175,14 @@ impl GuiTool {
         }
     }
 
-    async fn try_set_up(self) -> Result<Status> {
+    async fn try_set_up(self) -> Result<Setup> {
         let command = self.command();
         if self.status().await? == Status::Missing {
             run(Command::new("/bin/bash").args(["-c", self.installer()]))
                 .await
                 .with_context(|| format!("{command}'s installer failed"))?;
         }
-        match self.status().await? {
+        let status = match self.status().await? {
             Status::Missing => bail!(
                 "{command} installed, but it isn't on PATH. Add its folder to PATH in your shell profile, then restart Ludolph."
             ),
@@ -180,7 +191,31 @@ impl GuiTool {
                 run(Command::new(program).args(["permissions", "grant"]))
                     .await
                     .context("cua-driver couldn't ask for Accessibility and Screen Recording")?;
-                self.status().await
+                self.status().await?
+            }
+            // In WSL, the browser runs on Windows, where browse can't find or open it. Its
+            // extension still reaches the relay inside WSL, which forwards localhost.
+            Status::Unpaired if !cfg!(target_os = "macos") => {
+                let program = on_path(command).context("browse disappeared")?;
+                let output =
+                    match run(Command::new(program).args(["pair", "--wait-seconds", "0"])).await {
+                        Ok(stdout) => stdout,
+                        // With no time to wait, it can't confirm the pairing, so it exits with 1.
+                        Err(e) => e.downcast::<CommandFailed>()?.log,
+                    };
+                let code = output
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Pairing code: "));
+                return Ok(match code {
+                    Some(code) => Setup::Pair {
+                        code: code.trim().to_owned(),
+                        url: BROWSE_STORE.to_owned(),
+                    },
+                    None => Setup::Failed {
+                        error: "browse didn't print a pairing code".to_owned(),
+                        log: Some(output),
+                    },
+                });
             }
             Status::Unpaired => {
                 let program = on_path(command).context("browse disappeared")?;
@@ -201,10 +236,11 @@ impl GuiTool {
                         "no browser connected in time. Add the browse extension in Chrome, then try again",
                     )?;
                 }
-                Ok(status)
+                status
             }
-            Status::Ready => Ok(Status::Ready),
-        }
+            Status::Ready => Status::Ready,
+        };
+        Ok(Setup::Done(status))
     }
 }
 
